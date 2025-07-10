@@ -1,0 +1,24 @@
+// SLSensor.h
+#pragma once
+
+#ifdef SLSENSOR_EXPORTS
+#define SLSENSOR_API __declspec(dllexport)
+#else
+#define SLSENSOR_API __declspec(dllimport)
+#endif
+
+extern "C" {
+
+	SLSENSOR_API bool Camera_Open(int deviceIndex);
+	SLSENSOR_API void Camera_Close();
+
+	SLSENSOR_API bool Camera_Start();
+	SLSENSOR_API void Camera_Stop();
+
+	SLSENSOR_API bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* height);
+
+	SLSENSOR_API bool Camera_SetExposure(int microsec);
+	SLSENSOR_API bool Camera_SetROI(int offsetX, int offsetY, int width, int height);
+	SLSENSOR_API bool Camera_SetGain(float gain);
+
+}

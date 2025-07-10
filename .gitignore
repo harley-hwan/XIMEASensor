@@ -1,0 +1,117 @@
+# Windows 관련
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Visual Studio 관련
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+*.VC.db-wal
+*.VC.db-shm
+
+# 빌드 결과물
+Debug/
+Release/
+x64/
+x86/
+ARM/
+ARM64/
+*.ilk
+*.pdb
+*.obj
+*.pch
+*.idb
+*.ipdb
+*.iobj
+*.res
+*.tlog
+*.lastbuildstate
+*.log
+*.map
+*.exp
+*.lib
+*.bsc
+*.sdf
+
+# 자동 생성되는 파일
+GeneratedFiles/
+ipch/
+*.aps
+*.ncb
+*.sbr
+*.opendb
+
+# CMake 관련 (만약 CMake를 사용한다면)
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CMakeLists.txt.user
+
+# NuGet 관련
+packages/
+*.nupkg
+project.lock.json
+project.assets.json
+
+# 테스팅 및 빌드 임시 파일
+TestResults/
+bin/
+obj/
+out/
+
+# MFC 관련
+*.sdf
+*.tlog
+*.opensdf
+*.bak
+*.bsc
+*.ilk
+
+# Prerequisites
+*.d
+
+# 컴파일된 오브젝트 파일
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers (미리 컴파일된 헤더)
+*.gch
+*.pch
+*.ipch
+
+# 컴파일된 동적 라이브러리
+*.so
+*.dylib
+*.dll
+
+# Fortran 모듈 파일
+*.mod
+*.smod
+
+# 컴파일된 정적 라이브러리
+*.lai
+*.la
+*.a
+*.lib
+
+# 기타 임시 파일 및 로그
+*.swp
+*.temp
+*.tmp
+*.log
+*.suo
+*.sdf
+
+
+*.db
+D:\Documents\GitHub\XIMEASensor\.vs\XIMEASensor\v17\Browse.VC.db
