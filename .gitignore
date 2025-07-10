@@ -87,7 +87,6 @@ out/
 # Precompiled Headers (미리 컴파일된 헤더)
 *.gch
 *.pch
-*.ipch
 
 # 컴파일된 동적 라이브러리
 *.so
@@ -111,7 +110,3 @@ out/
 *.log
 *.suo
 *.sdf
-
-
-*.db
-D:\Documents\GitHub\XIMEASensor\.vs\XIMEASensor\v17\Browse.VC.db
