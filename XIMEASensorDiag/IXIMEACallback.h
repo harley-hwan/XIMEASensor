@@ -35,6 +35,7 @@ enum class CameraError {
     FRAME_GRAB_ERROR = XI_TIMEOUT,
     TIMEOUT = XI_TIMEOUT,
     MEMORY_ERROR = XI_MEMORY_ALLOCATION,
+    DEVICE_NOT_READY = XI_DEVICE_NOT_READY,
     UNKNOWN = -1
 };
 
@@ -54,6 +55,6 @@ public:
 
     // 카메라 속성이 변경되었을 때
     virtual void OnPropertyChanged(const std::string& propertyName, const std::string& value) {
-        
+
     }
 };
