@@ -10,7 +10,6 @@
 #define new DEBUG_NEW
 #endif
 
-// 타이머 ID
 #define TIMER_UPDATE_STATISTICS 1001
 
 CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
@@ -112,16 +111,17 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         [this](const std::string& prop, const std::string& value) {
             OnPropertyChangedCallback(prop, value);
         });
-    
+
     // register callback
     Camera_RegisterCallback(m_cameraCallback.get());
 
-    m_pDisplayBuffer = new unsigned char[1280 * 1024];  // 최대 크기
+    // PYTHON1300 최대 1280x1024, 여유있게.
+    size_t maxBufferSize = 2048 * 2048;  // 4MP
+    m_pDisplayBuffer = new unsigned char[maxBufferSize];
+    memset(m_pDisplayBuffer, 0, maxBufferSize);
 
     UpdateDeviceList();
-
     UpdateUI(false);
-
     SetTimer(TIMER_UPDATE_STATISTICS, 1000, nullptr);
 
     return TRUE;
@@ -198,8 +198,20 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
         return;
     }
 
+    // 옵션 1: 기본값으로 초기화
     Camera_SetExposure(4000);  // 4ms
     Camera_SetGain(0.0f);      // 0dB
+
+    // 옵션 2: 이전 슬라이더 위치값 적용 (주석 처리됨)
+    // if (m_sliderExposure) {
+    //     Camera_SetExposure(m_sliderExposure->GetPos());
+    // }
+    // if (m_sliderGain) {
+    //     Camera_SetGain(m_sliderGain->GetPos() / 10.0f);
+    // }
+
+    // 카메라 설정값에 맞게 슬라이더 동기화
+    SyncSlidersWithCamera();
 
     if (!Camera_Start()) {
         AfxMessageBox(_T("카메라 스트리밍을 시작할 수 없습니다!"));
@@ -213,6 +225,30 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
     m_frameCount = 0;
     m_lastFPSUpdate = std::chrono::steady_clock::now();
 }
+
+
+void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
+{
+    int currentExposure = Camera_GetExposure();
+    float currentGain = Camera_GetGain();
+
+    if (m_sliderExposure && currentExposure > 0) {
+        m_sliderExposure->SetPos(currentExposure);
+
+        CString strExposure;
+        strExposure.Format(_T("노출: %d us"), currentExposure);
+        GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(strExposure);
+    }
+
+    if (m_sliderGain) {
+        m_sliderGain->SetPos((int)(currentGain * 10));
+
+        CString strGain;
+        strGain.Format(_T("게인: %.1f dB"), currentGain);
+        GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(strGain);
+    }
+}
+
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
 {
@@ -232,8 +268,16 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonRefresh()
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 {
-    if (!m_isStreaming || !m_hasNewFrame) {
-        AfxMessageBox(_T("캡처할 프레임이 없습니다!"));
+    if (!m_isStreaming) {
+        AfxMessageBox(_T("카메라가 실행 중이 아닙니다!"));
+        return;
+    }
+
+    EnterCriticalSection(&m_frameCriticalSection);
+    
+    if (!m_pDisplayBuffer || m_displayWidth <= 0 || m_displayHeight <= 0) {
+        LeaveCriticalSection(&m_frameCriticalSection);
+        AfxMessageBox(_T("유효한 프레임이 없습니다!"));
         return;
     }
 
@@ -245,8 +289,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         st.wYear, st.wMonth, st.wDay,
         st.wHour, st.wMinute, st.wSecond);
 
-    EnterCriticalSection(&m_frameCriticalSection);
-
     CFile file;
     if (file.Open(filename, CFile::modeCreate | CFile::modeWrite)) {
         file.Write(m_pDisplayBuffer, m_displayWidth * m_displayHeight);
@@ -255,10 +297,14 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         CString msg;
         msg.Format(_T("스냅샷 저장됨: %s\n크기: %dx%d"),
             filename, m_displayWidth, m_displayHeight);
+        
+        LeaveCriticalSection(&m_frameCriticalSection);
         AfxMessageBox(msg);
     }
-
-    LeaveCriticalSection(&m_frameCriticalSection);
+    else {
+        LeaveCriticalSection(&m_frameCriticalSection);
+        AfxMessageBox(_T("파일을 저장할 수 없습니다!"));
+    }
 }
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
@@ -268,25 +314,61 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
 
 void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
 {
-    if (!m_isStreaming) return;
+    if (!m_isStreaming) {
+        CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
+
+        if (pSlider == m_sliderExposure) {
+            int exposure = m_sliderExposure->GetPos();
+            CString str;
+            str.Format(_T("노출: %d us"), exposure);
+            GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
+        }
+        else if (pSlider == m_sliderGain) {
+            float gain = m_sliderGain->GetPos() / 10.0f;
+            CString str;
+            str.Format(_T("게인: %.1f dB"), gain);
+            GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+        }
+
+        CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
+        return;
+    }
 
     CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
 
     if (pSlider == m_sliderExposure) {
         int exposure = m_sliderExposure->GetPos();
-        Camera_SetExposure(exposure);
 
-        CString str;
-        str.Format(_T("노출: %d us"), exposure);
-        GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
+        if (Camera_SetExposure(exposure)) {
+            CString str;
+            str.Format(_T("노출: %d us"), exposure);
+            GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
+        }
+        else {
+            int currentExposure = Camera_GetExposure();
+            m_sliderExposure->SetPos(currentExposure);
+
+            CString str;
+            str.Format(_T("노출: %d us"), currentExposure);
+            GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
+        }
     }
     else if (pSlider == m_sliderGain) {
         float gain = m_sliderGain->GetPos() / 10.0f;
-        Camera_SetGain(gain);
 
-        CString str;
-        str.Format(_T("게인: %.1f dB"), gain);
-        GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+        if (Camera_SetGain(gain)) {
+            CString str;
+            str.Format(_T("게인: %.1f dB"), gain);
+            GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+        }
+        else {
+            float currentGain = Camera_GetGain();
+            m_sliderGain->SetPos((int)(currentGain * 10));
+
+            CString str;
+            str.Format(_T("게인: %.1f dB"), currentGain);
+            GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+        }
     }
 
     CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
@@ -322,23 +404,29 @@ void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
 {
     EnterCriticalSection(&m_frameCriticalSection);
 
-    memcpy(m_pDisplayBuffer, frameInfo.data,
-        frameInfo.width * frameInfo.height);
-    m_displayWidth = frameInfo.width;
-    m_displayHeight = frameInfo.height;
-    m_hasNewFrame = true;
+    int requiredSize = frameInfo.width * frameInfo.height;
+    if (requiredSize > 1280 * 1024) {
+        delete[] m_pDisplayBuffer;
+        m_pDisplayBuffer = new unsigned char[requiredSize];
+    }
+
+    if (frameInfo.data && requiredSize > 0) {
+        memcpy(m_pDisplayBuffer, frameInfo.data, requiredSize);
+        m_displayWidth = frameInfo.width;
+        m_displayHeight = frameInfo.height;
+        m_hasNewFrame = true; 
+    }
 
     LeaveCriticalSection(&m_frameCriticalSection);
 
     PostMessage(WM_UPDATE_FRAME);
 
-    // FPS calc
     m_frameCount++;
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_lastFPSUpdate).count();
 
-    if (elapsed >= 500) {  // 0.5초마다 FPS 업데이트
+    if (elapsed >= 500) {  // fps update every 500ms
         m_currentFPS = (m_frameCount * 1000.0) / elapsed;
         m_frameCount = 0;
         m_lastFPSUpdate = now;
@@ -370,6 +458,10 @@ void CXIMEASensorDiagDlg::OnStateChangedCallback(CameraState newState, CameraSta
 
 void CXIMEASensorDiagDlg::OnErrorCallback(CameraError error, const std::string& errorMessage)
 {
+    if (errorMessage.find("Camera disconnected") != std::string::npos) {
+        PostMessage(WM_COMMAND, MAKEWPARAM(IDC_BUTTON_STOP, BN_CLICKED), 0);
+    }
+
     CString* pMsg = new CString(errorMessage.c_str());
     PostMessage(WM_UPDATE_ERROR, (WPARAM)error, (LPARAM)pMsg);
 }
@@ -422,7 +514,7 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateFPS(WPARAM wParam, LPARAM lParam)
 
 void CXIMEASensorDiagDlg::DrawFrame()
 {
-    if (!m_hasNewFrame || !m_pictureCtrl) return;
+    if (!m_pictureCtrl) return;
 
     CClientDC dc(m_pictureCtrl);
     CRect rect;
@@ -430,39 +522,58 @@ void CXIMEASensorDiagDlg::DrawFrame()
 
     EnterCriticalSection(&m_frameCriticalSection);
 
-    if (m_hasNewFrame) {
-        // 8bit grayscale bitmap
-        BITMAPINFO bmpInfo = { 0 };
-        bmpInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmpInfo.bmiHeader.biWidth = m_displayWidth;
-        bmpInfo.bmiHeader.biHeight = -m_displayHeight;  // top-down
-        bmpInfo.bmiHeader.biPlanes = 1;
-        bmpInfo.bmiHeader.biBitCount = 8;
-        bmpInfo.bmiHeader.biCompression = BI_RGB;
+    if (m_pDisplayBuffer && m_displayWidth > 0 && m_displayHeight > 0) {
+        
+        size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD); // BITMAPINFO + 256개 RGBQUAD
+        BITMAPINFO* pBmpInfo = (BITMAPINFO*)malloc(bmpInfoSize);
+        memset(pBmpInfo, 0, bmpInfoSize);
 
-        RGBQUAD grayscalePalette[256];
+        pBmpInfo->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        pBmpInfo->bmiHeader.biWidth = m_displayWidth;
+        pBmpInfo->bmiHeader.biHeight = -m_displayHeight;  // top-down DIB
+        pBmpInfo->bmiHeader.biPlanes = 1;
+        pBmpInfo->bmiHeader.biBitCount = 8;
+        pBmpInfo->bmiHeader.biCompression = BI_RGB;
+        pBmpInfo->bmiHeader.biSizeImage = m_displayWidth * m_displayHeight;
+        pBmpInfo->bmiHeader.biXPelsPerMeter = 0;
+        pBmpInfo->bmiHeader.biYPelsPerMeter = 0;
+        pBmpInfo->bmiHeader.biClrUsed = 256;
+        pBmpInfo->bmiHeader.biClrImportant = 256;
+
+        RGBQUAD* pPalette = (RGBQUAD*)(&pBmpInfo->bmiColors[0]);
         for (int i = 0; i < 256; i++) {
-            grayscalePalette[i].rgbBlue = i;
-            grayscalePalette[i].rgbGreen = i;
-            grayscalePalette[i].rgbRed = i;
-            grayscalePalette[i].rgbReserved = 0;
+            pPalette[i].rgbBlue = i;
+            pPalette[i].rgbGreen = i;
+            pPalette[i].rgbRed = i;
+            pPalette[i].rgbReserved = 0;
         }
 
-        SetDIBColorTable(dc.GetSafeHdc(), 0, 256, grayscalePalette);
-        SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
+        int oldStretchMode = SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
+        SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, NULL);
 
-        // draw
-        StretchDIBits(dc.GetSafeHdc(),
-            0, 0, rect.Width(), rect.Height(),
-            0, 0, m_displayWidth, m_displayHeight,
-            m_pDisplayBuffer,
-            &bmpInfo,
-            DIB_RGB_COLORS,
-            SRCCOPY);
+        int result = StretchDIBits(dc.GetSafeHdc(),
+            0, 0, rect.Width(), rect.Height(),              // 대상 영역
+            0, 0, m_displayWidth, m_displayHeight,          // 소스 영역
+            m_pDisplayBuffer,                               // 이미지 데이터
+            pBmpInfo,                                       // 비트맵 정보
+            DIB_RGB_COLORS,                                 // 팔레트 사용
+            SRCCOPY);                                       // 복사 모드
+
+        if (result == GDI_ERROR) {
+            DWORD error = GetLastError();
+            TRACE(_T("StretchDIBits failed with error: %d\n"), error);
+        }
+
+        SetStretchBltMode(dc.GetSafeHdc(), oldStretchMode);
+
+        free(pBmpInfo);
+
+        // m_hasNewFrame = false;
     }
 
     LeaveCriticalSection(&m_frameCriticalSection);
 }
+
 
 void CXIMEASensorDiagDlg::ShowError(const CString& message)
 {

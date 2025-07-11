@@ -40,11 +40,77 @@ CameraController::CameraController()
 CameraController::~CameraController() {
     LOG_INFO("CameraController destructor called");
 
-    StopCapture();
-    CloseCamera();
+    try {
+        // 콜백 제거 (콜백 중에 새로운 작업이 시작되는 것을 방지)
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex);
+            callbacks.clear();
+        }
 
-    delete[] frameBuffer;
-    delete[] workingBuffer;
+        // 캡처 중이면 안전하게 정지
+        if (isRunning.load()) {
+            isRunning = false;
+
+            // 스레드가 종료될 때까지 최대 3초 대기
+            if (captureThread.joinable()) {
+                // condition_variable로 스레드 깨우기 (만약 대기 중이라면)
+                isPaused = false;
+
+                // join with timeout 구현
+                auto start = std::chrono::steady_clock::now();
+                while (captureThread.joinable()) {
+                    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
+                        LOG_ERROR("Capture thread did not stop in time");
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+                    if (!captureThread.joinable()) {
+                        break;
+                    }
+
+                    captureThread.join();
+                }
+            }
+        }
+
+        // 카메라가 열려있으면 닫기
+        if (xiH != nullptr) {
+            // 먼저 acquisition 중지 시도
+            XI_RETURN stat = xiStopAcquisition(xiH);
+            // 에러는 무시 (이미 중지된 상태일 수 있음)
+
+            // 잠시 대기
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            // 카메라 닫기
+            stat = xiCloseDevice(xiH);
+            if (stat != XI_OK) {
+                LOG_ERROR("Error closing camera in destructor: " + GetXiApiErrorString(stat));
+            }
+            xiH = nullptr;
+        }
+
+        // 버퍼 해제
+        {
+            std::lock_guard<std::mutex> lock(frameMutex);
+            if (frameBuffer) {
+                delete[] frameBuffer;
+                frameBuffer = nullptr;
+            }
+
+            if (workingBuffer) {
+                delete[] workingBuffer;
+                workingBuffer = nullptr;
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in destructor: " + std::string(e.what()));
+    }
+    catch (...) {
+        LOG_ERROR("Unknown exception in destructor");
+    }
 
     LOG_INFO("CameraController destroyed");
 }
@@ -107,8 +173,8 @@ bool CameraController::OpenCamera(int deviceIndex) {
     // 타이밍 모드 설정
     xiSetParamInt(xiH, XI_PRM_ACQ_TIMING_MODE, XI_ACQ_TIMING_MODE_FREE_RUN);
 
-    // 버퍼 정책 설정
-    xiSetParamInt(xiH, XI_PRM_BUFFER_POLICY, XI_BP_UNSAFE);
+    // 버퍼 정책 설정 - SAFE 모드로 변경하여 안정성 향상
+    xiSetParamInt(xiH, XI_PRM_BUFFER_POLICY, XI_BP_SAFE);
 
     // 자동 대역폭 계산
     xiSetParamInt(xiH, XI_PRM_AUTO_BANDWIDTH_CALCULATION, XI_ON);
@@ -123,11 +189,78 @@ bool CameraController::OpenCamera(int deviceIndex) {
     // 센서 탭 설정 (PYTHON1300은 보통 2탭)
     xiSetParamInt(xiH, XI_PRM_SENSOR_TAPS, XI_TAP_CNT_2);
 
-    // 버퍼 큐 크기 설정
-    xiSetParamInt(xiH, XI_PRM_BUFFERS_QUEUE_SIZE, 10);
+    // 버퍼 큐 크기 설정 - 더 크게 설정하여 프레임 드롭 방지
+    xiSetParamInt(xiH, XI_PRM_BUFFERS_QUEUE_SIZE, 20);
 
     // 최근 프레임 모드 활성화 (항상 최신 프레임 제공)
     xiSetParamInt(xiH, XI_PRM_RECENT_FRAME, XI_ON);
+
+    // 추가 화질 개선 설정
+    // 감마 보정 비활성화 (raw 데이터 유지)
+    xiSetParamFloat(xiH, XI_PRM_GAMMAY, 1.0f);
+
+    // 샤프닝 비활성화 (raw 데이터 유지)
+    xiSetParamFloat(xiH, XI_PRM_SHARPNESS, 0.0f);
+
+    // 노이즈 감소 비활성화 (raw 데이터 유지)
+    xiSetParamInt(xiH, XI_PRM_HDR, XI_OFF);
+
+    // 블랙 레벨 자동 조정
+    xiSetParamInt(xiH, XI_PRM_AUTO_WB, XI_OFF);
+    xiSetParamInt(xiH, XI_PRM_MANUAL_WB, XI_OFF);
+
+    // 센서 결함 픽셀 보정 활성화
+    //xiSetParamInt(xiH, XI_PRM_SENSOR_DEFECTS_CORR, XI_ON);
+    xiSetParamInt(xiH, XI_PRM_SENS_DEFECTS_CORR, XI_ON);
+
+    // 색상 필터 배열 설정 (모노크롬 센서이므로 NONE)
+    xiSetParamInt(xiH, XI_PRM_COLOR_FILTER_ARRAY, XI_CFA_NONE);
+
+    // 전송 포맷 설정
+    xiSetParamInt(xiH, XI_PRM_TRANSPORT_PIXEL_FORMAT, XI_GenTL_Image_Format_Mono8);
+
+    // 버퍼 크기 재할당 - 안전하게 처리
+    {
+        std::lock_guard<std::mutex> lock(frameMutex);
+
+        if (frameBuffer) {
+            delete[] frameBuffer;
+            frameBuffer = nullptr;
+        }
+        if (workingBuffer) {
+            delete[] workingBuffer;
+            workingBuffer = nullptr;
+        }
+
+        size_t bufferSize = PYTHON1300_WIDTH * PYTHON1300_HEIGHT;
+        try {
+            frameBuffer = new unsigned char[bufferSize];
+            workingBuffer = new unsigned char[bufferSize];
+
+            // 버퍼 초기화
+            memset(frameBuffer, 0, bufferSize);
+            memset(workingBuffer, 0, bufferSize);
+        }
+        catch (const std::bad_alloc& e) {
+            LOG_ERROR("Failed to allocate frame buffers: " + std::string(e.what()));
+
+            // 정리
+            if (frameBuffer) {
+                delete[] frameBuffer;
+                frameBuffer = nullptr;
+            }
+            if (workingBuffer) {
+                delete[] workingBuffer;
+                workingBuffer = nullptr;
+            }
+
+            // 카메라 닫기
+            xiCloseDevice(xiH);
+            xiH = nullptr;
+
+            return false;
+        }
+    }
 
     // 상태 변경 알림
     CameraState oldState = currentState.exchange(CameraState::CONNECTED);
@@ -141,21 +274,31 @@ bool CameraController::OpenCamera(int deviceIndex) {
 void CameraController::CloseCamera() {
     LOG_INFO("Closing camera");
 
-    if (xiH) {
-        StopCapture();
-
-        XI_RETURN stat = xiCloseDevice(xiH);
-        if (stat != XI_OK) {
-            LOG_ERROR("Error closing camera: " + GetXiApiErrorString(stat));
-        }
-
-        xiH = nullptr;
-
-        CameraState oldState = currentState.exchange(CameraState::DISCONNECTED);
-        NotifyStateChanged(CameraState::DISCONNECTED);
-
-        LOG_INFO("Camera closed");
+    if (!xiH) {
+        LOG_WARNING("Camera already closed");
+        return;
     }
+
+    // 캡처 중이면 먼저 중지
+    if (isRunning.load()) {
+        StopCapture();
+    }
+
+    // XIMEA 디바이스 닫기
+    XI_RETURN stat = xiCloseDevice(xiH);
+    if (stat != XI_OK) {
+        LOG_ERROR("Error closing camera: " + GetXiApiErrorString(stat));
+    }
+
+    xiH = nullptr;
+
+    // 상태 변경
+    CameraState oldState = currentState.exchange(CameraState::DISCONNECTED);
+    if (oldState != CameraState::DISCONNECTED) {
+        NotifyStateChanged(CameraState::DISCONNECTED);
+    }
+
+    LOG_INFO("Camera closed");
 }
 
 bool CameraController::StartCapture() {
@@ -181,6 +324,7 @@ bool CameraController::StartCapture() {
 
     stats.Reset();
     lastFrameTime = std::chrono::steady_clock::now();
+    deviceNotReadyCount = 0;
 
     isRunning = true;
     isPaused = false;
@@ -194,16 +338,34 @@ bool CameraController::StartCapture() {
 }
 
 void CameraController::StopCapture() {
-    if (!isRunning) return;
-
     LOG_INFO("Stopping capture");
 
-    isRunning = false;
-
-    if (captureThread.joinable()) {
-        captureThread.join();
+    // 캡처 루프 종료 신호
+    bool wasRunning = isRunning.exchange(false);
+    // 이미 isRunning이 false였지만 스레드가 join되지 않은 경우 처리
+    if (!wasRunning) {
+        if (captureThread.joinable()) {
+            try {
+                captureThread.join();
+            }
+            catch (const std::system_error& e) {
+                LOG_ERROR("Exception joining capture thread: " + std::string(e.what()));
+            }
+        }
+        return;  // 더 이상 캡처 중이 아니므로 종료
     }
 
+    // 캡처 스레드 조인 (실행 중이었으면 여기서 대기)
+    if (captureThread.joinable()) {
+        try {
+            captureThread.join();
+        }
+        catch (const std::system_error& e) {
+            LOG_ERROR("Exception joining capture thread: " + std::string(e.what()));
+        }
+    }
+
+    // 스트리밍 중이었다면 XIMEA API에 캡처 중지 호출
     if (xiH) {
         XI_RETURN stat = xiStopAcquisition(xiH);
         if (stat != XI_OK) {
@@ -211,8 +373,11 @@ void CameraController::StopCapture() {
         }
     }
 
-    CameraState oldState = currentState.exchange(CameraState::CONNECTED);
-    NotifyStateChanged(CameraState::CONNECTED);
+    // 상태를 CAPTURING에서 CONNECTED로 변경 (오류로 인한 중단 경우 kERROR 상태는 덮어쓰지 않음)
+    CameraState prevState = currentState.exchange(CameraState::CONNECTED);
+    if (prevState == CameraState::CAPTURING) {
+        NotifyStateChanged(CameraState::CONNECTED);
+    }
 
     LOG_INFO("Capture stopped");
 }
@@ -226,8 +391,6 @@ void CameraController::CaptureLoop() {
     XI_IMG image;
     memset(&image, 0, sizeof(image));
     image.size = sizeof(XI_IMG);
-    image.bp_size = width * height * sizeof(unsigned char);
-    image.bp = workingBuffer;  // 이미지 데이터를 받을 버퍼
 
     LOG_INFO("Capture loop started");
 
@@ -240,13 +403,27 @@ void CameraController::CaptureLoop() {
         XI_RETURN stat = xiGetImage(xiH, 100, &image);
 
         if (stat == XI_OK) {
+            // 성공적으로 프레임을 받았으므로 에러 카운트 리셋
+            deviceNotReadyCount = 0;
+
             auto now = std::chrono::steady_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
                 now - lastFrameTime).count();
             float currentFPS = duration > 0 ? 1000000.0f / duration : 0.0f;
             lastFrameTime = now;
 
-            // 프레임 정보 생성 - XI_IMG 구조체의 실제 데이터
+            if (image.frm != XI_MONO8) {
+                LOG_ERROR("Unexpected image format: " + std::to_string(image.frm));
+                continue;
+            }
+
+            int imageSize = image.width * image.height;
+
+            if (image.bp == nullptr || imageSize <= 0) {
+                LOG_ERROR("Invalid image data received");
+                continue;
+            }
+
             FrameInfo frameInfo;
             frameInfo.data = (unsigned char*)image.bp;
             frameInfo.width = image.width;
@@ -261,30 +438,65 @@ void CameraController::CaptureLoop() {
             frameInfo.gain_db = image.gain_db;
             frameInfo.format = image.frm;
 
-            // 프레임 버퍼 업데이트 (더블 버퍼링)
             {
                 std::lock_guard<std::mutex> lock(frameMutex);
-                // 이미지 데이터가 이미 workingBuffer에 있음. 스왑만 함.
-                std::swap(frameBuffer, workingBuffer);
-                std::swap(reinterpret_cast<void*&>(image.bp), reinterpret_cast<void*&>(workingBuffer));     // for next frame
+
+                if (width != image.width || height != image.height) {
+                    width = image.width;
+                    height = image.height;
+
+                    delete[] frameBuffer;
+                    delete[] workingBuffer;
+
+                    frameBuffer = new unsigned char[imageSize];
+                    workingBuffer = new unsigned char[imageSize];
+                }
+
+                memcpy(frameBuffer, image.bp, imageSize);
             }
 
             NotifyFrameReceived(frameInfo);
             UpdateStatistics(true);
         }
         else if (stat == XI_TIMEOUT) {
-            // 타임아웃 되면 정상
+            // 타임아웃은 정상, 에러 카운트 리셋
+            deviceNotReadyCount = 0;
             UpdateStatistics(false);
+        }
+        else if (stat == XI_DEVICE_NOT_READY) {
+            // Device not ready 에러 처리
+            deviceNotReadyCount++;
+            LOG_ERROR("Frame grab error: " + GetXiApiErrorString(stat) +
+                " (count: " + std::to_string(deviceNotReadyCount.load()) + ")");
 
+            if (deviceNotReadyCount >= MAX_DEVICE_NOT_READY_ERRORS) {
+                LOG_ERROR("Device not ready error exceeded limit. Stopping capture.");
+
+                // 에러 콜백 호출
+                NotifyError(CameraError::DEVICE_NOT_READY,
+                    "Camera disconnected - Device not ready error exceeded limit");
+
+                // 캡처 중지
+                isRunning = false;
+
+                // 상태 변경 알림
+                CameraState oldState = currentState.exchange(CameraState::kERROR);
+                NotifyStateChanged(CameraState::kERROR);
+
+                break;
+            }
+
+            UpdateStatistics(false);
         }
         else {
+            // 다른 에러는 기존처럼 처리
             LOG_ERROR("Frame grab error: " + GetXiApiErrorString(stat));
             NotifyError(static_cast<CameraError>(stat),
                 "Frame grab error: " + GetXiApiErrorString(stat));
             UpdateStatistics(false);
         }
 
-        std::this_thread::sleep_for(std::chrono::microseconds(500));
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
 
     LOG_INFO("Capture loop ended");
@@ -292,16 +504,32 @@ void CameraController::CaptureLoop() {
 
 
 bool CameraController::GetFrame(unsigned char* buffer, int bufferSize, int& outWidth, int& outHeight) {
-    std::lock_guard<std::mutex> lock(frameMutex);
-
-    int requiredSize = width * height;
-    if (bufferSize < requiredSize) {
-        LOG_ERROR("Buffer size too small: " + std::to_string(bufferSize) +
-            " < " + std::to_string(requiredSize));
+    if (!buffer || bufferSize <= 0) {
+        LOG_ERROR("Invalid buffer provided");
         return false;
     }
 
-    memcpy(buffer, frameBuffer, requiredSize);
+    std::lock_guard<std::mutex> lock(frameMutex);
+
+    int currentFrameSize = width * height;
+
+    if (currentFrameSize <= 0) {
+        LOG_ERROR("Invalid frame dimensions: " + std::to_string(width) + "x" + std::to_string(height));
+        return false;
+    }
+
+    if (bufferSize < currentFrameSize) {
+        LOG_ERROR("Buffer size too small: " + std::to_string(bufferSize) +
+            " < " + std::to_string(currentFrameSize));
+        return false;
+    }
+
+    if (!frameBuffer) {
+        LOG_ERROR("Frame buffer not initialized");
+        return false;
+    }
+
+    memcpy(buffer, frameBuffer, currentFrameSize);
     outWidth = width;
     outHeight = height;
 
@@ -314,7 +542,6 @@ bool CameraController::SetExposure(int microsec) {
         return false;
     }
 
-    // 범위 체크
     microsec = std::max(MIN_EXPOSURE_US, std::min(MAX_EXPOSURE_US, microsec));
 
     XI_RETURN stat = xiSetParamInt(xiH, XI_PRM_EXPOSURE, microsec);
@@ -415,13 +642,29 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
 
     width = w;
     height = h;
+    size_t newSize = static_cast<size_t>(width) * height;
+
+    // new frame buffer
+    unsigned char* newFrameBuffer = nullptr;
+    unsigned char* newWorkingBuffer = nullptr;
+    try {
+        newFrameBuffer = new unsigned char[newSize];
+        newWorkingBuffer = new unsigned char[newSize];
+    }
+    catch (const std::bad_alloc& e) {
+        LOG_ERROR("Failed to allocate memory for new ROI buffer: " + std::string(e.what()));
+
+        if (wasCapturing) {
+            PauseCapture(false);
+        }
+        NotifyError(CameraError::MEMORY_ERROR, "Failed to allocate memory for ROI");
+        return false;
+    }
 
     delete[] frameBuffer;
     delete[] workingBuffer;
-
-    size_t newSize = width * height;
-    frameBuffer = new unsigned char[newSize];
-    workingBuffer = new unsigned char[newSize];
+    frameBuffer = newFrameBuffer;
+    workingBuffer = newWorkingBuffer;
 
     std::string roiStr = "offset(" + std::to_string(offsetX) + "," +
         std::to_string(offsetY) + "), size(" +
@@ -435,6 +678,7 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
     LOG_INFO("ROI set successfully");
     return true;
 }
+
 
 bool CameraController::SetFrameRate(float fps) {
     if (!xiH) {
@@ -579,9 +823,11 @@ void CameraController::NotifyError(CameraError error, const std::string& message
         catch (const std::exception& e) {
             LOG_ERROR("Exception in OnError callback: " + std::string(e.what()));
         }
+        catch (...) {
+            LOG_ERROR("Unknown exception in OnError callback");
+        }
     }
 }
-
 void CameraController::NotifyPropertyChanged(const std::string& property, const std::string& value) {
     std::lock_guard<std::mutex> lock(callbackMutex);
     for (auto* callback : callbacks) {

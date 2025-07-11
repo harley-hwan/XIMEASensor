@@ -4,6 +4,7 @@
 #include "CameraCallback.h"
 #include <memory>
 #include <chrono>
+#include <atomic> 
 
 #define WM_UPDATE_FRAME     (WM_USER + 100)
 #define WM_UPDATE_STATUS    (WM_USER + 101)
@@ -28,15 +29,15 @@ protected:
     DECLARE_MESSAGE_MAP()
 
 private:
-    // UI 컨트롤
-    CStatic* m_pictureCtrl;
-    CButton* m_btnStart;
-    CButton* m_btnStop;
-    CStatic* m_staticStatus;
-    CStatic* m_staticFPS;
-    CSliderCtrl* m_sliderExposure;
-    CSliderCtrl* m_sliderGain;
-    CComboBox* m_comboDevices;
+    // UI 컨트롤 - nullptr로 초기화
+    CStatic* m_pictureCtrl = nullptr;
+    CButton* m_btnStart = nullptr;
+    CButton* m_btnStop = nullptr;
+    CStatic* m_staticStatus = nullptr;
+    CStatic* m_staticFPS = nullptr;
+    CSliderCtrl* m_sliderExposure = nullptr;
+    CSliderCtrl* m_sliderGain = nullptr;
+    CComboBox* m_comboDevices = nullptr;
 
     // Camera
     std::unique_ptr<CameraCallback> m_cameraCallback;
@@ -57,6 +58,7 @@ private:
     void UpdateUI(bool isStreaming);
     void DrawFrame();
     void ShowError(const CString& message);
+    void SyncSlidersWithCamera();
 
     // Callback handler (다른 스레드에서 호출됨)
     void OnFrameReceivedCallback(const FrameInfo& frameInfo);

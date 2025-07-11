@@ -21,7 +21,7 @@ extern "C" {
     XIMEASENSOR_API void Camera_Stop();
     XIMEASENSOR_API bool Camera_Pause(bool pause);
 
-    XIMEASENSOR_API bool Camera_GetFrame(unsigned char* buffer, int bufferSize,int* width, int* height);
+    XIMEASENSOR_API bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* height);
 
     XIMEASENSOR_API bool Camera_SetExposure(int microsec);
     XIMEASENSOR_API bool Camera_SetGain(float gain);

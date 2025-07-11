@@ -8,7 +8,7 @@
 
 
 bool Camera_Initialize(const char* logPath, int logLevel) {
-	std::cout << "in XIMEASensor initialize" << std::endl;
+    std::cout << "in XIMEASensor initialize" << std::endl;
     try {
         std::string path = logPath ? logPath : "XIMEASensor.log";
         Logger::GetInstance().Initialize(path, static_cast<LogLevel>(logLevel));
@@ -22,8 +22,29 @@ bool Camera_Initialize(const char* logPath, int logLevel) {
 
 void Camera_Shutdown() {
     LOG_INFO("XIMEASensor DLL shutting down");
-    CameraController::Destroy();
-    Logger::Destroy();
+
+    try {
+        // CameraController 인스턴스가 존재하는지 먼저 확인
+        CameraController::Destroy();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception during CameraController::Destroy: " + std::string(e.what()));
+    }
+    catch (...) {
+        LOG_ERROR("Unknown exception during CameraController::Destroy");
+    }
+
+    try {
+        // Logger 종료
+        Logger::Destroy();
+    }
+    catch (const std::exception& e) {
+        // 로그 시스템이 이미 종료되었을 수 있으므로 stderr로 출력
+        std::cerr << "Exception during Logger::Destroy: " << e.what() << std::endl;
+    }
+    catch (...) {
+        std::cerr << "Unknown exception during Logger::Destroy" << std::endl;
+    }
 }
 
 

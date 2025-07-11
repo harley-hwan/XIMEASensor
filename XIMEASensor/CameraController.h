@@ -60,6 +60,9 @@ private:
     CameraStatistics stats;
     std::chrono::steady_clock::time_point lastFrameTime;
 
+    std::atomic<int> deviceNotReadyCount;
+    static const int MAX_DEVICE_NOT_READY_ERRORS = 5;
+
     CameraController();
 
     void CaptureLoop();
