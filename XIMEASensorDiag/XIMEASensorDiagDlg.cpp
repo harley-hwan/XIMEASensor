@@ -3,133 +3,57 @@
 #include "XIMEASensorDiag.h"
 #include "XIMEASensorDiagDlg.h"
 #include "afxdialogex.h"
-#include <sstream>
-#include <iomanip>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
 
 CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
-    : CDialogEx(IDD_XIMEASENSORDIAG_DIALOG, pParent)
-    , m_pictureCtrl(nullptr)
-    , m_isStreaming(false)
-    , m_pMemDC(nullptr)
-    , m_pBackBuffer(nullptr)
-    , m_renderFrameCount(0)
-    , m_displayFPS(0.0f)
-    , m_currentExposure(4000)
-    , m_currentGain(0.0f)
-    , m_currentFPS(210.0f)
+    : CDialogEx(IDD_XIMEASENSORDIAG_DIALOG, pParent),
+    m_pictureCtrl(nullptr),
+    m_isStreaming(false),
+    m_pStreamThread(nullptr),
+    m_pFrameBuffer(nullptr)
 {
 }
 
 CXIMEASensorDiagDlg::~CXIMEASensorDiagDlg()
 {
-    if (m_isStreaming) {
-        OnBnClickedButtonStop();
-    }
-
-    if (m_pMemDC) delete m_pMemDC;
-    if (m_pBackBuffer) delete m_pBackBuffer;
+    if (m_pFrameBuffer) delete[] m_pFrameBuffer;
 }
 
 void CXIMEASensorDiagDlg::DoDataExchange(CDataExchange* pDX)
 {
     CDialogEx::DoDataExchange(pDX);
-    DDX_Control(pDX, IDC_SLIDER_EXPOSURE, m_sliderExposure);
-    DDX_Control(pDX, IDC_SLIDER_GAIN, m_sliderGain);
-    DDX_Control(pDX, IDC_SLIDER_FPS, m_sliderFPS);
-    DDX_Control(pDX, IDC_CHECK_AUTO_EXPOSURE, m_checkAutoExposure);
-    DDX_Control(pDX, IDC_CHECK_AUTO_GAIN, m_checkAutoGain);
-    DDX_Control(pDX, IDC_EDIT_LOG, m_editLog);
 }
 
 BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_WM_PAINT()
     ON_WM_QUERYDRAGICON()
-    ON_WM_TIMER()
-    ON_WM_HSCROLL()
     ON_BN_CLICKED(IDC_BUTTON_START, &CXIMEASensorDiagDlg::OnBnClickedButtonStart)
     ON_BN_CLICKED(IDC_BUTTON_STOP, &CXIMEASensorDiagDlg::OnBnClickedButtonStop)
-    ON_BN_CLICKED(IDC_BUTTON_CAPTURE, &CXIMEASensorDiagDlg::OnBnClickedButtonCapture)
-    ON_BN_CLICKED(IDC_BUTTON_SAVE_CONFIG, &CXIMEASensorDiagDlg::OnBnClickedButtonSaveConfig)
-    ON_BN_CLICKED(IDC_BUTTON_LOAD_CONFIG, &CXIMEASensorDiagDlg::OnBnClickedButtonLoadConfig)
-    ON_BN_CLICKED(IDC_CHECK_AUTO_EXPOSURE, &CXIMEASensorDiagDlg::OnBnClickedCheckAutoExposure)
-    ON_BN_CLICKED(IDC_CHECK_AUTO_GAIN, &CXIMEASensorDiagDlg::OnBnClickedCheckAutoGain)
 END_MESSAGE_MAP()
 
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
 {
     CDialogEx::OnInitDialog();
 
-    // 고정밀 타이머 주파수
-    QueryPerformanceFrequency(&m_frequency);
-
-    // Picture Control 초기화
     m_pictureCtrl = (CStatic*)GetDlgItem(IDC_STATIC_VIDEO);
-    m_pictureCtrl->GetClientRect(&m_displayRect);
-
-    // 더블 버퍼링 초기화
-    CDC* pDC = m_pictureCtrl->GetDC();
-    m_pMemDC = new CDC();
-    m_pMemDC->CreateCompatibleDC(pDC);
-    m_pBackBuffer = new CBitmap();
-    m_pBackBuffer->CreateCompatibleBitmap(pDC, m_displayRect.Width(), m_displayRect.Height());
-    m_pMemDC->SelectObject(m_pBackBuffer);
-    m_pictureCtrl->ReleaseDC(pDC);
-
-    // BITMAPINFO 초기화
-    memset(&m_bmpInfo, 0, sizeof(m_bmpInfo));
-    m_bmpInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    m_bmpInfo.bmiHeader.biPlanes = 1;
-    m_bmpInfo.bmiHeader.biBitCount = 8;
-    m_bmpInfo.bmiHeader.biCompression = BI_RGB;
-
-    // 그레이스케일 팔레트
-    for (int i = 0; i < 256; i++) {
-        m_bmpInfo.bmiColors[i].rgbBlue = i;
-        m_bmpInfo.bmiColors[i].rgbGreen = i;
-        m_bmpInfo.bmiColors[i].rgbRed = i;
-        m_bmpInfo.bmiColors[i].rgbReserved = 0;
-    }
-
-    // 슬라이더 초기화
-    m_sliderExposure.SetRange(10, 50000);  // 10us ~ 50ms
-    m_sliderExposure.SetPos(4000);         // 4ms
-
-    m_sliderGain.SetRange(0, 240);         // 0.0 ~ 24.0 dB (x10)
-    m_sliderGain.SetPos(0);
-
-    m_sliderFPS.SetRange(1, 210);          // 1 ~ 210 FPS
-    m_sliderFPS.SetPos(210);
-
-    // 콜백 설정
-    Camera_SetFrameCallback(FrameCallback, this);
-    Camera_SetErrorCallback(ErrorCallback, this);
-    Camera_SetLogCallback(LogCallback, this);
-
-    // 로그 파일 설정
-    Camera_SetLogFile("XIMEACamera.log");
-    Camera_SetLogLevel(XIMEA_LOG_INFO);
-
-    // UI 업데이트 타이머
-    SetTimer(TIMER_UPDATE_UI, 100, NULL);  // 100ms마다 UI 업데이트
-
-    UpdateParameterDisplay();
+    m_pFrameBuffer = new unsigned char[MAX_FRAME_SIZE];  // 힙에 버퍼 할당
 
     return TRUE;
 }
 
 void CXIMEASensorDiagDlg::OnPaint()
 {
-    if (IsIconic()) {
+    if (IsIconic())
+    {
         CPaintDC dc(this);
         SendMessage(WM_ICONERASEBKGND, reinterpret_cast<WPARAM>(dc.GetSafeHdc()), 0);
     }
-    else {
+    else
+    {
         CDialogEx::OnPaint();
-        RenderFrame();
     }
 }
 
@@ -138,333 +62,146 @@ HCURSOR CXIMEASensorDiagDlg::OnQueryDragIcon()
     return static_cast<HCURSOR>(AfxGetApp()->LoadStandardIcon(IDI_APPLICATION));
 }
 
-void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
-{
-    if (nIDEvent == TIMER_UPDATE_UI) {
-        UpdateUI();
-    }
-    else if (nIDEvent == TIMER_RENDER) {
-        RenderFrame();
-    }
-
-    CDialogEx::OnTimer(nIDEvent);
-}
-
-void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
-{
-    if (!m_isStreaming) {
-        CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
-        return;
-    }
-
-    CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
-
-    if (pSlider == &m_sliderExposure) {
-        int exposure = m_sliderExposure.GetPos();
-        Camera_SetExposure(exposure);
-        m_currentExposure = exposure;
-    }
-    else if (pSlider == &m_sliderGain) {
-        float gain = m_sliderGain.GetPos() / 10.0f;
-        Camera_SetGain(gain);
-        m_currentGain = gain;
-    }
-    else if (pSlider == &m_sliderFPS) {
-        float fps = (float)m_sliderFPS.GetPos();
-        Camera_SetFPS(fps);
-        m_currentFPS = fps;
-    }
-
-    UpdateParameterDisplay();
-
-    CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
-}
-
-void CXIMEASensorDiagDlg::OnBnClickedCheckAutoExposure()
-{
-    bool enable = (m_checkAutoExposure.GetCheck() == BST_CHECKED);
-    Camera_SetAutoExposure(enable, 0.5f);
-    m_sliderExposure.EnableWindow(!enable);
-}
-
-void CXIMEASensorDiagDlg::OnBnClickedCheckAutoGain()
-{
-    bool enable = (m_checkAutoGain.GetCheck() == BST_CHECKED);
-    Camera_SetAutoGain(enable);
-    m_sliderGain.EnableWindow(!enable);
-}
-
 void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
 {
-    // 카메라 초기화
-    if (!Camera_Initialize(0)) {
-        AfxMessageBox(_T("카메라 초기화 실패: ") + CString(Camera_GetLastError()));
+    // MQ013MG-ON 카메라 열기
+    if (!Camera_Open(0)) {
+        AfxMessageBox(_T("MQ013MG-ON 카메라를 열 수 없습니다!"));
         return;
     }
 
-    // 카메라 정보 표시
-    XIMEA_CAMERA_INFO info;
-    if (Camera_GetInfo(&info)) {
-        CString strInfo;
-        strInfo.Format(_T("카메라: %s\n시리얼: %s\n센서: %dx%d"),
-            CString(info.deviceName), CString(info.serialNumber),
-            info.sensorWidth, info.sensorHeight);
-        SetDlgItemText(IDC_STATIC_CAMERA_INFO, strInfo);
-    }
+    // MQ013MG-ON 최적 설정
+    // Global Shutter 특성을 활용한 짧은 노출 시간 설정
+    Camera_SetExposure(2000);  // 2ms - 고속 촬영에 적합
 
-    // 초기 파라미터 설정
-    Camera_SetExposure(m_currentExposure);
-    Camera_SetGain(m_currentGain);
-    Camera_SetFPS(m_currentFPS);
+    // 필요시 게인 조정 (낮은 조도 환경)
+    // Camera_SetGain(6.0f);  // 6dB 게인
 
-    // 캡처 시작
-    if (!Camera_StartCapture()) {
-        AfxMessageBox(_T("캡처 시작 실패: ") + CString(Camera_GetLastError()));
-        Camera_Shutdown();
+    // ROI 설정 예시 (전체 해상도 사용)
+    // Camera_SetROI(0, 0, 1280, 1024);
+
+    // 카메라 스트리밍 시작
+    if (!Camera_Start()) {
+        AfxMessageBox(_T("카메라 스트리밍을 시작할 수 없습니다!"));
+        Camera_Close();
         return;
     }
-
-    m_isStreaming = true;
-
-    // 렌더링 타이머 시작
-    SetTimer(TIMER_RENDER, 16, NULL);  // ~60 FPS 렌더링
 
     // UI 업데이트
     GetDlgItem(IDC_BUTTON_START)->EnableWindow(FALSE);
     GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(TRUE);
-    GetDlgItem(IDC_BUTTON_CAPTURE)->EnableWindow(TRUE);
-    SetDlgItemText(IDC_STATIC_STATUS, _T("스트리밍 중..."));
 
-    AddLogMessage("카메라 스트리밍 시작");
+    // 노출 시간 조정 컨트롤 활성화 (있는 경우)
+    // GetDlgItem(IDC_SLIDER_EXPOSURE)->EnableWindow(TRUE);
+
+    // 상태 표시
+    SetDlgItemText(IDC_STATIC_STATUS, _T("MQ013MG-ON 카메라 실행 중..."));
+
+    // 스트리밍 스레드 시작
+    m_isStreaming = true;
+    m_pStreamThread = AfxBeginThread(Thread_Stream, this);
+
+    // 스레드 우선순위를 높여서 고속 프레임 처리
+    m_pStreamThread->SetThreadPriority(THREAD_PRIORITY_ABOVE_NORMAL);
 }
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
 {
     m_isStreaming = false;
 
-    KillTimer(TIMER_RENDER);
-
-    Camera_StopCapture();
-    Camera_Shutdown();
-
-    // UI 업데이트
-    GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
-    GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
-    GetDlgItem(IDC_BUTTON_CAPTURE)->EnableWindow(FALSE);
-    SetDlgItemText(IDC_STATIC_STATUS, _T("정지됨"));
-    SetDlgItemText(IDC_STATIC_FPS, _T("FPS: 0.0 / 0.0"));
-
-    AddLogMessage("카메라 스트리밍 정지");
-}
-
-void CXIMEASensorDiagDlg::OnBnClickedButtonCapture()
-{
-    CString filename;
-    CTime time = CTime::GetCurrentTime();
-    filename.Format(_T("Capture_%s.png"), time.Format(_T("%Y%m%d_%H%M%S")));
-
-    if (Camera_CaptureImage(CT2A(filename), XIMEA_FORMAT_MONO8)) {
-        AddLogMessage("이미지 저장: " + std::string(CT2A(filename)));
-        AfxMessageBox(_T("이미지가 저장되었습니다: ") + filename);
-    }
-    else {
-        AfxMessageBox(_T("이미지 저장 실패"));
-    }
-}
-
-void CXIMEASensorDiagDlg::OnBnClickedButtonSaveConfig()
-{
-    CFileDialog dlg(FALSE, _T("ini"), _T("camera_config.ini"),
-        OFN_OVERWRITEPROMPT, _T("Config Files (*.ini)|*.ini|All Files (*.*)|*.*||"));
-
-    if (dlg.DoModal() == IDOK) {
-        if (Camera_SaveParameters(CT2A(dlg.GetPathName()))) {
-            AddLogMessage("설정 저장: " + std::string(CT2A(dlg.GetPathName())));
-            AfxMessageBox(_T("설정이 저장되었습니다"));
-        }
-        else {
-            AfxMessageBox(_T("설정 저장 실패"));
-        }
-    }
-}
-
-void CXIMEASensorDiagDlg::OnBnClickedButtonLoadConfig()
-{
-    CFileDialog dlg(TRUE, _T("ini"), NULL,
-        OFN_FILEMUSTEXIST, _T("Config Files (*.ini)|*.ini|All Files (*.*)|*.*||"));
-
-    if (dlg.DoModal() == IDOK) {
-        if (Camera_LoadParameters(CT2A(dlg.GetPathName()))) {
-            AddLogMessage("설정 로드: " + std::string(CT2A(dlg.GetPathName())));
-
-            // UI 업데이트
-            m_currentExposure = Camera_GetExposure();
-            m_currentGain = Camera_GetGain();
-            m_sliderExposure.SetPos(m_currentExposure);
-            m_sliderGain.SetPos((int)(m_currentGain * 10));
-            UpdateParameterDisplay();
-
-            AfxMessageBox(_T("설정이 로드되었습니다"));
-        }
-        else {
-            AfxMessageBox(_T("설정 로드 실패"));
-        }
-    }
-}
-
-void CXIMEASensorDiagDlg::FrameCallback(const unsigned char* data, int width, int height,
-    unsigned long frameNumber, double timestamp, void* userContext)
-{
-    auto* pDlg = reinterpret_cast<CXIMEASensorDiagDlg*>(userContext);
-    if (!pDlg || !pDlg->m_isStreaming) return;
-
-    std::lock_guard<std::mutex> lock(pDlg->m_frameMutex);
-
-    // 프레임 큐에 추가 (최대 3개 유지)
-    if (pDlg->m_frameQueue.size() >= 3) {
-        pDlg->m_frameQueue.pop_front();
+    if (m_pStreamThread) {
+        WaitForSingleObject(m_pStreamThread->m_hThread, 2000);
+        m_pStreamThread = nullptr;
     }
 
-    FrameData frame;
-    frame.width = width;
-    frame.height = height;
-    frame.frameNumber = frameNumber;
-    frame.timestamp = timestamp;
-    frame.data.resize(width * height);
-    memcpy(frame.data.data(), data, width * height);
+    Camera_Stop();
+    Camera_Close();
 
-    pDlg->m_frameQueue.push_back(std::move(frame));
+    Invalidate();
 }
 
-void CXIMEASensorDiagDlg::ErrorCallback(int errorCode, const char* errorMessage, void* userContext)
+UINT CXIMEASensorDiagDlg::Thread_Stream(LPVOID pParam)
 {
-    auto* pDlg = reinterpret_cast<CXIMEASensorDiagDlg*>(userContext);
-    if (!pDlg) return;
+    auto* pDlg = reinterpret_cast<CXIMEASensorDiagDlg*>(pParam);
 
-    CString msg;
-    msg.Format(_T("[ERROR %d] %s"), errorCode, CString(errorMessage));
-    pDlg->AddLogMessage(std::string(CT2A(msg)));
-}
+    int width = 0, height = 0;
 
-void CXIMEASensorDiagDlg::LogCallback(int logLevel, const char* message, void* userContext)
-{
-    auto* pDlg = reinterpret_cast<CXIMEASensorDiagDlg*>(userContext);
-    if (!pDlg) return;
+    // 8비트 모노크롬 비트맵 정보 설정
+    BITMAPINFO bmpInfo = { 0 };
+    bmpInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmpInfo.bmiHeader.biPlanes = 1;
+    bmpInfo.bmiHeader.biBitCount = 8;  // 8비트 그레이스케일
+    bmpInfo.bmiHeader.biCompression = BI_RGB;
 
-    pDlg->AddLogMessage(std::string(message));
-}
-
-void CXIMEASensorDiagDlg::UpdateUI()
-{
-    if (!m_isStreaming) return;
-
-    // 성능 통계 업데이트
-    XIMEA_PERFORMANCE_STATS stats;
-    if (Camera_GetPerformanceStats(&stats)) {
-        CString strFPS;
-        strFPS.Format(_T("FPS: %.1f / %.1f"), m_displayFPS, stats.currentFPS);
-        SetDlgItemText(IDC_STATIC_FPS, strFPS);
-
-        CString strStats;
-        strStats.Format(_T("캡처: %lu / 드롭: %lu"),
-            stats.framesCaptured, stats.framesDropped);
-        SetDlgItemText(IDC_STATIC_STATS, strStats);
+    // 8비트 그레이스케일용 팔레트 설정
+    RGBQUAD grayscalePalette[256];
+    for (int i = 0; i < 256; i++) {
+        grayscalePalette[i].rgbBlue = i;
+        grayscalePalette[i].rgbGreen = i;
+        grayscalePalette[i].rgbRed = i;
+        grayscalePalette[i].rgbReserved = 0;
     }
 
-    // 현재 파라미터 업데이트 (자동 모드인 경우)
-    if (m_checkAutoExposure.GetCheck() == BST_CHECKED) {
-        m_currentExposure = Camera_GetExposure();
-        m_sliderExposure.SetPos(m_currentExposure);
-    }
-    if (m_checkAutoGain.GetCheck() == BST_CHECKED) {
-        m_currentGain = Camera_GetGain();
-        m_sliderGain.SetPos((int)(m_currentGain * 10));
-    }
+    // 프레임 카운터 (성능 측정용)
+    DWORD lastTickCount = GetTickCount();
+    int frameCount = 0;
 
-    UpdateParameterDisplay();
-}
+    // 더블 버퍼링용 로컬 버퍼
+    unsigned char* localBuffer = new unsigned char[pDlg->MAX_FRAME_SIZE];
 
-void CXIMEASensorDiagDlg::RenderFrame()
-{
-    std::lock_guard<std::mutex> lock(m_frameMutex);
+    while (pDlg->m_isStreaming)
+    {
+        // 카메라에서 프레임 획득
+        if (Camera_GetFrame(localBuffer, pDlg->MAX_FRAME_SIZE, &width, &height))
+        {
+            // 비트맵 헤더 업데이트
+            bmpInfo.bmiHeader.biWidth = width;
+            bmpInfo.bmiHeader.biHeight = -height;  // top-down 비트맵
 
-    if (m_frameQueue.empty()) return;
+            // Picture Control의 DC 획득
+            CClientDC dc(pDlg->m_pictureCtrl);
 
-    // 최신 프레임 가져오기
-    const FrameData& frame = m_frameQueue.back();
+            // 그레이스케일 팔레트 설정
+            SetDIBColorTable(dc.GetSafeHdc(), 0, 256, grayscalePalette);
 
-    // BITMAPINFO 업데이트
-    m_bmpInfo.bmiHeader.biWidth = frame.width;
-    m_bmpInfo.bmiHeader.biHeight = -frame.height;  // top-down
+            // 고속 렌더링을 위해 스트레칭 모드 설정
+            SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
 
-    // 백버퍼에 렌더링
-    SetStretchBltMode(m_pMemDC->GetSafeHdc(), HALFTONE);
+            // Picture Control의 크기 획득
+            CRect rect;
+            pDlg->m_pictureCtrl->GetClientRect(&rect);
 
-    int result = StretchDIBits(m_pMemDC->GetSafeHdc(),
-        0, 0, m_displayRect.Width(), m_displayRect.Height(),
-        0, 0, frame.width, frame.height,
-        frame.data.data(),
-        &m_bmpInfo,
-        DIB_RGB_COLORS,
-        SRCCOPY);
+            // 이미지가 컨트롤 크기에 맞게 스케일링되도록 렌더링
+            StretchDIBits(dc.GetSafeHdc(),
+                0, 0, rect.Width(), rect.Height(),  // 대상 영역
+                0, 0, width, height,                 // 소스 영역
+                localBuffer,                         // 이미지 데이터
+                &bmpInfo,                           // 비트맵 정보
+                DIB_RGB_COLORS,                     // 색상 사용
+                SRCCOPY);                           // 복사 모드
 
-    if (result != 0) {
-        // 화면에 복사
-        CDC* pDC = m_pictureCtrl->GetDC();
-        pDC->BitBlt(0, 0, m_displayRect.Width(), m_displayRect.Height(),
-            m_pMemDC, 0, 0, SRCCOPY);
-        m_pictureCtrl->ReleaseDC(pDC);
+            // FPS 계산 및 표시 (1초마다)
+            frameCount++;
+            DWORD currentTick = GetTickCount();
+            if (currentTick - lastTickCount >= 1000)
+            {
+                float fps = (float)frameCount * 1000.0f / (currentTick - lastTickCount);
+                CString strFPS;
+                strFPS.Format(_T("FPS: %.1f"), fps);
+                pDlg->SetDlgItemText(IDC_STATIC_FPS, strFPS);  // FPS 표시용 Static 컨트롤 필요
 
-        // 디스플레이 FPS 계산
-        LARGE_INTEGER currentTime;
-        QueryPerformanceCounter(&currentTime);
-
-        if (m_renderFrameCount > 0) {
-            double elapsed = (double)(currentTime.QuadPart - m_lastRenderTime.QuadPart) / m_frequency.QuadPart;
-            if (elapsed >= 1.0) {
-                m_displayFPS = m_renderFrameCount / (float)elapsed;
-                m_renderFrameCount = 0;
-                m_lastRenderTime = currentTime;
+                frameCount = 0;
+                lastTickCount = currentTick;
             }
         }
-        else {
-            m_lastRenderTime = currentTime;
-        }
 
-        m_renderFrameCount++;
-    }
-}
-
-void CXIMEASensorDiagDlg::AddLogMessage(const std::string& message)
-{
-    std::lock_guard<std::mutex> lock(m_logMutex);
-
-    m_logMessages.push_back(message);
-    if (m_logMessages.size() > 100) {
-        m_logMessages.pop_front();
+        // MQ013MG-ON은 210 FPS 지원하므로 짧은 대기
+        // 약 2ms 대기 (실제 프레임레이트는 카메라가 제어)
+        Sleep(2);
     }
 
-    // UI 업데이트 (메인 스레드에서만)
-    if (::IsWindow(m_editLog.GetSafeHwnd())) {
-        CString logText;
-        for (const auto& msg : m_logMessages) {
-            logText += CString(msg.c_str()) + _T("\r\n");
-        }
-        m_editLog.SetWindowText(logText);
-        m_editLog.LineScroll(m_editLog.GetLineCount());
-    }
-}
+    // 로컬 버퍼 해제
+    delete[] localBuffer;
 
-void CXIMEASensorDiagDlg::UpdateParameterDisplay()
-{
-    CString str;
-
-    str.Format(_T("노출: %d us"), m_currentExposure);
-    SetDlgItemText(IDC_STATIC_EXPOSURE_VALUE, str);
-
-    str.Format(_T("게인: %.1f dB"), m_currentGain);
-    SetDlgItemText(IDC_STATIC_GAIN_VALUE, str);
-
-    str.Format(_T("목표 FPS: %.0f"), m_currentFPS);
-    SetDlgItemText(IDC_STATIC_FPS_VALUE, str);
+    return 0;
 }
