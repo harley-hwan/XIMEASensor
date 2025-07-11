@@ -110,3 +110,5 @@ out/
 *.log
 *.suo
 *.sdf
+*.raw
+*.png
