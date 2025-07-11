@@ -1,16 +1,9 @@
-// CameraController.h에 누락된 Callback 타입 정의 추가
+// CameraController.h
 #pragma once
 #include <xiApi.h>
 #include <thread>
 #include <mutex>
 #include <chrono>
-#include <string>
-#include "Logger.h"
-
-// Callback type definitions
-using CameraFrameCallback = void(*)(const unsigned char*, int, int);
-using CameraErrorCallback = void(*)(int, const char*);
-using CameraLogCallback = void(*)(const char*);
 
 class CameraController
 {
@@ -29,12 +22,8 @@ private:
     int actualHeight;
     unsigned long frameCounter;
 
-    // Static callback function pointers
-    static CameraFrameCallback s_frameCallback;
-    static CameraErrorCallback s_errorCallback;
-    static CameraLogCallback s_logCallback;
-
     CameraController();
+
     void CaptureLoop();
 
 public:
@@ -54,15 +43,7 @@ public:
     bool SetROI(int offsetX, int offsetY, int width, int height);
     bool SetGain(float gain);
 
+    // MQ013MG-ON 전용 추가 함수
     float GetFramerate();
     unsigned long GetFrameCounter();
-
-    // Callback registration (static)
-    static void SetFrameCallback(CameraFrameCallback cb);
-    static void SetErrorCallback(CameraErrorCallback cb);
-    static void SetLogCallback(CameraLogCallback cb);
-    // Direct invocation of callbacks (internal use)
-    static void InvokeFrameCallback(const unsigned char* data, int width, int height);
-    static void InvokeErrorCallback(int errorCode, const char* msg);
-    static void InvokeLogCallback(const char* msg);
 };
