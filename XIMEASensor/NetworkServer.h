@@ -1,4 +1,5 @@
 #pragma once
+
 #include "XIMEASensorCommon.h"
 #include <thread>
 #include <mutex>
@@ -81,7 +82,7 @@ namespace XimeaSensor {
 
         // 클라이언트 관리
         std::vector<std::shared_ptr<ClientSession>> m_clients;
-        mutable std::mutex m_clientsMutex;
+        std::mutex m_clientsMutex;
 
         // 프레임 압축 옵션
         bool m_compressFrames;
