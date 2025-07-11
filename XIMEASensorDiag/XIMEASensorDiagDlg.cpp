@@ -12,8 +12,9 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
     : CDialogEx(IDD_XIMEASENSORDIAG_DIALOG, pParent),
     m_pictureCtrl(nullptr),
     m_isStreaming(false),
-    m_pStreamThread(nullptr),
-    m_pFrameBuffer(nullptr)
+    m_pFrameBuffer(nullptr),
+    m_frameWidth(0),
+    m_frameHeight(0)
 {
 }
 
@@ -32,6 +33,8 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_WM_QUERYDRAGICON()
     ON_BN_CLICKED(IDC_BUTTON_START, &CXIMEASensorDiagDlg::OnBnClickedButtonStart)
     ON_BN_CLICKED(IDC_BUTTON_STOP, &CXIMEASensorDiagDlg::OnBnClickedButtonStop)
+    ON_MESSAGE(WM_APP + 1, &CXIMEASensorDiagDlg::OnFrameReady)
+    ON_MESSAGE(WM_APP + 2, &CXIMEASensorDiagDlg::OnCameraError)
 END_MESSAGE_MAP()
 
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
@@ -40,6 +43,13 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
 
     m_pictureCtrl = (CStatic*)GetDlgItem(IDC_STATIC_VIDEO);
     m_pFrameBuffer = new unsigned char[MAX_FRAME_SIZE];  // 힙에 버퍼 할당
+
+    // Set static instance pointer for callbacks
+    s_instance = this;
+    // Register callbacks for camera events
+    Camera_SetFrameCallback(FrameCallback);
+    Camera_SetErrorCallback(ErrorCallback);
+    Camera_SetLogCallback(LogCallback);
 
     return TRUE;
 }
@@ -64,144 +74,205 @@ HCURSOR CXIMEASensorDiagDlg::OnQueryDragIcon()
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
 {
-    // MQ013MG-ON 카메라 열기
+    // Open camera device
     if (!Camera_Open(0)) {
-        AfxMessageBox(_T("MQ013MG-ON 카메라를 열 수 없습니다!"));
+        // If open fails, error callback will handle the message box
         return;
     }
 
-    // MQ013MG-ON 최적 설정
-    // Global Shutter 특성을 활용한 짧은 노출 시간 설정
-    Camera_SetExposure(2000);  // 2ms - 고속 촬영에 적합
+    // Set optimal settings for MQ013MG-ON
+    Camera_SetExposure(2000);  // 2ms exposure (fast capture)
+    // Optionally adjust gain for low-light (e.g., Camera_SetGain(6.0f); )
+    // Optionally set ROI (e.g., Camera_SetROI(0, 0, 1280, 1024); )
 
-    // 필요시 게인 조정 (낮은 조도 환경)
-    // Camera_SetGain(6.0f);  // 6dB 게인
-
-    // ROI 설정 예시 (전체 해상도 사용)
-    // Camera_SetROI(0, 0, 1280, 1024);
-
-    // 카메라 스트리밍 시작
+    // Start camera streaming
     if (!Camera_Start()) {
-        AfxMessageBox(_T("카메라 스트리밍을 시작할 수 없습니다!"));
+        // If start fails, error callback handles error message.
+        // Ensure camera is closed if start failed.
         Camera_Close();
         return;
     }
 
-    // UI 업데이트
+    // Update UI on successful start
     GetDlgItem(IDC_BUTTON_START)->EnableWindow(FALSE);
     GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(TRUE);
-
-    // 노출 시간 조정 컨트롤 활성화 (있는 경우)
-    // GetDlgItem(IDC_SLIDER_EXPOSURE)->EnableWindow(TRUE);
-
-    // 상태 표시
     SetDlgItemText(IDC_STATIC_STATUS, _T("MQ013MG-ON 카메라 실행 중..."));
 
-    // 스트리밍 스레드 시작
+    // Mark streaming state
     m_isStreaming = true;
-    m_pStreamThread = AfxBeginThread(Thread_Stream, this);
-
-    // 스레드 우선순위를 높여서 고속 프레임 처리
-    m_pStreamThread->SetThreadPriority(THREAD_PRIORITY_ABOVE_NORMAL);
 }
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
 {
-    m_isStreaming = false;
-
-    if (m_pStreamThread) {
-        WaitForSingleObject(m_pStreamThread->m_hThread, 2000);
-        m_pStreamThread = nullptr;
+    if (!m_isStreaming) {
+        return;
     }
-
+    m_isStreaming = false;
+    // Stop camera streaming and close camera
     Camera_Stop();
     Camera_Close();
-
-    Invalidate();
+    // Update UI controls
+    GetDlgItem(IDC_BUTTON_START)->EnableWindow(TRUE);
+    GetDlgItem(IDC_BUTTON_STOP)->EnableWindow(FALSE);
+    // Update status
+    SetDlgItemText(IDC_STATIC_STATUS, _T("정지됨"));
+    SetDlgItemText(IDC_STATIC_FPS, _T("FPS: 0.0"));
 }
 
-UINT CXIMEASensorDiagDlg::Thread_Stream(LPVOID pParam)
+// Static instance pointer initialization
+CXIMEASensorDiagDlg* CXIMEASensorDiagDlg::s_instance = nullptr;
+
+// Static callback function: Frame ready
+void CXIMEASensorDiagDlg::FrameCallback(const unsigned char* frame, int width, int height)
 {
-    auto* pDlg = reinterpret_cast<CXIMEASensorDiagDlg*>(pParam);
-
-    int width = 0, height = 0;
-
-    // 8비트 모노크롬 비트맵 정보 설정
-    BITMAPINFO bmpInfo = { 0 };
-    bmpInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmpInfo.bmiHeader.biPlanes = 1;
-    bmpInfo.bmiHeader.biBitCount = 8;  // 8비트 그레이스케일
-    bmpInfo.bmiHeader.biCompression = BI_RGB;
-
-    // 8비트 그레이스케일용 팔레트 설정
-    RGBQUAD grayscalePalette[256];
-    for (int i = 0; i < 256; i++) {
-        grayscalePalette[i].rgbBlue = i;
-        grayscalePalette[i].rgbGreen = i;
-        grayscalePalette[i].rgbRed = i;
-        grayscalePalette[i].rgbReserved = 0;
-    }
-
-    // 프레임 카운터 (성능 측정용)
-    DWORD lastTickCount = GetTickCount();
-    int frameCount = 0;
-
-    // 더블 버퍼링용 로컬 버퍼
-    unsigned char* localBuffer = new unsigned char[pDlg->MAX_FRAME_SIZE];
-
-    while (pDlg->m_isStreaming)
+    if (!s_instance) return;
+    // Copy frame data to dialog's buffer in a thread-safe manner
     {
-        // 카메라에서 프레임 획득
-        if (Camera_GetFrame(localBuffer, pDlg->MAX_FRAME_SIZE, &width, &height))
-        {
-            // 비트맵 헤더 업데이트
-            bmpInfo.bmiHeader.biWidth = width;
-            bmpInfo.bmiHeader.biHeight = -height;  // top-down 비트맵
-
-            // Picture Control의 DC 획득
-            CClientDC dc(pDlg->m_pictureCtrl);
-
-            // 그레이스케일 팔레트 설정
-            SetDIBColorTable(dc.GetSafeHdc(), 0, 256, grayscalePalette);
-
-            // 고속 렌더링을 위해 스트레칭 모드 설정
-            SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
-
-            // Picture Control의 크기 획득
-            CRect rect;
-            pDlg->m_pictureCtrl->GetClientRect(&rect);
-
-            // 이미지가 컨트롤 크기에 맞게 스케일링되도록 렌더링
-            StretchDIBits(dc.GetSafeHdc(),
-                0, 0, rect.Width(), rect.Height(),  // 대상 영역
-                0, 0, width, height,                 // 소스 영역
-                localBuffer,                         // 이미지 데이터
-                &bmpInfo,                           // 비트맵 정보
-                DIB_RGB_COLORS,                     // 색상 사용
-                SRCCOPY);                           // 복사 모드
-
-            // FPS 계산 및 표시 (1초마다)
-            frameCount++;
-            DWORD currentTick = GetTickCount();
-            if (currentTick - lastTickCount >= 1000)
-            {
-                float fps = (float)frameCount * 1000.0f / (currentTick - lastTickCount);
-                CString strFPS;
-                strFPS.Format(_T("FPS: %.1f"), fps);
-                pDlg->SetDlgItemText(IDC_STATIC_FPS, strFPS);  // FPS 표시용 Static 컨트롤 필요
-
-                frameCount = 0;
-                lastTickCount = currentTick;
-            }
+        std::lock_guard<std::mutex> lock(s_instance->m_frameMutex);
+        int copyWidth = width;
+        int copyHeight = height;
+        int frameSize = copyWidth * copyHeight;
+        if (frameSize > s_instance->MAX_FRAME_SIZE) {
+            // Frame is larger than buffer (should not happen given predefined max size)
+            copyWidth = s_instance->MAX_FRAME_SIZE;
+            copyHeight = 1;
+            frameSize = copyWidth * copyHeight;
         }
-
-        // MQ013MG-ON은 210 FPS 지원하므로 짧은 대기
-        // 약 2ms 대기 (실제 프레임레이트는 카메라가 제어)
-        Sleep(2);
+        memcpy(s_instance->m_pFrameBuffer, frame, frameSize);
+        s_instance->m_frameWidth = copyWidth;
+        s_instance->m_frameHeight = copyHeight;
     }
+    // Post message to main thread to handle frame display
+    s_instance->PostMessage(WM_APP + 1, 0, 0);
+}
 
-    // 로컬 버퍼 해제
-    delete[] localBuffer;
+// Static callback function: Error event
+void CXIMEASensorDiagDlg::ErrorCallback(int errorCode, const char* errorMsg)
+{
+    if (!s_instance) return;
+    // Copy error message to heap for posting to UI thread
+    std::string msgStr = errorMsg ? std::string(errorMsg) : std::string("Unknown error");
+    char* msgCopy = new char[msgStr.size() + 1];
+    strcpy_s(msgCopy, msgStr.size() + 1, msgStr.c_str());
+    s_instance->PostMessage(WM_APP + 2, (WPARAM)errorCode, (LPARAM)msgCopy);
+}
 
+// Static callback function: Log event
+void CXIMEASensorDiagDlg::LogCallback(const char* logMsg)
+{
+    // In this example, we do not display general log messages in the UI.
+    // They are already written to file and debug output by the Logger.
+    (void)logMsg;
+}
+
+// Message handler for frame ready (WM_APP+1)
+LRESULT CXIMEASensorDiagDlg::OnFrameReady(WPARAM wParam, LPARAM lParam)
+{
+    std::lock_guard<std::mutex> lock(m_frameMutex);
+    int width = m_frameWidth;
+    int height = m_frameHeight;
+    if (width <= 0 || height <= 0) {
+        return 0;
+    }
+    // Prepare BITMAPINFO for 8-bit grayscale
+    static BITMAPINFO bmpInfo;
+    static RGBQUAD grayPalette[256];
+    static bool infoInitialized = false;
+    if (!infoInitialized) {
+        memset(&bmpInfo, 0, sizeof(bmpInfo));
+        bmpInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmpInfo.bmiHeader.biPlanes = 1;
+        bmpInfo.bmiHeader.biBitCount = 8;
+        bmpInfo.bmiHeader.biCompression = BI_RGB;
+        // Initialize grayscale palette
+        for (int i = 0; i < 256; ++i) {
+            grayPalette[i].rgbBlue = (BYTE)i;
+            grayPalette[i].rgbGreen = (BYTE)i;
+            grayPalette[i].rgbRed = (BYTE)i;
+            grayPalette[i].rgbReserved = 0;
+        }
+        infoInitialized = true;
+    }
+    // Update bitmap dimensions
+    bmpInfo.bmiHeader.biWidth = width;
+    bmpInfo.bmiHeader.biHeight = -height;  // top-down image
+    bmpInfo.bmiHeader.biSizeImage = 0;
+    // Draw the image to the picture control
+    CClientDC dc(m_pictureCtrl);
+    SetDIBColorTable(dc.GetSafeHdc(), 0, 256, grayPalette);
+    SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
+    CRect rect;
+    m_pictureCtrl->GetClientRect(&rect);
+    StretchDIBits(dc.GetSafeHdc(),
+        0, 0, rect.Width(), rect.Height(),    // destination area (control size)
+        0, 0, width, height,                  // source image size
+        m_pFrameBuffer,
+        &bmpInfo,
+        DIB_RGB_COLORS,
+        SRCCOPY);
+    // Update FPS display every second
+    static DWORD lastTick = GetTickCount();
+    static int frameCount = 0;
+    frameCount++;
+    DWORD currentTick = GetTickCount();
+    if (currentTick - lastTick >= 1000) {
+        float fps = frameCount * 1000.0f / (currentTick - lastTick);
+        CString strFPS;
+        strFPS.Format(_T("FPS: %.1f"), fps);
+        SetDlgItemText(IDC_STATIC_FPS, strFPS);
+        frameCount = 0;
+        lastTick = currentTick;
+    }
+    return 0;
+}
+
+// Message handler for camera error (WM_APP+2)
+LRESULT CXIMEASensorDiagDlg::OnCameraError(WPARAM wParam, LPARAM lParam)
+{
+    int errorCode = (int)wParam;
+    char* msgPtr = reinterpret_cast<char*>(lParam);
+    CString msg;
+    if (msgPtr) {
+        msg = CString(msgPtr);
+    }
+    // Determine user-facing message based on error code
+    CString userMsg;
+    switch (errorCode) {
+    case -1:
+        userMsg = _T("MQ013MG-ON 카메라를 열 수 없습니다!"); // Cannot open camera
+        break;
+    case -2:
+        userMsg = _T("카메라 스트리밍을 시작할 수 없습니다!"); // Cannot start streaming
+        break;
+    case -3:
+        userMsg = _T("노출 시간을 설정할 수 없습니다!"); // Cannot set exposure time
+        break;
+    case -4:
+        userMsg = _T("ROI 영역을 설정할 수 없습니다!"); // Cannot set ROI region
+        break;
+    case -5:
+        userMsg = _T("카메라 게인을 설정할 수 없습니다!"); // Cannot set camera gain
+        break;
+    default:
+        if (errorCode > 0) {
+            userMsg.Format(_T("카메라 오류 발생 (코드 %d)"), errorCode);
+        }
+        else if (!msg.IsEmpty()) {
+            userMsg = CString(_T("오류: ")) + msg;
+        }
+        else {
+            userMsg = _T("알 수 없는 카메라 오류가 발생했습니다.");
+        }
+        break;
+    }
+    AfxMessageBox(userMsg, MB_ICONERROR | MB_OK);
+    // Clean up allocated message string
+    if (msgPtr) {
+        delete[] msgPtr;
+    }
+    // If an error occurred during streaming, stop and clean up
+    if (m_isStreaming) {
+        OnBnClickedButtonStop();
+    }
     return 0;
 }

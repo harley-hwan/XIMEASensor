@@ -1,18 +1,20 @@
-#include "pch.h"
+ï»¿#include "pch.h"
 #include "CameraController.h"
 #include <cstring>
+#include "XIMEASensor.h"
 
-// MQ013MG-ON Ä«¸Ş¶ó »ç¾ç
+// MQ013MG-ON ì¹´ë©”ë¼ ì‚¬ì–‘
 #define PYTHON1300_WIDTH    1280
 #define PYTHON1300_HEIGHT   1024
 #define PYTHON1300_MAX_FPS  210
-#define DEFAULT_EXPOSURE_US 4000  // 4ms (°í¼Ó ÃÔ¿µ¿ë)
+#define DEFAULT_EXPOSURE_US 4000  // 4ms (ê³ ì† ì´¬ì˜ìš©)
 
 CameraController::CameraController()
     : xiH(nullptr), running(false), frameBuffer(nullptr),
-    width(PYTHON1300_WIDTH), height(PYTHON1300_HEIGHT)
+    width(PYTHON1300_WIDTH), height(PYTHON1300_HEIGHT),
+    actualWidth(0), actualHeight(0), frameCounter(0)
 {
-    // PYTHON1300 ¼¾¼­¿¡ ¸Â´Â ¹öÆÛ ÇÒ´ç
+    // PYTHON1300 ì„¼ì„œì— ë§ëŠ” ë²„í¼ í• ë‹¹
     frameBuffer = new unsigned char[width * height];
 }
 
@@ -29,34 +31,65 @@ CameraController& CameraController::GetInstance()
     return instance;
 }
 
+// Static members initialization
+CameraFrameCallback CameraController::s_frameCallback = nullptr;
+CameraErrorCallback CameraController::s_errorCallback = nullptr;
+CameraLogCallback CameraController::s_logCallback = nullptr;
+
+// Static callback registration functions
+void CameraController::SetFrameCallback(CameraFrameCallback cb) { s_frameCallback = cb; }
+void CameraController::SetErrorCallback(CameraErrorCallback cb) { s_errorCallback = cb; }
+void CameraController::SetLogCallback(CameraLogCallback cb) { s_logCallback = cb; }
+
+// Static internal invocation helpers
+void CameraController::InvokeFrameCallback(const unsigned char* data, int width, int height) {
+    if (s_frameCallback) {
+        s_frameCallback(data, width, height);
+    }
+}
+void CameraController::InvokeErrorCallback(int errorCode, const char* msg) {
+    if (s_errorCallback) {
+        s_errorCallback(errorCode, msg);
+    }
+}
+void CameraController::InvokeLogCallback(const char* msg) {
+    if (s_logCallback) {
+        s_logCallback(msg);
+    }
+}
+
 bool CameraController::OpenCamera(int deviceIndex)
 {
-    if (xiOpenDevice(deviceIndex, &xiH) != XI_OK)
+    XI_RETURN openStat = xiOpenDevice(deviceIndex, &xiH);
+    if (openStat != XI_OK) {
+        xiH = nullptr;
         return false;
+    }
 
-    // MQ013MG-ON Àü¿ë ¼³Á¤
-    // ÇÈ¼¿ Æ÷¸ËÀ» 8ºñÆ® ¸ğ³ëÅ©·ÒÀ¸·Î ¸í½ÃÀû ¼³Á¤
+    // MQ013MG-ON ì „ìš© ì„¤ì •
+    // í”½ì…€ í¬ë§·ì„ 8ë¹„íŠ¸ ëª¨ë…¸í¬ë¡¬ìœ¼ë¡œ ëª…ì‹œì  ì„¤ì •
     xiSetParamInt(xiH, XI_PRM_IMAGE_DATA_FORMAT, XI_MONO8);
 
-    // PYTHON1300 ¼¾¼­ ÇØ»óµµ ¼³Á¤
+    // PYTHON1300 ì„¼ì„œ í•´ìƒë„ ì„¤ì •
     xiSetParamInt(xiH, XI_PRM_WIDTH, PYTHON1300_WIDTH);
     xiSetParamInt(xiH, XI_PRM_HEIGHT, PYTHON1300_HEIGHT);
 
-    // °í¼Ó ÃÔ¿µÀ» À§ÇÑ ³ëÃâ ½Ã°£ ¼³Á¤ (4ms)
+    // ê³ ì† ì´¬ì˜ì„ ìœ„í•œ ë…¸ì¶œ ì‹œê°„ ì„¤ì • (4ms)
     xiSetParamInt(xiH, XI_PRM_EXPOSURE, DEFAULT_EXPOSURE_US);
 
-    // °ÔÀÎ ÃÊ±â°ª (³ëÀÌÁî ÃÖ¼ÒÈ­¸¦ À§ÇØ 0.0)
+    // ê²Œì¸ ì´ˆê¸°ê°’ (ë…¸ì´ì¦ˆ ìµœì†Œí™”ë¥¼ ìœ„í•´ 0.0)
     xiSetParamFloat(xiH, XI_PRM_GAIN, 0.0f);
 
-    // ÇÁ·¹ÀÓ·¹ÀÌÆ® Á¦ÇÑ ÇØÁ¦ (ÃÖ´ë ¼Óµµ·Î µ¿ÀÛ)
+    // í”„ë ˆì„ë ˆì´íŠ¸ ì œí•œ í•´ì œ (ìµœëŒ€ ì†ë„ë¡œ ë™ì‘)
     xiSetParamInt(xiH, XI_PRM_ACQ_TIMING_MODE, XI_ACQ_TIMING_MODE_FREE_RUN);
 
-    // ¹öÆÛ Á¤Ã¥ ¼³Á¤ (ÃÖ½Å ÇÁ·¹ÀÓ ¿ì¼±)
+    // ë²„í¼ ì •ì±… ì„¤ì • (ìµœì‹  í”„ë ˆì„ ìš°ì„ )
     xiSetParamInt(xiH, XI_PRM_BUFFER_POLICY, XI_BP_UNSAFE);
 
-    // ÀÚµ¿ ´ë¿ªÆø °è»ê È°¼ºÈ­
+    // ìë™ ëŒ€ì—­í­ ê³„ì‚° í™œì„±í™”
     xiSetParamInt(xiH, XI_PRM_AUTO_BANDWIDTH_CALCULATION, XI_ON);
 
+    Logger::LogInfo("OpenCamera: Device %d opened successfully", deviceIndex);
     return true;
 }
 
@@ -65,6 +98,7 @@ void CameraController::CloseCamera()
     if (xiH) {
         xiCloseDevice(xiH);
         xiH = nullptr;
+        Logger::LogInfo("%s", "CloseCamera: Device closed");
     }
 }
 
@@ -72,8 +106,9 @@ bool CameraController::StartCapture()
 {
     if (!xiH) return false;
 
-    if (xiStartAcquisition(xiH) != XI_OK)
+    if (xiStartAcquisition(xiH) != XI_OK) {
         return false;
+    }
 
     running = true;
     captureThread = std::thread(&CameraController::CaptureLoop, this);
@@ -88,6 +123,7 @@ void CameraController::StopCapture()
 
     if (xiH)
         xiStopAcquisition(xiH);
+    // Note: Camera remains open after stopping (CloseCamera must be called to close handle)
 }
 
 void CameraController::CaptureLoop()
@@ -98,28 +134,40 @@ void CameraController::CaptureLoop()
 
     while (running)
     {
-        // °í¼Ó Ä«¸Ş¶ó¸¦ À§ÇØ Å¸ÀÓ¾Æ¿ôÀ» Âª°Ô ¼³Á¤ (100ms)
+        // ê³ ì† ì¹´ë©”ë¼ë¥¼ ìœ„í•´ íƒ€ì„ì•„ì›ƒì„ ì§§ê²Œ ì„¤ì • (100ms)
         XI_RETURN stat = xiGetImage(xiH, 100, &image);
         if (stat == XI_OK)
         {
             std::lock_guard<std::mutex> lock(frameMutex);
 
-            // PYTHON1300Àº Ç×»ó 1280x1024 Ãâ·Â
+            // PYTHON1300ì€ í•­ìƒ 1280x1024 ì¶œë ¥ (ë˜ëŠ” ROIë¡œ ë³€ê²½ëœ í¬ê¸°)
             memcpy(frameBuffer, image.bp, width * height);
 
-            // ½ÇÁ¦ È¹µæµÈ ÀÌ¹ÌÁö Á¤º¸ ÀúÀå (µğ¹ö±ë¿ë)
+            // ì‹¤ì œ íšë“ëœ ì´ë¯¸ì§€ ì •ë³´ ì €ì¥ (ë””ë²„ê¹…ìš©)
             actualWidth = image.width;
             actualHeight = image.height;
             frameCounter++;
+
+            // Invoke frame callback with the new frame
+            InvokeFrameCallback(frameBuffer, width, height);
         }
         else if (stat == XI_TIMEOUT)
         {
-            // Å¸ÀÓ¾Æ¿ôÀº Á¤»óÀûÀÎ »óÈ²ÀÏ ¼ö ÀÖÀ½
+            // íƒ€ì„ì•„ì›ƒì€ ì •ìƒì ì¸ ìƒí™©ì¼ ìˆ˜ ìˆìŒ
             continue;
         }
+        else
+        {
+            // An error occurred during acquisition
+            Logger::LogError("CaptureLoop: xiGetImage returned error %d", stat);
+            InvokeErrorCallback((int)stat, "Camera capture error");
+            // Break the loop on error
+            running = false;
+            break;
+        }
 
-        // CPU ºÎÇÏ ÃÖ¼ÒÈ­¸¦ À§ÇÑ ÂªÀº ´ë±â
-        // 210 FPS = ¾à 4.76ms/frameÀÌ¹Ç·Î 1ms ´ë±â
+        // CPU ë¶€í•˜ ìµœì†Œí™”ë¥¼ ìœ„í•œ ì§§ì€ ëŒ€ê¸°
+        // 210 FPS = ì•½ 4.76ms/frameì´ë¯€ë¡œ 1ms ëŒ€ê¸° (500Âµs ì‚¬ìš©)
         std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
 }
@@ -140,27 +188,29 @@ bool CameraController::GetFrame(unsigned char* buffer, int bufferSize, int& outW
 
 bool CameraController::SetExposure(int microsec)
 {
-    // PYTHON1300ÀÇ ÃÖ¼Ò/ÃÖ´ë ³ëÃâ ½Ã°£ È®ÀÎ
-    // Global shutter Æ¯¼º»ó ÂªÀº ³ëÃâ °¡´É
-    if (microsec < 10) microsec = 10;        // ÃÖ¼Ò 10us
-    if (microsec > 1000000) microsec = 1000000; // ÃÖ´ë 1ÃÊ
+    // PYTHON1300ì˜ ìµœì†Œ/ìµœëŒ€ ë…¸ì¶œ ì‹œê°„ í™•ì¸
+    // Global shutter íŠ¹ì„±ìƒ ì§§ì€ ë…¸ì¶œ ê°€ëŠ¥
+    if (microsec < 10) microsec = 10;            // ìµœì†Œ 10us
+    if (microsec > 1000000) microsec = 1000000;  // ìµœëŒ€ 1ì´ˆ
 
-    return xiSetParamInt(xiH, XI_PRM_EXPOSURE, microsec) == XI_OK;
+    if (!xiH) return false;
+    XI_RETURN res = xiSetParamInt(xiH, XI_PRM_EXPOSURE, microsec);
+    return (res == XI_OK);
 }
 
 bool CameraController::SetROI(int offsetX, int offsetY, int w, int h)
 {
-    // ROI´Â 4ÀÇ ¹è¼ö·Î Á¤·ÄµÇ¾î¾ß ÇÔ (PYTHON1300 ¿ä±¸»çÇ×)
+    // ROIëŠ” 4ì˜ ë°°ìˆ˜ë¡œ ì •ë ¬ë˜ì–´ì•¼ í•¨ (PYTHON1300 ìš”êµ¬ì‚¬í•­)
     offsetX = (offsetX / 4) * 4;
     offsetY = (offsetY / 4) * 4;
     w = (w / 4) * 4;
     h = (h / 4) * 4;
 
-    // ÃÖ¼Ò Å©±â Á¦ÇÑ
+    // ìµœì†Œ í¬ê¸° ì œí•œ
     if (w < 32) w = 32;
     if (h < 32) h = 32;
 
-    // °æ°è Ã¼Å©
+    // ê²½ê³„ ì²´í¬
     if (offsetX + w > PYTHON1300_WIDTH) w = PYTHON1300_WIDTH - offsetX;
     if (offsetY + h > PYTHON1300_HEIGHT) h = PYTHON1300_HEIGHT - offsetY;
 
@@ -169,7 +219,7 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h)
     xiSetParamInt(xiH, XI_PRM_WIDTH, w);
     xiSetParamInt(xiH, XI_PRM_HEIGHT, h);
 
-    // ³»ºÎ ¹öÆÛ Å©±âµµ ¾÷µ¥ÀÌÆ®
+    // ë‚´ë¶€ ë²„í¼ í¬ê¸°ë„ ì—…ë°ì´íŠ¸
     width = w;
     height = h;
 
@@ -178,14 +228,16 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h)
 
 bool CameraController::SetGain(float gain)
 {
-    // PYTHON1300ÀÇ °ÔÀÎ ¹üÀ§ (ÀÏ¹İÀûÀ¸·Î 0.0 ~ 24.0 dB)
+    // PYTHON1300ì˜ ê²Œì¸ ë²”ìœ„ (ì¼ë°˜ì ìœ¼ë¡œ 0.0 ~ 24.0 dB)
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 24.0f) gain = 24.0f;
 
-    return xiSetParamFloat(xiH, XI_PRM_GAIN, gain) == XI_OK;
+    if (!xiH) return false;
+    XI_RETURN res = xiSetParamFloat(xiH, XI_PRM_GAIN, gain);
+    return (res == XI_OK);
 }
 
-// Ãß°¡ ÇÔ¼ö: ÇöÀç ÇÁ·¹ÀÓ·¹ÀÌÆ® È®ÀÎ
+// ì¶”ê°€ í•¨ìˆ˜: í˜„ì¬ í”„ë ˆì„ë ˆì´íŠ¸ í™•ì¸
 float CameraController::GetFramerate()
 {
     if (!xiH) return 0.0f;
@@ -195,7 +247,7 @@ float CameraController::GetFramerate()
     return fps;
 }
 
-// Ãß°¡ ÇÔ¼ö: ÇÁ·¹ÀÓ Ä«¿îÅÍ È®ÀÎ (µğ¹ö±ë¿ë)
+// ì¶”ê°€ í•¨ìˆ˜: í”„ë ˆì„ ì¹´ìš´í„° í™•ì¸ (ë””ë²„ê¹…ìš©)
 unsigned long CameraController::GetFrameCounter()
 {
     std::lock_guard<std::mutex> lock(frameMutex);
