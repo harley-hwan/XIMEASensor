@@ -1,49 +1,114 @@
-// CameraController.h
 #pragma once
 #include <xiApi.h>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <chrono>
+#include <memory>
+#include <vector>
+#include "IXIMEACallback.h"
+#include "Logger.h"
 
-class CameraController
-{
+
+struct CameraStatistics {
+    unsigned long totalFrames;
+    unsigned long droppedFrames;
+    double averageFPS;
+    double minFPS;
+    double maxFPS;
+    std::chrono::steady_clock::time_point startTime;
+
+    void Reset() {
+        totalFrames = 0;
+        droppedFrames = 0;
+        averageFPS = 0.0;
+        minFPS = 9999.0;
+        maxFPS = 0.0;
+        startTime = std::chrono::steady_clock::now();
+    }
+};
+
+class CameraController {
 private:
-    HANDLE xiH;
-    std::thread captureThread;
-    std::mutex frameMutex;
-    bool running;
+	// Singleton instance
+    static std::unique_ptr<CameraController> instance;
+    static std::mutex instanceMutex;
 
+    // XIMEA handle
+    HANDLE xiH;
+
+    // thread
+    std::thread captureThread;
+    std::atomic<bool> isRunning;
+    std::atomic<bool> isPaused;
+
+    // frame buffer
+    std::mutex frameMutex;
     unsigned char* frameBuffer;
+    unsigned char* workingBuffer;  // double buffer
+
     int width;
     int height;
+    int currentExposure;
+    float currentGain;
 
-    // 디버깅용 추가 변수
-    int actualWidth;
-    int actualHeight;
-    unsigned long frameCounter;
+    std::mutex callbackMutex;
+    std::vector<IXIMEACallback*> callbacks;
+
+    std::atomic<CameraState> currentState;
+
+    CameraStatistics stats;
+    std::chrono::steady_clock::time_point lastFrameTime;
 
     CameraController();
 
     void CaptureLoop();
 
+    void NotifyFrameReceived(const FrameInfo& info);
+    void NotifyStateChanged(CameraState newState);
+    void NotifyError(CameraError error, const std::string& message);
+    void NotifyPropertyChanged(const std::string& property, const std::string& value);
+
+    void UpdateStatistics(bool frameReceived);
+    std::string GetXiApiErrorString(XI_RETURN error);
+
 public:
     ~CameraController();
 
+    // Singleton
     static CameraController& GetInstance();
+    static void Destroy();
 
+    // Camera control
     bool OpenCamera(int deviceIndex);
     void CloseCamera();
-
     bool StartCapture();
     void StopCapture();
+    void PauseCapture(bool pause);
 
     bool GetFrame(unsigned char* buffer, int bufferSize, int& outWidth, int& outHeight);
 
+    // Set Camera
     bool SetExposure(int microsec);
-    bool SetROI(int offsetX, int offsetY, int width, int height);
     bool SetGain(float gain);
+    bool SetROI(int offsetX, int offsetY, int width, int height);
+    bool SetFrameRate(float fps);
+    bool SetTriggerMode(bool enabled);
 
-    // MQ013MG-ON 전용 추가 함수
-    float GetFramerate();
-    unsigned long GetFrameCounter();
+    int GetExposure() const { return currentExposure; }
+    float GetGain() const { return currentGain; }
+    int GetWidth() const { return width; }
+    int GetHeight() const { return height; }
+    float GetFrameRate();
+    CameraState GetState() const { return currentState.load(); }
+
+    CameraStatistics GetStatistics() const { return stats; }
+    void ResetStatistics() { stats.Reset(); }
+
+    void RegisterCallback(IXIMEACallback* callback);
+    void UnregisterCallback(IXIMEACallback* callback);
+    void ClearCallbacks();
+
+    int GetConnectedDeviceCount();
+    bool GetDeviceInfo(int index, std::string& name, std::string& serial);
 };

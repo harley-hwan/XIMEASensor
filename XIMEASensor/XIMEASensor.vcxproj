@@ -111,6 +111,7 @@
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalIncludeDirectories>C:\XIMEA\API\xiAPI</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -119,6 +120,11 @@
       <AdditionalLibraryDirectories>C:\XIMEA\API\xiAPI</AdditionalLibraryDirectories>
       <AdditionalDependencies>xiapi64.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /y "$(TargetDir)$(TargetName).dll" "$(SolutionDir)XIMEASensorDiag\"
+xcopy /y "$(TargetDir)$(TargetName).lib" "$(SolutionDir)XIMEASensorDiag\"
+</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -140,12 +146,15 @@
   <ItemGroup>
     <ClInclude Include="CameraController.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="IXIMEACallback.h" />
+    <ClInclude Include="Logger.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="XIMEASensor.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CameraController.cpp" />
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="Logger.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>

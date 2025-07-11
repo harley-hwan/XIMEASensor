@@ -7,12 +7,19 @@
 #define IDS_ABOUTBOX                    101
 #define IDD_XIMEASENSORDIAG_DIALOG      102
 #define IDR_MAINFRAME                   128
-#define IDC_BUTTON_START                1000
-#define IDC_BUTTON_STOP                 1001
-#define IDC_STATIC_VIDEO                1002
+#define IDC_STATIC_VIDEO                1000
+#define IDC_BUTTON_START                1001
+#define IDC_BUTTON_STOP                 1002
 #define IDC_STATIC_STATUS               1003
-#define IDC_STATIC_STATUS2              1004
 #define IDC_STATIC_FPS                  1004
+#define IDC_COMBO_DEVICES               1005
+#define IDC_BUTTON_REFRESH              1006
+#define IDC_SLIDER_EXPOSURE             1007
+#define IDC_SLIDER_GAIN                 1008
+#define IDC_STATIC_EXPOSURE             1009
+#define IDC_STATIC_GAIN                 1010
+#define IDC_BUTTON_SNAPSHOT             1011
+#define IDC_BUTTON_SETTINGS             1012
 
 // Next default values for new objects
 // 
