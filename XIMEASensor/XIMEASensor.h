@@ -21,7 +21,29 @@ namespace CameraDefaults {
     XIMEASENSOR_API extern const float MAX_GAIN_DB;
     XIMEASENSOR_API extern const float MIN_FPS;
     XIMEASENSOR_API extern const float MAX_FPS;
+
+    // Continuous capture defaults
+    XIMEASENSOR_API extern const double CONTINUOUS_CAPTURE_DURATION;
+    XIMEASENSOR_API extern const int CONTINUOUS_CAPTURE_FORMAT;
+    XIMEASENSOR_API extern const int CONTINUOUS_CAPTURE_QUALITY;
+    XIMEASENSOR_API extern const bool CONTINUOUS_CAPTURE_ASYNC_SAVE;
+
+    // Single snapshot defaults
+    XIMEASENSOR_API extern const int SNAPSHOT_FORMAT;
+    XIMEASENSOR_API extern const int SNAPSHOT_QUALITY;
 }
+
+struct ContinuousCaptureDefaults {
+    double duration;
+    int format;
+    int quality;
+    bool asyncSave;
+};
+
+struct SnapshotDefaults {
+    int format;
+    int quality;
+};
 
 extern "C" {
     XIMEASENSOR_API bool Camera_Initialize(const char* logPath = nullptr, int logLevel = 1);
@@ -74,4 +96,13 @@ extern "C" {
 
     // Get default values functions
     XIMEASENSOR_API void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps);
+
+    XIMEASENSOR_API void Camera_GetContinuousCaptureDefaults(ContinuousCaptureDefaults* defaults);
+    XIMEASENSOR_API void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureDefaults* defaults);
+    XIMEASENSOR_API void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults);
+    XIMEASENSOR_API void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults);
+
+    // Simplified API
+    XIMEASENSOR_API bool Camera_StartContinuousCaptureWithDefaults();
+    XIMEASENSOR_API bool Camera_SaveSnapshotWithDefaults(const char* filename);
 }

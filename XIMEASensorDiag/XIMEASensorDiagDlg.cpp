@@ -67,7 +67,6 @@ END_MESSAGE_MAP()
 
 void CXIMEASensorDiagDlg::LoadDefaultSettings()
 {
-    // Load default settings from DLL
     Camera_GetDefaultSettings(&m_defaultExposureUs, &m_defaultGainDb, &m_defaultFps);
 }
 
@@ -83,7 +82,6 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         freopen_s(&fp, "CONIN$", "r", stdin);
     }
 
-    // Get control pointers
     m_checkContinuous = (CButton*)GetDlgItem(IDC_CHECK_CONTINUOUS);
     if (m_checkContinuous) {
         m_checkContinuous->SetCheck(BST_UNCHECKED);
@@ -100,16 +98,13 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     m_sliderFramerate = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_FRAMERATE);
     m_comboDevices = (CComboBox*)GetDlgItem(IDC_COMBO_DEVICES);
 
-    // Initialize camera system
     if (!Camera_Initialize("./logs/XIMEASensor.log", 1)) {
         AfxMessageBox(_T("Failed to initialize camera system!"));
         return FALSE;
     }
 
-    // Load default settings from DLL
     LoadDefaultSettings();
 
-    // Initialize exposure slider with DLL defaults
     if (m_sliderExposure) {
         m_sliderExposure->SetRange(CameraDefaults::MIN_EXPOSURE_US, CameraDefaults::MAX_EXPOSURE_US);
         m_sliderExposure->SetPos(m_defaultExposureUs);
@@ -120,7 +115,7 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(strExposure);
     }
 
-    // Initialize gain slider with DLL defaults
+    // gain slider
     if (m_sliderGain) {
         m_sliderGain->SetRange(static_cast<int>(CameraDefaults::MIN_GAIN_DB * 10),
             static_cast<int>(CameraDefaults::MAX_GAIN_DB * 10));
@@ -132,7 +127,7 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(strGain);
     }
 
-    // Initialize framerate slider with DLL defaults
+    // framerate slider
     if (m_sliderFramerate) {
         m_sliderFramerate->SetRange(static_cast<int>(CameraDefaults::MIN_FPS * 10),
             static_cast<int>(CameraDefaults::MAX_FPS * 10));
@@ -254,12 +249,10 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
         return;
     }
 
-    // Apply default camera settings from DLL
     Camera_SetExposure(m_defaultExposureUs);
     Camera_SetGain(m_defaultGainDb);
     Camera_SetFrameRate(m_defaultFps);
 
-    // Sync UI with camera settings
     SyncSlidersWithCamera();
 
     if (!Camera_Start()) {
@@ -348,26 +341,24 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 
     if (isContinuous) {
         // Continuous capture mode
-        double duration = 1.0;
-        int format = 0;         // PNG
-        int quality = 90;
-        bool asyncSave = true;
 
-        // Ask for format
-        int result = MessageBox(_T("Save as PNG format?\n(Select No for JPG)"),
-            _T("Continuous Capture Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
+        ContinuousCaptureDefaults defaults;
+        Camera_GetContinuousCaptureDefaults(&defaults);
+
+        int result = MessageBox(_T("PNG (Yes)\nJPG (No)"),
+            _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
 
         if (result == IDCANCEL) {
             return;
         }
 
-        format = (result == IDYES) ? 0 : 1;
+        defaults.format = (result == IDYES) ? 0 : 1;
 
-        // Configure and start continuous capture
-        Camera_SetContinuousCaptureConfig(duration, format, quality, asyncSave);
+        Camera_SetContinuousCaptureDefaults(&defaults);
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 
-        if (Camera_StartContinuousCapture()) {
+        // Start continuous capture
+        if (Camera_StartContinuousCaptureWithDefaults()) {
             if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
             if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
             if (m_staticStatus) m_staticStatus->SetWindowText(_T("Continuous capture in progress..."));
@@ -378,38 +369,42 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
     }
     else {
         // Single snapshot
-        SYSTEMTIME st;
-        GetLocalTime(&st);
 
-        int result = MessageBox(_T("Save as PNG format?\n(Select No for JPG)"),
+        SnapshotDefaults defaults;
+        Camera_GetSnapshotDefaults(&defaults);
+
+        int result = MessageBox(_T("PNG (Yes)\nJPG (No)"),
             _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
 
         if (result == IDCANCEL) {
             return;
         }
 
-        CString filename;
-        int format = (result == IDYES) ? 0 : 1;
+        defaults.format = (result == IDYES) ? 0 : 1;
+        Camera_SetSnapshotDefaults(&defaults);
 
-        if (format == 0) {
-            filename.Format(_T("snapshot_%04d%02d%02d_%02d%02d%02d.png"),
-                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        }
-        else {
-            filename.Format(_T("snapshot_%04d%02d%02d_%02d%02d%02d.jpg"),
-                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        }
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+
+        CString filename;
+        const char* extension = (defaults.format == 0) ? "png" : "jpg";
+        filename.Format(_T("snapshot_%04d%02d%02d_%02d%02d%02d.%s"),
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+            CString(extension));
 
         CStringA filenameA(filename);
-        bool saveSuccess = Camera_SaveSnapshot(filenameA.GetString(), format, 90);
+
+        bool saveSuccess = Camera_SaveSnapshotWithDefaults(filenameA.GetString());
 
         if (saveSuccess) {
             int width = 0, height = 0;
             Camera_GetROI(nullptr, nullptr, &width, &height);
 
             CString msg;
-            msg.Format(_T("Snapshot saved: %s\nSize: %dx%d"),
-                filename.GetString(), width, height);
+            msg.Format(_T("Snapshot saved: %s\nSize: %dx%d\nFormat: %s\nQuality: %d%%"),
+                filename.GetString(), width, height,
+                (defaults.format == 0) ? _T("PNG") : _T("JPG"),
+                defaults.quality);
             AfxMessageBox(msg);
         }
         else {
@@ -428,7 +423,6 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 {
     CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
 
-    // Update display only when not streaming
     if (!m_isStreaming) {
         if (pSlider == m_sliderExposure) {
             int exposure = m_sliderExposure->GetPos();
@@ -499,7 +493,7 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
             GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(str);
         }
         else {
-            // Show warning about exposure time limitation
+            // exposure time limit
             int currentExposure = Camera_GetExposure();
             float maxPossibleFPS = 1000000.0f / currentExposure;
 
@@ -523,7 +517,7 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 
 void CXIMEASensorDiagDlg::OnCbnSelchangeComboDevices()
 {
-    // Device selection changed
+    //
 }
 
 void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
@@ -671,7 +665,6 @@ void CXIMEASensorDiagDlg::DrawFrame()
 
     if (m_pDisplayBuffer && m_displayWidth > 0 && m_displayHeight > 0) {
 
-        // Allocate BITMAPINFO with palette
         size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD);
         BITMAPINFO* pBmpInfo = (BITMAPINFO*)malloc(bmpInfoSize);
         memset(pBmpInfo, 0, bmpInfoSize);
@@ -688,7 +681,6 @@ void CXIMEASensorDiagDlg::DrawFrame()
         pBmpInfo->bmiHeader.biClrUsed = 256;
         pBmpInfo->bmiHeader.biClrImportant = 256;
 
-        // Create grayscale palette
         RGBQUAD* pPalette = (RGBQUAD*)(&pBmpInfo->bmiColors[0]);
         for (int i = 0; i < 256; i++) {
             pPalette[i].rgbBlue = i;
@@ -697,7 +689,6 @@ void CXIMEASensorDiagDlg::DrawFrame()
             pPalette[i].rgbReserved = 0;
         }
 
-        // Draw the image
         int oldStretchMode = SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
         SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, NULL);
 
@@ -775,7 +766,6 @@ void CXIMEASensorDiagDlg::OnContinuousCaptureProgress(int currentFrame, double e
 
 LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM lParam)
 {
-    // Get results
     int totalFrames = 0, savedFrames = 0, droppedFrames = 0;
     double duration = 0.0;
     char folderPath[256] = { 0 };
@@ -784,11 +774,9 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
         &droppedFrames, &duration,
         folderPath, sizeof(folderPath));
 
-    // Restore UI
     if (m_btnSnapshot) m_btnSnapshot->EnableWindow(TRUE);
     if (m_checkContinuous) m_checkContinuous->EnableWindow(TRUE);
 
-    // Show results
     CString msg;
     if (success) {
         msg.Format(_T("Continuous capture completed!\n\n")
@@ -808,7 +796,6 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
 
     AfxMessageBox(msg);
 
-    // Restore status display
     if (m_staticStatus) {
         m_staticStatus->SetWindowText(_T("Capturing..."));
     }

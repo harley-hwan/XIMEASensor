@@ -36,41 +36,37 @@ struct CameraStatistics {
 
 class CameraController {
 private:
-    // Singleton instance
+    // singleton
     static std::unique_ptr<CameraController> instance;
     static std::mutex instanceMutex;
 
     // XIMEA handle
     HANDLE xiH;
 
-    // Thread control
     std::thread captureThread;
     std::atomic<bool> isRunning;
     std::atomic<bool> isPaused;
 
-    // Frame buffer
     std::mutex frameMutex;
     unsigned char* frameBuffer;
     unsigned char* workingBuffer;
 
-    // Camera parameters
+    // camera param
     int width;
     int height;
     int currentExposure;
     float currentGain;
-    float currentFrameRate;  // Current framerate setting
+    float currentFrameRate;
 
-    // Callbacks
+    // callbacks
     std::mutex callbackMutex;
     std::vector<IXIMEACallback*> callbacks;
 
-    // State management
     std::atomic<CameraState> currentState;
     CameraStatistics stats;
     std::chrono::steady_clock::time_point lastFrameTime;
     std::unique_ptr<ContinuousCaptureManager> m_continuousCapture;
 
-    // Error handling
     std::atomic<int> deviceNotReadyCount;
     static const int MAX_DEVICE_NOT_READY_ERRORS = 5;
 
@@ -89,11 +85,11 @@ private:
 public:
     ~CameraController();
 
-    // Singleton
+    // singleton
     static CameraController& GetInstance();
     static void Destroy();
 
-    // Camera control
+    // camera control
     bool OpenCamera(int deviceIndex);
     void CloseCamera();
     bool StartCapture();
@@ -102,14 +98,14 @@ public:
 
     bool GetFrame(unsigned char* buffer, int bufferSize, int& outWidth, int& outHeight);
 
-    // Camera settings
+    // camera settings
     bool SetExposure(int microsec);
     bool SetGain(float gain);
     bool SetROI(int offsetX, int offsetY, int width, int height);
     bool SetFrameRate(float fps);
     bool SetTriggerMode(bool enabled);
 
-    // Getters
+    // getters
     int GetExposure() const { return currentExposure; }
     float GetGain() const { return currentGain; }
     int GetWidth() const { return width; }
@@ -120,12 +116,11 @@ public:
     void ResetStatistics() { stats.Reset(); }
     ContinuousCaptureManager* GetContinuousCaptureManager() { return m_continuousCapture.get(); }
 
-    // Callback management
+    // callback
     void RegisterCallback(IXIMEACallback* callback);
     void UnregisterCallback(IXIMEACallback* callback);
     void ClearCallbacks();
 
-    // Device enumeration
     int GetConnectedDeviceCount();
     bool GetDeviceInfo(int index, std::string& name, std::string& serial);
 };

@@ -48,7 +48,7 @@ private:
 
     std::chrono::steady_clock::time_point m_startTime;
     std::string m_captureFolder;
-    double m_actualDuration;  // Store actual capture duration
+    double m_actualDuration;
 
     // Async save structure
     struct SaveItem {
@@ -71,7 +71,6 @@ private:
     ContinuousCaptureProgressCallback m_progressCallback;
     std::mutex m_callbackMutex;
 
-    // Internal methods
     bool CreateCaptureFolder();
     void SaveThreadWorker();
     void SaveFrameAsync(const unsigned char* data, int width, int height);
@@ -84,7 +83,6 @@ public:
     ~ContinuousCaptureManager();
 
     void SetConfig(const ContinuousCaptureConfig& config);
-    ContinuousCaptureConfig GetConfig() const { return m_config; }
 
     bool StartCapture();
     void StopCapture();

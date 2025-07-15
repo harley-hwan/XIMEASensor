@@ -16,7 +16,7 @@ ContinuousCaptureManager::ContinuousCaptureManager()
     m_saveThreadRunning(false),
     m_actualDuration(0.0) {
 
-    // Initialize buffer pool
+    // Init buffer pool
     for (int i = 0; i < 10; i++) {
         m_bufferPool.push(std::vector<unsigned char>());
     }
@@ -87,7 +87,6 @@ void ContinuousCaptureManager::StopCapture() {
 
     m_isCapturing = false;
 
-    // Calculate actual duration before changing state
     auto endTime = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - m_startTime);
     m_actualDuration = elapsed.count() / 1000.0;
@@ -107,7 +106,6 @@ void ContinuousCaptureManager::StopCapture() {
         }
     }
 
-    // Save metadata with correct actual duration
     if (m_config.createMetadata) {
         SaveMetadata();
     }
@@ -153,7 +151,7 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
         }
     }
 
-    // Progress callback every 10 frames
+    // callback every 10 frames
     if (m_progressCallback && m_frameCount % 10 == 0) {
         m_progressCallback(m_frameCount.load(), elapsed, ContinuousCaptureState::CAPTURING);
     }
@@ -351,14 +349,12 @@ void ContinuousCaptureManager::Reset() {
         StopCapture();
     }
 
-    // Wait for save thread
     if (m_saveThreadRunning && m_saveThread.joinable()) {
         m_saveThreadRunning = false;
         m_queueCV.notify_all();
         m_saveThread.join();
     }
 
-    // Clear save queue
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
         while (!m_saveQueue.empty()) {
@@ -366,7 +362,6 @@ void ContinuousCaptureManager::Reset() {
         }
     }
 
-    // Reset all states
     m_state = ContinuousCaptureState::IDLE;
     m_frameCount = 0;
     m_savedCount = 0;

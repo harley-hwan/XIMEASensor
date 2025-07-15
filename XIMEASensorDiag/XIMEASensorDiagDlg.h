@@ -59,7 +59,6 @@ private:
     int m_frameCount;
     double m_currentFPS;
 
-    // Camera default settings from DLL
     int m_defaultExposureUs;
     float m_defaultGainDb;
     float m_defaultFps;

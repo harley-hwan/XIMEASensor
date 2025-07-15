@@ -21,7 +21,29 @@ namespace CameraDefaults {
     const float MAX_GAIN_DB = 24.0f;
     const float MIN_FPS = 1.0f;
     const float MAX_FPS = 210.0f;       // PYTHON1300 max FPS
+
+    // Continuous capture defaults
+    const double CONTINUOUS_CAPTURE_DURATION = 1.0;    // 1 second
+    const int CONTINUOUS_CAPTURE_FORMAT = 0;           // PNG
+    const int CONTINUOUS_CAPTURE_QUALITY = 90;         // 90% quality
+    const bool CONTINUOUS_CAPTURE_ASYNC_SAVE = true;   // Async save
+
+    // Single snapshot defaults
+    const int SNAPSHOT_FORMAT = 0;                     // PNG
+    const int SNAPSHOT_QUALITY = 90;                   // 90% quality
 }
+
+static ContinuousCaptureDefaults g_continuousCaptureDefaults = {
+    CameraDefaults::CONTINUOUS_CAPTURE_DURATION,
+    CameraDefaults::CONTINUOUS_CAPTURE_FORMAT,
+    CameraDefaults::CONTINUOUS_CAPTURE_QUALITY,
+    CameraDefaults::CONTINUOUS_CAPTURE_ASYNC_SAVE
+};
+
+static SnapshotDefaults g_snapshotDefaults = {
+    CameraDefaults::SNAPSHOT_FORMAT,
+    CameraDefaults::SNAPSHOT_QUALITY
+};
 
 bool Camera_Initialize(const char* logPath, int logLevel) {
     std::cout << "in XIMEASensor initialize" << std::endl;
@@ -559,5 +581,122 @@ void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps) {
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_GetDefaultSettings: " + std::string(e.what()));
+    }
+}
+
+
+void Camera_GetContinuousCaptureDefaults(ContinuousCaptureDefaults* defaults) {
+    if (!defaults) {
+        LOG_ERROR("Invalid parameter: defaults is nullptr");
+        return;
+    }
+
+    *defaults = g_continuousCaptureDefaults;
+    LOG_DEBUG("Retrieved continuous capture defaults: duration=" +
+        std::to_string(defaults->duration) + "s, format=" +
+        std::to_string(defaults->format));
+}
+
+void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureDefaults* defaults) {
+    if (!defaults) {
+        LOG_ERROR("Invalid parameter: defaults is nullptr");
+        return;
+    }
+
+    // Validate parameters
+    if (defaults->duration < 0.1 || defaults->duration > 60.0) {
+        LOG_ERROR("Invalid duration: must be between 0.1 and 60 seconds");
+        return;
+    }
+
+    if (defaults->format < 0 || defaults->format > 1) {
+        LOG_ERROR("Invalid format: must be 0 (PNG) or 1 (JPG)");
+        return;
+    }
+
+    if (defaults->quality < 1 || defaults->quality > 100) {
+        LOG_ERROR("Invalid quality: must be between 1 and 100");
+        return;
+    }
+
+    g_continuousCaptureDefaults = *defaults;
+    LOG_INFO("Updated continuous capture defaults: duration=" +
+        std::to_string(defaults->duration) + "s, format=" +
+        std::to_string(defaults->format) + ", quality=" +
+        std::to_string(defaults->quality));
+}
+
+void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults) {
+    if (!defaults) {
+        LOG_ERROR("Invalid parameter: defaults is nullptr");
+        return;
+    }
+
+    *defaults = g_snapshotDefaults;
+    LOG_DEBUG("Retrieved snapshot defaults: format=" +
+        std::to_string(defaults->format) + ", quality=" +
+        std::to_string(defaults->quality));
+}
+
+void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults) {
+    if (!defaults) {
+        LOG_ERROR("Invalid parameter: defaults is nullptr");
+        return;
+    }
+
+    // Validate parameters
+    if (defaults->format < 0 || defaults->format > 1) {
+        LOG_ERROR("Invalid format: must be 0 (PNG) or 1 (JPG)");
+        return;
+    }
+
+    if (defaults->quality < 1 || defaults->quality > 100) {
+        LOG_ERROR("Invalid quality: must be between 1 and 100");
+        return;
+    }
+
+    g_snapshotDefaults = *defaults;
+    LOG_INFO("Updated snapshot defaults: format=" +
+        std::to_string(defaults->format) + ", quality=" +
+        std::to_string(defaults->quality));
+}
+
+bool Camera_StartContinuousCaptureWithDefaults() {
+    try {
+        // Apply default configuration
+        if (!Camera_SetContinuousCaptureConfig(
+            g_continuousCaptureDefaults.duration,
+            g_continuousCaptureDefaults.format,
+            g_continuousCaptureDefaults.quality,
+            g_continuousCaptureDefaults.asyncSave)) {
+            LOG_ERROR("Failed to set continuous capture config with defaults");
+            return false;
+        }
+
+        // Start capture
+        return Camera_StartContinuousCapture();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_StartContinuousCaptureWithDefaults: " +
+            std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_SaveSnapshotWithDefaults(const char* filename) {
+    try {
+        if (!filename) {
+            LOG_ERROR("Invalid parameter: filename is nullptr");
+            return false;
+        }
+
+        return Camera_SaveSnapshot(filename,
+            g_snapshotDefaults.format,
+            g_snapshotDefaults.quality);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SaveSnapshotWithDefaults: " +
+            std::string(e.what()));
+        return false;
     }
 }

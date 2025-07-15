@@ -18,8 +18,8 @@ CameraController::CameraController()
     workingBuffer(nullptr),
     width(PYTHON1300_WIDTH),
     height(PYTHON1300_HEIGHT),
-    currentExposure(CameraDefaults::EXPOSURE_US),  // Use DLL default
-    currentGain(CameraDefaults::GAIN_DB),          // Use DLL default
+    currentExposure(CameraDefaults::EXPOSURE_US),
+    currentGain(CameraDefaults::GAIN_DB),
     currentState(CameraState::DISCONNECTED) {
 
     size_t bufferSize = width * height;
@@ -37,7 +37,6 @@ CameraController::~CameraController() {
     LOG_INFO("CameraController destructor called");
 
     try {
-        // Clear callbacks first
         {
             std::lock_guard<std::mutex> lock(callbackMutex);
             callbacks.clear();
@@ -131,31 +130,29 @@ bool CameraController::OpenCamera(int deviceIndex) {
         return false;
     }
 
-    // MQ013MG-ON initialization
+    // MQ013MG-ON init
     LOG_INFO("Configuring MQ013MG-ON camera");
 
-    // Set pixel format
+    // pixel format
     stat = xiSetParamInt(xiH, XI_PRM_IMAGE_DATA_FORMAT, XI_MONO8);
     if (stat != XI_OK) {
         LOG_WARNING("Failed to set image format: " + GetXiApiErrorString(stat));
     }
 
-    // Basic camera settings
+    // camera settings
     xiSetParamInt(xiH, XI_PRM_OUTPUT_DATA_BIT_DEPTH, XI_BPP_8);
     xiSetParamInt(xiH, XI_PRM_SENSOR_DATA_BIT_DEPTH, XI_BPP_10);
     xiSetParamInt(xiH, XI_PRM_WIDTH, PYTHON1300_WIDTH);
     xiSetParamInt(xiH, XI_PRM_HEIGHT, PYTHON1300_HEIGHT);
-    xiSetParamInt(xiH, XI_PRM_EXPOSURE, CameraDefaults::EXPOSURE_US);  // Use DLL default
+    xiSetParamInt(xiH, XI_PRM_EXPOSURE, CameraDefaults::EXPOSURE_US);
     currentExposure = CameraDefaults::EXPOSURE_US;
 
-    xiSetParamFloat(xiH, XI_PRM_GAIN, CameraDefaults::GAIN_DB);        // Use DLL default
+    xiSetParamFloat(xiH, XI_PRM_GAIN, CameraDefaults::GAIN_DB);
     currentGain = CameraDefaults::GAIN_DB;
 
-    // Set default framerate
     xiSetParamFloat(xiH, XI_PRM_FRAMERATE, CameraDefaults::FRAMERATE_FPS);
     currentFrameRate = CameraDefaults::FRAMERATE_FPS;
 
-    // Configure acquisition
     xiSetParamInt(xiH, XI_PRM_ACQ_TIMING_MODE, XI_ACQ_TIMING_MODE_FRAME_RATE);
     xiSetParamInt(xiH, XI_PRM_BUFFER_POLICY, XI_BP_SAFE);
     xiSetParamInt(xiH, XI_PRM_AUTO_BANDWIDTH_CALCULATION, XI_ON);
@@ -341,7 +338,6 @@ void CameraController::CaptureLoop() {
 
     LOG_INFO("Capture loop started");
 
-    // Calculate frame period based on current framerate
     auto frameInterval = std::chrono::microseconds((int)(1000000.0f / currentFrameRate));
     auto nextFrameTime = std::chrono::steady_clock::now();
 
@@ -351,14 +347,12 @@ void CameraController::CaptureLoop() {
             continue;
         }
 
-        // Frame rate limiting
         auto now = std::chrono::steady_clock::now();
         if (now < nextFrameTime) {
             std::this_thread::sleep_until(nextFrameTime);
         }
         nextFrameTime += frameInterval;
 
-        // Update frame interval if framerate changed
         frameInterval = std::chrono::microseconds((int)(1000000.0f / currentFrameRate));
 
         XI_RETURN stat = xiGetImage(xiH, 100, &image);
@@ -415,7 +409,6 @@ void CameraController::CaptureLoop() {
                 memcpy(frameBuffer, image.bp, imageSize);
             }
 
-            // Process continuous capture if active
             if (m_continuousCapture && m_continuousCapture->IsCapturing()) {
                 m_continuousCapture->ProcessFrame(frameBuffer, width, height);
             }
@@ -500,7 +493,6 @@ bool CameraController::SetExposure(int microsec) {
         return false;
     }
 
-    // Clamp value to valid range using DLL limits
     const int minExposure = CameraDefaults::MIN_EXPOSURE_US;
     const int maxExposure = CameraDefaults::MAX_EXPOSURE_US;
 
@@ -523,13 +515,12 @@ bool CameraController::SetExposure(int microsec) {
     NotifyPropertyChanged("Exposure", std::to_string(microsec) + " us");
     LOG_INFO("Exposure set to: " + std::to_string(microsec) + " us");
 
-    // Check if current frame rate is still valid
     float currentFPS = GetFrameRate();
     float maxPossibleFPS = 1000000.0f / microsec;
 
     if (currentFPS > maxPossibleFPS) {
         LOG_INFO("Adjusting frame rate due to exposure time change");
-        SetFrameRate(maxPossibleFPS * 0.95f); // Set to 95% of max to ensure stability
+        SetFrameRate(maxPossibleFPS * 0.95f); // Set to 95% of max
     }
 
     return true;
@@ -541,7 +532,6 @@ bool CameraController::SetGain(float gain) {
         return false;
     }
 
-    // Clamp value to valid range using DLL limits
     const float minGain = CameraDefaults::MIN_GAIN_DB;
     const float maxGain = CameraDefaults::MAX_GAIN_DB;
 
@@ -583,7 +573,6 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
     w = std::max(32, w);
     h = std::max(32, h);
 
-    // Boundary check
     if (offsetX + w > PYTHON1300_WIDTH) {
         w = PYTHON1300_WIDTH - offsetX;
     }
@@ -601,7 +590,7 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    // Set ROI parameters
+    // Set ROI
     XI_RETURN stat;
     stat = xiSetParamInt(xiH, XI_PRM_OFFSET_X, offsetX);
     if (stat != XI_OK) {
@@ -635,7 +624,6 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
     height = h;
     size_t newSize = static_cast<size_t>(width) * height;
 
-    // Reallocate frame buffers
     unsigned char* newFrameBuffer = nullptr;
     unsigned char* newWorkingBuffer = nullptr;
     try {
@@ -677,7 +665,6 @@ bool CameraController::SetFrameRate(float fps) {
         return false;
     }
 
-    // Clamp to hardware limits first
     const float minFPS = CameraDefaults::MIN_FPS;
     const float maxFPS = CameraDefaults::MAX_FPS;
 
@@ -690,21 +677,20 @@ bool CameraController::SetFrameRate(float fps) {
         LOG_WARNING("FPS clamped to hardware maximum: " + std::to_string(maxFPS));
     }
 
-    // Check if requested FPS is possible with current exposure time
     float maxPossibleFPS = 1000000.0f / currentExposure;
     if (fps > maxPossibleFPS) {
         LOG_WARNING("Requested FPS (" + std::to_string(fps) +
             ") exceeds maximum possible with current exposure time (" +
             std::to_string(currentExposure) + "us). Max possible: " +
             std::to_string(maxPossibleFPS) + " FPS");
-        fps = maxPossibleFPS * 0.95f; // Set to 95% of max to ensure stability
+        fps = maxPossibleFPS * 0.95f; // Set to 95% of max
     }
 
     XI_RETURN stat = xiSetParamFloat(xiH, XI_PRM_FRAMERATE, fps);
     if (stat != XI_OK) {
         LOG_WARNING("Failed to set frame rate: " + GetXiApiErrorString(stat));
 
-        // Try to get actual frame rate from camera
+        // get actual frame rate
         float actualFPS = 0.0f;
         if (xiGetParamFloat(xiH, XI_PRM_FRAMERATE, &actualFPS) == XI_OK) {
             LOG_INFO("Camera reported actual frame rate: " + std::to_string(actualFPS) + " FPS");
@@ -746,7 +732,7 @@ float CameraController::GetFrameRate() {
     if (stat == XI_OK) {
         return fps;
     }
-    return currentFrameRate; // Return cached value if API call fails
+    return currentFrameRate;
 }
 
 void CameraController::UpdateStatistics(bool frameReceived) {
