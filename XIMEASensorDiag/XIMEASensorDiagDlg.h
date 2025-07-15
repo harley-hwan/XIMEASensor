@@ -41,13 +41,14 @@ private:
     CStatic* m_staticFPS = nullptr;
     CSliderCtrl* m_sliderExposure = nullptr;
     CSliderCtrl* m_sliderGain = nullptr;
+    CSliderCtrl* m_sliderFramerate = nullptr;
     CComboBox* m_comboDevices = nullptr;
 
     // Camera
     std::unique_ptr<CameraCallback> m_cameraCallback;
     std::atomic<bool> m_isStreaming;
 
-    // frame buffer
+    // Frame buffer
     CRITICAL_SECTION m_frameCriticalSection;
     unsigned char* m_pDisplayBuffer;
     int m_displayWidth;
@@ -58,13 +59,19 @@ private:
     int m_frameCount;
     double m_currentFPS;
 
+    // Camera default settings from DLL
+    int m_defaultExposureUs;
+    float m_defaultGainDb;
+    float m_defaultFps;
+
     void UpdateDeviceList();
     void UpdateUI(bool isStreaming);
     void DrawFrame();
     void ShowError(const CString& message);
     void SyncSlidersWithCamera();
+    void LoadDefaultSettings();
 
-    // Callback handler
+    // Callback handlers
     void OnFrameReceivedCallback(const FrameInfo& frameInfo);
     void OnStateChangedCallback(CameraState newState, CameraState oldState);
     void OnErrorCallback(CameraError error, const std::string& errorMessage);

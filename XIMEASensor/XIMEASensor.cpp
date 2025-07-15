@@ -9,6 +9,20 @@
 
 static void(*g_continuousProgressCallback)(int, double, int) = nullptr; // 2025-07-15: continuous capture
 
+namespace CameraDefaults {
+    const int EXPOSURE_US = 4000;        // 4ms default exposure
+    const float GAIN_DB = 0.0f;          // 0dB default gain
+    const float FRAMERATE_FPS = 60.0f;   // 60 FPS default
+
+    // Camera limits
+    const int MIN_EXPOSURE_US = 10;
+    const int MAX_EXPOSURE_US = 1000000; // 1 second
+    const float MIN_GAIN_DB = 0.0f;
+    const float MAX_GAIN_DB = 24.0f;
+    const float MIN_FPS = 1.0f;
+    const float MAX_FPS = 210.0f;       // PYTHON1300 max FPS
+}
+
 bool Camera_Initialize(const char* logPath, int logLevel) {
     std::cout << "in XIMEASensor initialize" << std::endl;
     try {
@@ -400,7 +414,7 @@ bool Camera_SetContinuousCaptureConfig(double duration, int format, int quality,
         config.jpgQuality = quality;
         config.useAsyncSave = asyncSave;
         config.createMetadata = true;
-        config.baseFolder = ".";  // 현재 디렉토리
+        config.baseFolder = ".";  // 현재 위치
 
         captureManager->SetConfig(config);
         LOG_INFO("Continuous capture config set: duration=" + std::to_string(duration) +
@@ -529,5 +543,21 @@ void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFram
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_SetContinuousCaptureProgressCallback: " + std::string(e.what()));
+    }
+}
+
+void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps) {
+    try {
+        if (exposureUs) *exposureUs = CameraDefaults::EXPOSURE_US;
+        if (gainDb) *gainDb = CameraDefaults::GAIN_DB;
+        if (fps) *fps = CameraDefaults::FRAMERATE_FPS;
+
+        LOG_DEBUG("Default settings requested: Exposure=" +
+            std::to_string(CameraDefaults::EXPOSURE_US) + "us, Gain=" +
+            std::to_string(CameraDefaults::GAIN_DB) + "dB, FPS=" +
+            std::to_string(CameraDefaults::FRAMERATE_FPS));
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetDefaultSettings: " + std::string(e.what()));
     }
 }

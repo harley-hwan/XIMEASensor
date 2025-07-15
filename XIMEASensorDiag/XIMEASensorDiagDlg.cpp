@@ -22,7 +22,10 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
     m_displayHeight(0),
     m_hasNewFrame(false),
     m_frameCount(0),
-    m_currentFPS(0.0)
+    m_currentFPS(0.0),
+    m_defaultExposureUs(4000),  // Fallback values
+    m_defaultGainDb(0.0f),
+    m_defaultFps(60.0f)
 {
     InitializeCriticalSection(&m_frameCriticalSection);
     m_cameraCallback = std::make_unique<CameraCallback>();
@@ -61,6 +64,14 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_MESSAGE(WM_CONTINUOUS_CAPTURE_COMPLETE, &CXIMEASensorDiagDlg::OnContinuousCaptureComplete)
 END_MESSAGE_MAP()
 
+
+void CXIMEASensorDiagDlg::LoadDefaultSettings()
+{
+    // Load default settings from DLL
+    Camera_GetDefaultSettings(&m_defaultExposureUs, &m_defaultGainDb, &m_defaultFps);
+}
+
+
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
 {
     CDialogEx::OnInitDialog();
@@ -72,6 +83,7 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         freopen_s(&fp, "CONIN$", "r", stdin);
     }
 
+    // Get control pointers
     m_checkContinuous = (CButton*)GetDlgItem(IDC_CHECK_CONTINUOUS);
     if (m_checkContinuous) {
         m_checkContinuous->SetCheck(BST_UNCHECKED);
@@ -80,29 +92,59 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     m_pictureCtrl = (CStatic*)GetDlgItem(IDC_STATIC_VIDEO);
     m_btnStart = (CButton*)GetDlgItem(IDC_BUTTON_START);
     m_btnStop = (CButton*)GetDlgItem(IDC_BUTTON_STOP);
+    m_btnSnapshot = (CButton*)GetDlgItem(IDC_BUTTON_SNAPSHOT);
     m_staticStatus = (CStatic*)GetDlgItem(IDC_STATIC_STATUS);
     m_staticFPS = (CStatic*)GetDlgItem(IDC_STATIC_FPS);
     m_sliderExposure = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_EXPOSURE);
     m_sliderGain = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_GAIN);
+    m_sliderFramerate = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_FRAMERATE);
     m_comboDevices = (CComboBox*)GetDlgItem(IDC_COMBO_DEVICES);
 
-    if (m_sliderExposure) {
-        m_sliderExposure->SetRange(10, 100000);  // 10us ~ 100ms
-        m_sliderExposure->SetPos(4000);  // 4ms
-        m_sliderExposure->SetTicFreq(10000);
-    }
-
-    if (m_sliderGain) {
-        m_sliderGain->SetRange(0, 240);  // 0.0 ~ 24.0 dB (x10)
-        m_sliderGain->SetPos(0);
-        m_sliderGain->SetTicFreq(30);
-    }
-
+    // Initialize camera system
     if (!Camera_Initialize("./logs/XIMEASensor.log", 1)) {
-        AfxMessageBox(_T("카메라 시스템 초기화 실패!"));
+        AfxMessageBox(_T("Failed to initialize camera system!"));
         return FALSE;
     }
 
+    // Load default settings from DLL
+    LoadDefaultSettings();
+
+    // Initialize exposure slider with DLL defaults
+    if (m_sliderExposure) {
+        m_sliderExposure->SetRange(CameraDefaults::MIN_EXPOSURE_US, CameraDefaults::MAX_EXPOSURE_US);
+        m_sliderExposure->SetPos(m_defaultExposureUs);
+        m_sliderExposure->SetTicFreq(10000);
+
+        CString strExposure;
+        strExposure.Format(_T("Exposure: %d us"), m_defaultExposureUs);
+        GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(strExposure);
+    }
+
+    // Initialize gain slider with DLL defaults
+    if (m_sliderGain) {
+        m_sliderGain->SetRange(static_cast<int>(CameraDefaults::MIN_GAIN_DB * 10),
+            static_cast<int>(CameraDefaults::MAX_GAIN_DB * 10));
+        m_sliderGain->SetPos(static_cast<int>(m_defaultGainDb * 10));
+        m_sliderGain->SetTicFreq(30);
+
+        CString strGain;
+        strGain.Format(_T("Gain: %.1f dB"), m_defaultGainDb);
+        GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(strGain);
+    }
+
+    // Initialize framerate slider with DLL defaults
+    if (m_sliderFramerate) {
+        m_sliderFramerate->SetRange(static_cast<int>(CameraDefaults::MIN_FPS * 10),
+            static_cast<int>(CameraDefaults::MAX_FPS * 10));
+        m_sliderFramerate->SetPos(static_cast<int>(m_defaultFps * 10));
+        m_sliderFramerate->SetTicFreq(100);
+
+        CString strFPS;
+        strFPS.Format(_T("%.1f FPS"), m_defaultFps);
+        GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(strFPS);
+    }
+
+    // Setup callbacks
     m_cameraCallback->SetFrameCallback(
         [this](const FrameInfo& info) { OnFrameReceivedCallback(info); });
 
@@ -121,11 +163,9 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
             OnPropertyChangedCallback(prop, value);
         });
 
-    // register callback
     Camera_RegisterCallback(m_cameraCallback.get());
 
-    // PYTHON1300 최대 1280x1024, 여유있게.
-    size_t maxBufferSize = 2048 * 2048;  // 4MP
+    size_t maxBufferSize = 2048 * 2048;  // 4MP max
     m_pDisplayBuffer = new unsigned char[maxBufferSize];
     memset(m_pDisplayBuffer, 0, maxBufferSize);
 
@@ -161,7 +201,7 @@ void CXIMEASensorDiagDlg::UpdateDeviceList()
 
     int deviceCount = Camera_GetDeviceCount();
     if (deviceCount == 0) {
-        m_comboDevices->AddString(_T("디바이스 없음"));
+        m_comboDevices->AddString(_T("No devices found"));
         m_comboDevices->EnableWindow(FALSE);
         return;
     }
@@ -195,37 +235,35 @@ void CXIMEASensorDiagDlg::UpdateUI(bool isStreaming)
     if (m_sliderGain) {
         m_sliderGain->EnableWindow(isStreaming);
     }
+
+    if (m_sliderFramerate) {
+        m_sliderFramerate->EnableWindow(isStreaming);
+    }
 }
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
 {
     int deviceIndex = m_comboDevices->GetCurSel();
     if (deviceIndex < 0) {
-        AfxMessageBox(_T("디바이스를 선택하세요!"));
+        AfxMessageBox(_T("Please select a device!"));
         return;
     }
 
     if (!Camera_Open(deviceIndex)) {
-        AfxMessageBox(_T("카메라를 열 수 없습니다!"));
+        AfxMessageBox(_T("Failed to open camera!"));
         return;
     }
 
-    // default
-    Camera_SetExposure(4000);  // 4ms
-    Camera_SetGain(0.0f);      // 0dB
+    // Apply default camera settings from DLL
+    Camera_SetExposure(m_defaultExposureUs);
+    Camera_SetGain(m_defaultGainDb);
+    Camera_SetFrameRate(m_defaultFps);
 
-    // 이전 슬라이더 위치값 적용 ?
-    // if (m_sliderExposure) {
-    //     Camera_SetExposure(m_sliderExposure->GetPos());
-    // }
-    // if (m_sliderGain) {
-    //     Camera_SetGain(m_sliderGain->GetPos() / 10.0f);
-    // }
-
+    // Sync UI with camera settings
     SyncSlidersWithCamera();
 
     if (!Camera_Start()) {
-        AfxMessageBox(_T("카메라 스트리밍을 시작할 수 없습니다!"));
+        AfxMessageBox(_T("Failed to start streaming!"));
         Camera_Close();
         return;
     }
@@ -240,14 +278,16 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
 
 void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
 {
+    // Sync exposure slider
     int currentExposure = Camera_GetExposure();
     float currentGain = Camera_GetGain();
+    float currentFramerate = Camera_GetFrameRate();
 
     if (m_sliderExposure && currentExposure > 0) {
         m_sliderExposure->SetPos(currentExposure);
 
         CString strExposure;
-        strExposure.Format(_T("노출: %d us"), currentExposure);
+        strExposure.Format(_T("Exposure: %d us"), currentExposure);
         GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(strExposure);
     }
 
@@ -255,8 +295,16 @@ void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
         m_sliderGain->SetPos((int)(currentGain * 10));
 
         CString strGain;
-        strGain.Format(_T("게인: %.1f dB"), currentGain);
+        strGain.Format(_T("Gain: %.1f dB"), currentGain);
         GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(strGain);
+    }
+
+    if (m_sliderFramerate && currentFramerate > 0) {
+        m_sliderFramerate->SetPos((int)(currentFramerate * 10));
+
+        CString strFPS;
+        strFPS.Format(_T("%.1f FPS"), currentFramerate);
+        GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(strFPS);
     }
 }
 
@@ -287,29 +335,27 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonRefresh()
 void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 {
     if (!m_isStreaming) {
-        AfxMessageBox(_T("카메라가 실행 중이 아닙니다!"));
+        AfxMessageBox(_T("Camera is not running!"));
         return;
     }
 
-    // Check if already in continuous capture
     if (Camera_IsContinuousCapturing()) {
-        AfxMessageBox(_T("이미 연속 촬영 중입니다!"));
+        AfxMessageBox(_T("Already in continuous capture mode!"));
         return;
     }
 
-    // Check continuous capture checkbox
     BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
 
     if (isContinuous) {
-        // Continuous capture settings
+        // Continuous capture mode
         double duration = 1.0;
         int format = 0;         // PNG
         int quality = 90;
         bool asyncSave = true;
 
-        // Ask user for format
-        int result = MessageBox(_T("PNG 형식으로 저장하시겠습니까?\n(아니오를 선택하면 JPG로 저장됩니다.)"),
-            _T("연속 촬영 형식 선택"), MB_YESNOCANCEL | MB_ICONQUESTION);
+        // Ask for format
+        int result = MessageBox(_T("Save as PNG format?\n(Select No for JPG)"),
+            _T("Continuous Capture Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
 
         if (result == IDCANCEL) {
             return;
@@ -317,21 +363,17 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 
         format = (result == IDYES) ? 0 : 1;
 
-        // Configure continuous capture
+        // Configure and start continuous capture
         Camera_SetContinuousCaptureConfig(duration, format, quality, asyncSave);
-
-        // Set progress callback
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 
-        // Start continuous capture
         if (Camera_StartContinuousCapture()) {
-            // Update UI
             if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
             if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
-            if (m_staticStatus) m_staticStatus->SetWindowText(_T("연속 촬영 중..."));
+            if (m_staticStatus) m_staticStatus->SetWindowText(_T("Continuous capture in progress..."));
         }
         else {
-            AfxMessageBox(_T("연속 촬영을 시작할 수 없습니다!"));
+            AfxMessageBox(_T("Failed to start continuous capture!"));
         }
     }
     else {
@@ -339,8 +381,8 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         SYSTEMTIME st;
         GetLocalTime(&st);
 
-        int result = MessageBox(_T("PNG 형식으로 저장하시겠습니까?\n(아니오를 선택하면 JPG로 저장됩니다.)"),
-            _T("이미지 형식 선택"), MB_YESNOCANCEL | MB_ICONQUESTION);
+        int result = MessageBox(_T("Save as PNG format?\n(Select No for JPG)"),
+            _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
 
         if (result == IDCANCEL) {
             return;
@@ -366,12 +408,12 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
             Camera_GetROI(nullptr, nullptr, &width, &height);
 
             CString msg;
-            msg.Format(_T("스냅샷 저장됨: %s\n크기: %dx%d"),
+            msg.Format(_T("Snapshot saved: %s\nSize: %dx%d"),
                 filename.GetString(), width, height);
             AfxMessageBox(msg);
         }
         else {
-            AfxMessageBox(_T("이미지 파일을 저장할 수 없습니다!"));
+            AfxMessageBox(_T("Failed to save image!"));
         }
     }
 }
@@ -379,47 +421,54 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
 {
-    AfxMessageBox(_T("Coming soonnnnn~."));
+    AfxMessageBox(_T("Settings dialog not implemented yet."));
 }
 
 void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
 {
-    if (!m_isStreaming) {
-        CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
+    CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
 
+    // Update display only when not streaming
+    if (!m_isStreaming) {
         if (pSlider == m_sliderExposure) {
             int exposure = m_sliderExposure->GetPos();
             CString str;
-            str.Format(_T("노출: %d us"), exposure);
+            str.Format(_T("Exposure: %d us"), exposure);
             GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
         }
         else if (pSlider == m_sliderGain) {
             float gain = m_sliderGain->GetPos() / 10.0f;
             CString str;
-            str.Format(_T("게인: %.1f dB"), gain);
+            str.Format(_T("Gain: %.1f dB"), gain);
             GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+        }
+        else if (pSlider == m_sliderFramerate) {
+            float fps = m_sliderFramerate->GetPos() / 10.0f;
+            CString str;
+            str.Format(_T("%.1f FPS"), fps);
+            GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(str);
         }
 
         CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
         return;
     }
 
-    CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
-
+    // Apply settings to camera when streaming
     if (pSlider == m_sliderExposure) {
         int exposure = m_sliderExposure->GetPos();
 
         if (Camera_SetExposure(exposure)) {
             CString str;
-            str.Format(_T("노출: %d us"), exposure);
+            str.Format(_T("Exposure: %d us"), exposure);
             GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
         }
         else {
+            // Revert to actual value if failed
             int currentExposure = Camera_GetExposure();
             m_sliderExposure->SetPos(currentExposure);
 
             CString str;
-            str.Format(_T("노출: %d us"), currentExposure);
+            str.Format(_T("Exposure: %d us"), currentExposure);
             GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
         }
     }
@@ -428,16 +477,44 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 
         if (Camera_SetGain(gain)) {
             CString str;
-            str.Format(_T("게인: %.1f dB"), gain);
+            str.Format(_T("Gain: %.1f dB"), gain);
             GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
         }
         else {
+            // Revert to actual value if failed
             float currentGain = Camera_GetGain();
             m_sliderGain->SetPos((int)(currentGain * 10));
 
             CString str;
-            str.Format(_T("게인: %.1f dB"), currentGain);
+            str.Format(_T("Gain: %.1f dB"), currentGain);
             GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+        }
+    }
+    else if (pSlider == m_sliderFramerate) {
+        float fps = m_sliderFramerate->GetPos() / 10.0f;
+
+        if (Camera_SetFrameRate(fps)) {
+            CString str;
+            str.Format(_T("%.1f FPS"), fps);
+            GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(str);
+        }
+        else {
+            // Show warning about exposure time limitation
+            int currentExposure = Camera_GetExposure();
+            float maxPossibleFPS = 1000000.0f / currentExposure;
+
+            CString msg;
+            msg.Format(_T("Cannot set %.1f FPS with current exposure time (%d us).\nMaximum possible FPS: %.1f"),
+                fps, currentExposure, maxPossibleFPS);
+            MessageBox(msg, _T("FPS Limitation"), MB_OK | MB_ICONWARNING);
+
+            // Revert to actual value
+            float currentFPS = Camera_GetFrameRate();
+            m_sliderFramerate->SetPos((int)(currentFPS * 10));
+
+            CString str;
+            str.Format(_T("%.1f FPS"), currentFPS);
+            GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(str);
         }
     }
 
@@ -446,7 +523,7 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 
 void CXIMEASensorDiagDlg::OnCbnSelchangeComboDevices()
 {
-    // choose device
+    // Device selection changed
 }
 
 void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
@@ -458,7 +535,7 @@ void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
         if (Camera_GetStatistics(&totalFrames, &droppedFrames,
             &avgFPS, &minFPS, &maxFPS)) {
             CString str;
-            str.Format(_T("총 프레임: %lu, 드롭: %lu, 평균 FPS: %.1f"),
+            str.Format(_T("Total: %lu, Dropped: %lu, Avg FPS: %.1f"),
                 totalFrames, droppedFrames, avgFPS);
 
             if (m_staticStatus) {
@@ -484,19 +561,20 @@ void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
         memcpy(m_pDisplayBuffer, frameInfo.data, requiredSize);
         m_displayWidth = frameInfo.width;
         m_displayHeight = frameInfo.height;
-        m_hasNewFrame = true; 
+        m_hasNewFrame = true;
     }
 
     LeaveCriticalSection(&m_frameCriticalSection);
 
     PostMessage(WM_UPDATE_FRAME);
 
+    // Update FPS display
     m_frameCount++;
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_lastFPSUpdate).count();
 
-    if (elapsed >= 500) {  // fps update every 500ms
+    if (elapsed >= 500) {  // Update every 500ms
         m_currentFPS = (m_frameCount * 1000.0) / elapsed;
         m_frameCount = 0;
         m_lastFPSUpdate = now;
@@ -510,16 +588,16 @@ void CXIMEASensorDiagDlg::OnStateChangedCallback(CameraState newState, CameraSta
 
     switch (newState) {
     case CameraState::DISCONNECTED:
-        *pMsg = _T("카메라 연결 해제됨");
+        *pMsg = _T("Camera disconnected");
         break;
     case CameraState::CONNECTED:
-        *pMsg = _T("카메라 연결됨");
+        *pMsg = _T("Camera connected");
         break;
     case CameraState::CAPTURING:
-        *pMsg = _T("캡처 중...");
+        *pMsg = _T("Capturing...");
         break;
     case CameraState::kERROR:
-        *pMsg = _T("카메라 오류");
+        *pMsg = _T("Camera error");
         break;
     }
 
@@ -592,14 +670,15 @@ void CXIMEASensorDiagDlg::DrawFrame()
     EnterCriticalSection(&m_frameCriticalSection);
 
     if (m_pDisplayBuffer && m_displayWidth > 0 && m_displayHeight > 0) {
-        
-        size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD); // BITMAPINFO + 256개 RGBQUAD
+
+        // Allocate BITMAPINFO with palette
+        size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD);
         BITMAPINFO* pBmpInfo = (BITMAPINFO*)malloc(bmpInfoSize);
         memset(pBmpInfo, 0, bmpInfoSize);
 
         pBmpInfo->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         pBmpInfo->bmiHeader.biWidth = m_displayWidth;
-        pBmpInfo->bmiHeader.biHeight = -m_displayHeight;  // top-down DIB
+        pBmpInfo->bmiHeader.biHeight = -m_displayHeight;  // Top-down DIB
         pBmpInfo->bmiHeader.biPlanes = 1;
         pBmpInfo->bmiHeader.biBitCount = 8;
         pBmpInfo->bmiHeader.biCompression = BI_RGB;
@@ -609,6 +688,7 @@ void CXIMEASensorDiagDlg::DrawFrame()
         pBmpInfo->bmiHeader.biClrUsed = 256;
         pBmpInfo->bmiHeader.biClrImportant = 256;
 
+        // Create grayscale palette
         RGBQUAD* pPalette = (RGBQUAD*)(&pBmpInfo->bmiColors[0]);
         for (int i = 0; i < 256; i++) {
             pPalette[i].rgbBlue = i;
@@ -617,16 +697,17 @@ void CXIMEASensorDiagDlg::DrawFrame()
             pPalette[i].rgbReserved = 0;
         }
 
+        // Draw the image
         int oldStretchMode = SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
         SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, NULL);
 
         int result = StretchDIBits(dc.GetSafeHdc(),
-            0, 0, rect.Width(), rect.Height(),              // 대상 영역
-            0, 0, m_displayWidth, m_displayHeight,          // 소스 영역
-            m_pDisplayBuffer,                               // 이미지 데이터
-            pBmpInfo,                                       // 비트맵 정보
-            DIB_RGB_COLORS,                                 // 팔레트 사용
-            SRCCOPY);                                       // 복사 모드
+            0, 0, rect.Width(), rect.Height(),
+            0, 0, m_displayWidth, m_displayHeight,
+            m_pDisplayBuffer,
+            pBmpInfo,
+            DIB_RGB_COLORS,
+            SRCCOPY);
 
         if (result == GDI_ERROR) {
             DWORD error = GetLastError();
@@ -636,8 +717,6 @@ void CXIMEASensorDiagDlg::DrawFrame()
         SetStretchBltMode(dc.GetSafeHdc(), oldStretchMode);
 
         free(pBmpInfo);
-
-        // m_hasNewFrame = false;
     }
 
     LeaveCriticalSection(&m_frameCriticalSection);
@@ -646,7 +725,7 @@ void CXIMEASensorDiagDlg::DrawFrame()
 
 void CXIMEASensorDiagDlg::ShowError(const CString& message)
 {
-    MessageBox(message, _T("카메라 오류"), MB_OK | MB_ICONERROR);
+    MessageBox(message, _T("Camera Error"), MB_OK | MB_ICONERROR);
 }
 
 void CXIMEASensorDiagDlg::OnPaint()
@@ -682,16 +761,14 @@ void CXIMEASensorDiagDlg::OnContinuousCaptureProgress(int currentFrame, double e
     // State: 0=IDLE, 1=CAPTURING, 2=STOPPING, 3=COMPLETED, 4=ERROR
 
     if (state == 1) {  // CAPTURING
-        // Update progress
         CString status;
-        status.Format(_T("연속 촬영 중... %d프레임 (%.1f초)"), currentFrame, elapsedSeconds);
+        status.Format(_T("Continuous capture: %d frames (%.1f sec)"), currentFrame, elapsedSeconds);
 
         if (m_staticStatus && ::IsWindow(m_staticStatus->GetSafeHwnd())) {
             m_staticStatus->SetWindowText(status);
         }
     }
     else if (state == 3) {  // COMPLETED
-        // Send completion message
         PostMessage(WM_CONTINUOUS_CAPTURE_COMPLETE);
     }
 }
@@ -714,26 +791,26 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
     // Show results
     CString msg;
     if (success) {
-        msg.Format(_T("연속 촬영 완료!\n\n")
-            _T("총 프레임: %d\n")
-            _T("저장된 프레임: %d\n")
-            _T("드롭된 프레임: %d\n")
-            _T("실제 시간: %.3f초\n")
-            _T("평균 FPS: %.1f\n")
-            _T("저장 폴더: %s"),
+        msg.Format(_T("Continuous capture completed!\n\n")
+            _T("Total frames: %d\n")
+            _T("Saved frames: %d\n")
+            _T("Dropped frames: %d\n")
+            _T("Duration: %.3f sec\n")
+            _T("Average FPS: %.1f\n")
+            _T("Folder: %s"),
             totalFrames, savedFrames, droppedFrames,
             duration, totalFrames / duration,
             CString(folderPath).GetString());
     }
     else {
-        msg = _T("연속 촬영 실패!");
+        msg = _T("Continuous capture failed!");
     }
 
     AfxMessageBox(msg);
 
     // Restore status display
     if (m_staticStatus) {
-        m_staticStatus->SetWindowText(_T("캡처 중..."));
+        m_staticStatus->SetWindowText(_T("Capturing..."));
     }
 
     return 0;

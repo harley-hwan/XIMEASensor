@@ -5,8 +5,23 @@
 #else
 #define XIMEASENSOR_API __declspec(dllimport)
 #endif
-//
+
 #include "IXIMEACallback.h"
+
+// Camera default settings
+namespace CameraDefaults {
+    XIMEASENSOR_API extern const int EXPOSURE_US;      // Default exposure time in microseconds
+    XIMEASENSOR_API extern const float GAIN_DB;        // Default gain in dB
+    XIMEASENSOR_API extern const float FRAMERATE_FPS;  // Default framerate in FPS
+
+    // Camera limits
+    XIMEASENSOR_API extern const int MIN_EXPOSURE_US;
+    XIMEASENSOR_API extern const int MAX_EXPOSURE_US;
+    XIMEASENSOR_API extern const float MIN_GAIN_DB;
+    XIMEASENSOR_API extern const float MAX_GAIN_DB;
+    XIMEASENSOR_API extern const float MIN_FPS;
+    XIMEASENSOR_API extern const float MAX_FPS;
+}
 
 extern "C" {
     XIMEASENSOR_API bool Camera_Initialize(const char* logPath = nullptr, int logLevel = 1);
@@ -48,7 +63,7 @@ extern "C" {
     XIMEASENSOR_API bool Camera_SaveSnapshot(const char* filename, int format = 0, int quality = 90);
     XIMEASENSOR_API bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize, int* width, int* height, const char* filename, int format = 0, int quality = 90);
 
-    // 2025-07-15: continus capture API
+    // Continuous capture API
     XIMEASENSOR_API bool Camera_SetContinuousCaptureConfig(double duration, int format, int quality, bool asyncSave);
     XIMEASENSOR_API bool Camera_StartContinuousCapture();
     XIMEASENSOR_API void Camera_StopContinuousCapture();
@@ -56,4 +71,7 @@ extern "C" {
     XIMEASENSOR_API int Camera_GetContinuousCaptureState();
     XIMEASENSOR_API bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames, int* droppedFrames, double* duration, char* folderPath, int pathSize);
     XIMEASENSOR_API void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFrame, double elapsedSeconds, int state));
+
+    // Get default values functions
+    XIMEASENSOR_API void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps);
 }

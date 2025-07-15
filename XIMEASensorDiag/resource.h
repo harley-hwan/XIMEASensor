@@ -22,6 +22,9 @@
 #define IDC_BUTTON_SETTINGS             1012
 #define IDC_CHECK_CONTINUOUS            1013
 
+#define IDC_SLIDER_FRAMERATE            1020
+#define IDC_STATIC_FRAMERATE            1021
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED

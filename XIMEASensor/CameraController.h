@@ -6,9 +6,15 @@
 #include <chrono>
 #include <memory>
 #include <vector>
+#include <cmath>
+#include "XIMEASensor.h" 
 #include "IXIMEACallback.h"
 #include "Logger.h"
 #include "ContinuousCaptureManager.h"
+
+#define PYTHON1300_WIDTH    1280
+#define PYTHON1300_HEIGHT   1024
+#define PYTHON1300_MAX_FPS  210
 
 struct CameraStatistics {
     unsigned long totalFrames;
@@ -30,36 +36,41 @@ struct CameraStatistics {
 
 class CameraController {
 private:
-	// Singleton instance
+    // Singleton instance
     static std::unique_ptr<CameraController> instance;
     static std::mutex instanceMutex;
 
     // XIMEA handle
     HANDLE xiH;
 
-    // thread
+    // Thread control
     std::thread captureThread;
     std::atomic<bool> isRunning;
     std::atomic<bool> isPaused;
 
-    // frame buffer
+    // Frame buffer
     std::mutex frameMutex;
     unsigned char* frameBuffer;
-    unsigned char* workingBuffer;  // double buffer
+    unsigned char* workingBuffer;
 
+    // Camera parameters
     int width;
     int height;
     int currentExposure;
     float currentGain;
+    float currentFrameRate;  // Current framerate setting
 
+    // Callbacks
     std::mutex callbackMutex;
     std::vector<IXIMEACallback*> callbacks;
 
+    // State management
     std::atomic<CameraState> currentState;
     CameraStatistics stats;
     std::chrono::steady_clock::time_point lastFrameTime;
     std::unique_ptr<ContinuousCaptureManager> m_continuousCapture;
 
+    // Error handling
     std::atomic<int> deviceNotReadyCount;
     static const int MAX_DEVICE_NOT_READY_ERRORS = 5;
 
@@ -91,13 +102,14 @@ public:
 
     bool GetFrame(unsigned char* buffer, int bufferSize, int& outWidth, int& outHeight);
 
-    // Set Camera
+    // Camera settings
     bool SetExposure(int microsec);
     bool SetGain(float gain);
     bool SetROI(int offsetX, int offsetY, int width, int height);
     bool SetFrameRate(float fps);
     bool SetTriggerMode(bool enabled);
 
+    // Getters
     int GetExposure() const { return currentExposure; }
     float GetGain() const { return currentGain; }
     int GetWidth() const { return width; }
@@ -108,11 +120,12 @@ public:
     void ResetStatistics() { stats.Reset(); }
     ContinuousCaptureManager* GetContinuousCaptureManager() { return m_continuousCapture.get(); }
 
+    // Callback management
     void RegisterCallback(IXIMEACallback* callback);
     void UnregisterCallback(IXIMEACallback* callback);
     void ClearCallbacks();
 
+    // Device enumeration
     int GetConnectedDeviceCount();
     bool GetDeviceInfo(int index, std::string& name, std::string& serial);
-
 };
