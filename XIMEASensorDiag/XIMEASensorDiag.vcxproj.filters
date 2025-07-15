@@ -36,6 +36,12 @@
     <ClInclude Include="XIMEASensor.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="CameraCallback.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="IXIMEACallback.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="XIMEASensorDiag.cpp">

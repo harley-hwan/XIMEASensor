@@ -20,6 +20,7 @@
 #define IDC_STATIC_GAIN                 1010
 #define IDC_BUTTON_SNAPSHOT             1011
 #define IDC_BUTTON_SETTINGS             1012
+#define IDC_CHECK_CONTINUOUS            1013
 
 // Next default values for new objects
 // 

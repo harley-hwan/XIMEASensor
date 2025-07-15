@@ -1,0 +1,16 @@
+Continuous Capture Metadata
+===========================
+
+Capture Date: 2025-07-15 18:47:14
+Configuration:
+  Duration: 1 seconds
+  Format: JPG
+  JPG Quality: 90
+  Async Save: Yes
+
+Results:
+  Total Frames: 66
+  Saved Frames: 65
+  Dropped Frames: 0
+  Actual Duration: 1.006 seconds
+  Average FPS: 65.6

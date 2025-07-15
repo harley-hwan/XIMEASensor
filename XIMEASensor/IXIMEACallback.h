@@ -43,18 +43,8 @@ enum class CameraError {
 class IXIMEACallback {
 public:
     virtual ~IXIMEACallback() = default;
-
-    // 새 프레임이 캡처되었을 때
     virtual void OnFrameReceived(const FrameInfo& frameInfo) = 0;
-
-    // 카메라 상태가 변경되었을 때
     virtual void OnCameraStateChanged(CameraState newState, CameraState oldState) = 0;
-
-    // 에러가 발생했을 때
     virtual void OnError(CameraError error, const std::string& errorMessage) = 0;
-
-    // 카메라 속성이 변경되었을 때
-    virtual void OnPropertyChanged(const std::string& propertyName, const std::string& value) {
-
-    }
+    virtual void OnPropertyChanged(const std::string& propertyName, const std::string& value) { }
 };

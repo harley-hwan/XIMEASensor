@@ -4,12 +4,15 @@
 #include "CameraCallback.h"
 #include <memory>
 #include <chrono>
-#include <atomic> 
+#include <atomic>
 
 #define WM_UPDATE_FRAME     (WM_USER + 100)
 #define WM_UPDATE_STATUS    (WM_USER + 101)
 #define WM_UPDATE_ERROR     (WM_USER + 102)
 #define WM_UPDATE_FPS       (WM_USER + 103)
+#define WM_CONTINUOUS_CAPTURE_COMPLETE (WM_USER + 104)
+
+#define TIMER_CONTINUOUS_CAPTURE 1002
 
 class CXIMEASensorDiagDlg : public CDialogEx
 {
@@ -29,10 +32,11 @@ protected:
     DECLARE_MESSAGE_MAP()
 
 private:
-    // UI 컨트롤 - nullptr로 초기화
     CStatic* m_pictureCtrl = nullptr;
     CButton* m_btnStart = nullptr;
     CButton* m_btnStop = nullptr;
+    CButton* m_btnSnapshot = nullptr;
+    CButton* m_checkContinuous = nullptr;
     CStatic* m_staticStatus = nullptr;
     CStatic* m_staticFPS = nullptr;
     CSliderCtrl* m_sliderExposure = nullptr;
@@ -41,7 +45,7 @@ private:
 
     // Camera
     std::unique_ptr<CameraCallback> m_cameraCallback;
-    bool m_isStreaming;
+    std::atomic<bool> m_isStreaming;
 
     // frame buffer
     CRITICAL_SECTION m_frameCriticalSection;
@@ -60,11 +64,15 @@ private:
     void ShowError(const CString& message);
     void SyncSlidersWithCamera();
 
-    // Callback handler (다른 스레드에서 호출됨)
+    // Callback handler
     void OnFrameReceivedCallback(const FrameInfo& frameInfo);
     void OnStateChangedCallback(CameraState newState, CameraState oldState);
     void OnErrorCallback(CameraError error, const std::string& errorMessage);
     void OnPropertyChangedCallback(const std::string& propertyName, const std::string& value);
+
+    static void ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state);
+    static CXIMEASensorDiagDlg* s_pThis;
+    void OnContinuousCaptureProgress(int currentFrame, double elapsedSeconds, int state);
 
 public:
     afx_msg void OnBnClickedButtonStart();
@@ -73,6 +81,7 @@ public:
     afx_msg void OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar);
     afx_msg void OnCbnSelchangeComboDevices();
     afx_msg void OnBnClickedButtonSnapshot();
+    afx_msg LRESULT OnContinuousCaptureComplete(WPARAM wParam, LPARAM lParam);
     afx_msg void OnBnClickedButtonSettings();
 
     afx_msg LRESULT OnUpdateFrame(WPARAM wParam, LPARAM lParam);

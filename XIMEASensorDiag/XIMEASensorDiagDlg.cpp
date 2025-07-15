@@ -12,6 +12,8 @@
 
 #define TIMER_UPDATE_STATISTICS 1001
 
+CXIMEASensorDiagDlg* CXIMEASensorDiagDlg::s_pThis = nullptr;
+
 CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
     : CDialogEx(IDD_XIMEASENSORDIAG_DIALOG, pParent),
     m_isStreaming(false),
@@ -24,6 +26,7 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
 {
     InitializeCriticalSection(&m_frameCriticalSection);
     m_cameraCallback = std::make_unique<CameraCallback>();
+    s_pThis = this;
 }
 
 CXIMEASensorDiagDlg::~CXIMEASensorDiagDlg()
@@ -55,6 +58,7 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_MESSAGE(WM_UPDATE_STATUS, &CXIMEASensorDiagDlg::OnUpdateStatus)
     ON_MESSAGE(WM_UPDATE_ERROR, &CXIMEASensorDiagDlg::OnUpdateError)
     ON_MESSAGE(WM_UPDATE_FPS, &CXIMEASensorDiagDlg::OnUpdateFPS)
+    ON_MESSAGE(WM_CONTINUOUS_CAPTURE_COMPLETE, &CXIMEASensorDiagDlg::OnContinuousCaptureComplete)
 END_MESSAGE_MAP()
 
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
@@ -66,6 +70,11 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         freopen_s(&fp, "CONOUT$", "w", stdout);
         freopen_s(&fp, "CONOUT$", "w", stderr);
         freopen_s(&fp, "CONIN$", "r", stdin);
+    }
+
+    m_checkContinuous = (CButton*)GetDlgItem(IDC_CHECK_CONTINUOUS);
+    if (m_checkContinuous) {
+        m_checkContinuous->SetCheck(BST_UNCHECKED);
     }
 
     m_pictureCtrl = (CStatic*)GetDlgItem(IDC_STATIC_VIDEO);
@@ -130,6 +139,9 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
 void CXIMEASensorDiagDlg::OnDestroy()
 {
     CDialogEx::OnDestroy();
+
+    Camera_SetContinuousCaptureProgressCallback(nullptr);
+    s_pThis = nullptr;
 
     KillTimer(TIMER_UPDATE_STATISTICS);
 
@@ -198,11 +210,11 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
         return;
     }
 
-    // 옵션 1: 기본값으로 초기화
+    // default
     Camera_SetExposure(4000);  // 4ms
     Camera_SetGain(0.0f);      // 0dB
 
-    // 옵션 2: 이전 슬라이더 위치값 적용 (주석 처리됨)
+    // 이전 슬라이더 위치값 적용 ?
     // if (m_sliderExposure) {
     //     Camera_SetExposure(m_sliderExposure->GetPos());
     // }
@@ -210,7 +222,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
     //     Camera_SetGain(m_sliderGain->GetPos() / 10.0f);
     // }
 
-    // 카메라 설정값에 맞게 슬라이더 동기화
     SyncSlidersWithCamera();
 
     if (!Camera_Start()) {
@@ -252,6 +263,13 @@ void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
 {
+    if (Camera_IsContinuousCapturing()) {
+        Camera_StopContinuousCapture();
+
+        if (m_btnSnapshot) m_btnSnapshot->EnableWindow(TRUE);
+        if (m_checkContinuous) m_checkContinuous->EnableWindow(TRUE);
+    }
+
     Camera_Stop();
     Camera_Close();
 
@@ -273,39 +291,91 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         return;
     }
 
-    EnterCriticalSection(&m_frameCriticalSection);
-    
-    if (!m_pDisplayBuffer || m_displayWidth <= 0 || m_displayHeight <= 0) {
-        LeaveCriticalSection(&m_frameCriticalSection);
-        AfxMessageBox(_T("유효한 프레임이 없습니다!"));
+    // Check if already in continuous capture
+    if (Camera_IsContinuousCapturing()) {
+        AfxMessageBox(_T("이미 연속 촬영 중입니다!"));
         return;
     }
 
-    SYSTEMTIME st;
-    GetLocalTime(&st);
+    // Check continuous capture checkbox
+    BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
 
-    CString filename;
-    filename.Format(_T("snapshot_%04d%02d%02d_%02d%02d%02d.raw"),
-        st.wYear, st.wMonth, st.wDay,
-        st.wHour, st.wMinute, st.wSecond);
+    if (isContinuous) {
+        // Continuous capture settings
+        double duration = 1.0;
+        int format = 0;         // PNG
+        int quality = 90;
+        bool asyncSave = true;
 
-    CFile file;
-    if (file.Open(filename, CFile::modeCreate | CFile::modeWrite)) {
-        file.Write(m_pDisplayBuffer, m_displayWidth * m_displayHeight);
-        file.Close();
+        // Ask user for format
+        int result = MessageBox(_T("PNG 형식으로 저장하시겠습니까?\n(아니오를 선택하면 JPG로 저장됩니다.)"),
+            _T("연속 촬영 형식 선택"), MB_YESNOCANCEL | MB_ICONQUESTION);
 
-        CString msg;
-        msg.Format(_T("스냅샷 저장됨: %s\n크기: %dx%d"),
-            filename, m_displayWidth, m_displayHeight);
-        
-        LeaveCriticalSection(&m_frameCriticalSection);
-        AfxMessageBox(msg);
+        if (result == IDCANCEL) {
+            return;
+        }
+
+        format = (result == IDYES) ? 0 : 1;
+
+        // Configure continuous capture
+        Camera_SetContinuousCaptureConfig(duration, format, quality, asyncSave);
+
+        // Set progress callback
+        Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
+
+        // Start continuous capture
+        if (Camera_StartContinuousCapture()) {
+            // Update UI
+            if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
+            if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
+            if (m_staticStatus) m_staticStatus->SetWindowText(_T("연속 촬영 중..."));
+        }
+        else {
+            AfxMessageBox(_T("연속 촬영을 시작할 수 없습니다!"));
+        }
     }
     else {
-        LeaveCriticalSection(&m_frameCriticalSection);
-        AfxMessageBox(_T("파일을 저장할 수 없습니다!"));
+        // Single snapshot
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+
+        int result = MessageBox(_T("PNG 형식으로 저장하시겠습니까?\n(아니오를 선택하면 JPG로 저장됩니다.)"),
+            _T("이미지 형식 선택"), MB_YESNOCANCEL | MB_ICONQUESTION);
+
+        if (result == IDCANCEL) {
+            return;
+        }
+
+        CString filename;
+        int format = (result == IDYES) ? 0 : 1;
+
+        if (format == 0) {
+            filename.Format(_T("snapshot_%04d%02d%02d_%02d%02d%02d.png"),
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        }
+        else {
+            filename.Format(_T("snapshot_%04d%02d%02d_%02d%02d%02d.jpg"),
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        }
+
+        CStringA filenameA(filename);
+        bool saveSuccess = Camera_SaveSnapshot(filenameA.GetString(), format, 90);
+
+        if (saveSuccess) {
+            int width = 0, height = 0;
+            Camera_GetROI(nullptr, nullptr, &width, &height);
+
+            CString msg;
+            msg.Format(_T("스냅샷 저장됨: %s\n크기: %dx%d"),
+                filename.GetString(), width, height);
+            AfxMessageBox(msg);
+        }
+        else {
+            AfxMessageBox(_T("이미지 파일을 저장할 수 없습니다!"));
+        }
     }
 }
+
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
 {
@@ -469,7 +539,6 @@ void CXIMEASensorDiagDlg::OnErrorCallback(CameraError error, const std::string& 
 void CXIMEASensorDiagDlg::OnPropertyChangedCallback(const std::string& propertyName,
     const std::string& value)
 {
-    // 속성 변경 로그 (디버그용)
     TRACE(_T("Property changed: %s = %s\n"),
         CString(propertyName.c_str()), CString(value.c_str()));
 }
@@ -598,4 +667,74 @@ void CXIMEASensorDiagDlg::OnPaint()
 HCURSOR CXIMEASensorDiagDlg::OnQueryDragIcon()
 {
     return static_cast<HCURSOR>(AfxGetApp()->LoadStandardIcon(IDI_APPLICATION));
+}
+
+
+void CXIMEASensorDiagDlg::ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state)
+{
+    if (s_pThis) {
+        s_pThis->OnContinuousCaptureProgress(currentFrame, elapsedSeconds, state);
+    }
+}
+
+void CXIMEASensorDiagDlg::OnContinuousCaptureProgress(int currentFrame, double elapsedSeconds, int state)
+{
+    // State: 0=IDLE, 1=CAPTURING, 2=STOPPING, 3=COMPLETED, 4=ERROR
+
+    if (state == 1) {  // CAPTURING
+        // Update progress
+        CString status;
+        status.Format(_T("연속 촬영 중... %d프레임 (%.1f초)"), currentFrame, elapsedSeconds);
+
+        if (m_staticStatus && ::IsWindow(m_staticStatus->GetSafeHwnd())) {
+            m_staticStatus->SetWindowText(status);
+        }
+    }
+    else if (state == 3) {  // COMPLETED
+        // Send completion message
+        PostMessage(WM_CONTINUOUS_CAPTURE_COMPLETE);
+    }
+}
+
+LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM lParam)
+{
+    // Get results
+    int totalFrames = 0, savedFrames = 0, droppedFrames = 0;
+    double duration = 0.0;
+    char folderPath[256] = { 0 };
+
+    bool success = Camera_GetContinuousCaptureResult(&totalFrames, &savedFrames,
+        &droppedFrames, &duration,
+        folderPath, sizeof(folderPath));
+
+    // Restore UI
+    if (m_btnSnapshot) m_btnSnapshot->EnableWindow(TRUE);
+    if (m_checkContinuous) m_checkContinuous->EnableWindow(TRUE);
+
+    // Show results
+    CString msg;
+    if (success) {
+        msg.Format(_T("연속 촬영 완료!\n\n")
+            _T("총 프레임: %d\n")
+            _T("저장된 프레임: %d\n")
+            _T("드롭된 프레임: %d\n")
+            _T("실제 시간: %.3f초\n")
+            _T("평균 FPS: %.1f\n")
+            _T("저장 폴더: %s"),
+            totalFrames, savedFrames, droppedFrames,
+            duration, totalFrames / duration,
+            CString(folderPath).GetString());
+    }
+    else {
+        msg = _T("연속 촬영 실패!");
+    }
+
+    AfxMessageBox(msg);
+
+    // Restore status display
+    if (m_staticStatus) {
+        m_staticStatus->SetWindowText(_T("캡처 중..."));
+    }
+
+    return 0;
 }

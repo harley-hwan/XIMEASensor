@@ -2,10 +2,12 @@
 #include "XIMEASensor.h"
 #include "CameraController.h"
 #include "Logger.h"
+#include "ImageSaver.h"
 #include <string>
 #include <cstring>
 #include <iostream>
 
+static void(*g_continuousProgressCallback)(int, double, int) = nullptr; // 2025-07-15: continuous capture
 
 bool Camera_Initialize(const char* logPath, int logLevel) {
     std::cout << "in XIMEASensor initialize" << std::endl;
@@ -24,7 +26,6 @@ void Camera_Shutdown() {
     LOG_INFO("XIMEASensor DLL shutting down");
 
     try {
-        // CameraController 인스턴스가 존재하는지 먼저 확인
         CameraController::Destroy();
     }
     catch (const std::exception& e) {
@@ -35,11 +36,9 @@ void Camera_Shutdown() {
     }
 
     try {
-        // Logger 종료
         Logger::Destroy();
     }
     catch (const std::exception& e) {
-        // 로그 시스템이 이미 종료되었을 수 있으므로 stderr로 출력
         std::cerr << "Exception during Logger::Destroy: " << e.what() << std::endl;
     }
     catch (...) {
@@ -81,7 +80,6 @@ bool Camera_GetDeviceInfo(int index, char* name, int nameSize, char* serial, int
     }
 }
 
-// 카메라 제어
 bool Camera_Open(int deviceIndex) {
     try {
         return CameraController::GetInstance().OpenCamera(deviceIndex);
@@ -131,7 +129,6 @@ bool Camera_Pause(bool pause) {
     }
 }
 
-// 프레임 획득
 bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* height) {
     try {
         int w, h;
@@ -150,7 +147,6 @@ bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* hei
     }
 }
 
-// 카메라 설정
 bool Camera_SetExposure(int microsec) {
     try {
         return CameraController::GetInstance().SetExposure(microsec);
@@ -201,7 +197,6 @@ bool Camera_SetTriggerMode(bool enabled) {
     }
 }
 
-// 카메라 속성 조회
 int Camera_GetExposure() {
     try {
         return CameraController::GetInstance().GetExposure();
@@ -226,7 +221,6 @@ bool Camera_GetROI(int* offsetX, int* offsetY, int* width, int* height) {
     try {
         auto& controller = CameraController::GetInstance();
 
-        // 현재는 offset을 저장하지 않으므로 0으로 반환
         if (offsetX) *offsetX = 0;
         if (offsetY) *offsetY = 0;
         if (width) *width = controller.GetWidth();
@@ -260,7 +254,6 @@ int Camera_GetState() {
     }
 }
 
-// 통계 정보
 bool Camera_GetStatistics(unsigned long* totalFrames, unsigned long* droppedFrames,
     double* averageFPS, double* minFPS, double* maxFPS) {
     try {
@@ -289,7 +282,6 @@ void Camera_ResetStatistics() {
     }
 }
 
-// 콜백 관리
 bool Camera_RegisterCallback(IXIMEACallback* callback) {
     try {
         CameraController::GetInstance().RegisterCallback(callback);
@@ -321,13 +313,12 @@ void Camera_ClearCallbacks() {
     }
 }
 
-// 로그 설정
 void Camera_SetLogLevel(int level) {
     try {
         Logger::GetInstance().SetLogLevel(static_cast<LogLevel>(level));
     }
     catch (const std::exception& e) {
-        // 로그 시스템 자체의 에러는 출력하지 않음
+        // 
     }
 }
 
@@ -336,6 +327,207 @@ void Camera_FlushLog() {
         Logger::GetInstance().Flush();
     }
     catch (const std::exception& e) {
-        // 로그 시스템 자체의 에러는 출력하지 않음
+        //
+    }
+}
+
+
+bool Camera_SaveSnapshot(const char* filename, int format, int quality) {
+    try {
+        auto& controller = CameraController::GetInstance();
+
+        int width, height;
+        width = controller.GetWidth();
+        height = controller.GetHeight();
+
+        if (width <= 0 || height <= 0) {
+            LOG_ERROR("Invalid image dimensions");
+            return false;
+        }
+
+        size_t bufferSize = width * height;
+        unsigned char* buffer = new unsigned char[bufferSize];
+
+        bool result = controller.GetFrame(buffer, bufferSize, width, height);
+
+        if (result) {
+            result = ImageSaver::SaveGrayscaleImage(buffer, width, height,
+                filename,
+                static_cast<ImageFormat>(format),
+                quality);
+        }
+
+        delete[] buffer;
+        return result;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SaveSnapshot: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize,
+    int* width, int* height, const char* filename,
+    int format, int quality) {
+    try {
+        if (!buffer || !width || !height || !filename) {
+            LOG_ERROR("Invalid parameters");
+            return false;
+        }
+
+        return ImageSaver::SaveGrayscaleImage(buffer, *width, *height, filename, static_cast<ImageFormat>(format), quality);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SaveCurrentFrame: " + std::string(e.what()));
+        return false;
+    }
+}
+
+
+
+
+bool Camera_SetContinuousCaptureConfig(double duration, int format, int quality, bool asyncSave) {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (!captureManager) {
+            LOG_ERROR("Continuous capture manager not available");
+            return false;
+        }
+
+        ContinuousCaptureConfig config;
+        config.durationSeconds = duration;
+        config.imageFormat = format;
+        config.jpgQuality = quality;
+        config.useAsyncSave = asyncSave;
+        config.createMetadata = true;
+        config.baseFolder = ".";  // 현재 디렉토리
+
+        captureManager->SetConfig(config);
+        LOG_INFO("Continuous capture config set: duration=" + std::to_string(duration) +
+            "s, format=" + std::to_string(format));
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetContinuousCaptureConfig: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_StartContinuousCapture() {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (!captureManager) {
+            LOG_ERROR("Continuous capture manager not available");
+            return false;
+        }
+
+        if (CameraController::GetInstance().GetState() != CameraState::CAPTURING) {
+            LOG_ERROR("Camera must be capturing to start continuous capture");
+            return false;
+        }
+
+        // Reset if completed or failed
+        ContinuousCaptureState currentState = captureManager->GetState();
+        if (currentState == ContinuousCaptureState::COMPLETED || 
+            currentState == ContinuousCaptureState::kERROR) {
+            LOG_INFO("Resetting continuous capture state from " + 
+                     std::to_string(static_cast<int>(currentState)));
+            captureManager->Reset();
+        }
+
+        return captureManager->StartCapture();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_StartContinuousCapture: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void Camera_StopContinuousCapture() {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (captureManager) {
+            captureManager->StopCapture();
+        }
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_StopContinuousCapture: " + std::string(e.what()));
+    }
+}
+
+bool Camera_IsContinuousCapturing() {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        return captureManager ? captureManager->IsCapturing() : false;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_IsContinuousCapturing: " + std::string(e.what()));
+        return false;
+    }
+}
+
+int Camera_GetContinuousCaptureState() {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (!captureManager) {
+            return 0;  // IDLE
+        }
+        return static_cast<int>(captureManager->GetState());
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetContinuousCaptureState: " + std::string(e.what()));
+        return 0;
+    }
+}
+
+bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames,
+    int* droppedFrames, double* duration,
+    char* folderPath, int pathSize) {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (!captureManager) {
+            return false;
+        }
+
+        auto result = captureManager->GetResult();
+
+        if (totalFrames) *totalFrames = result.totalFrames;
+        if (savedFrames) *savedFrames = result.savedFrames;
+        if (droppedFrames) *droppedFrames = result.droppedFrames;
+        if (duration) *duration = result.actualDuration;
+
+        if (folderPath && pathSize > 0) {
+            strncpy_s(folderPath, pathSize, result.folderPath.c_str(), _TRUNCATE);
+        }
+
+        return result.success;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetContinuousCaptureResult: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFrame, double elapsedSeconds, int state)) {
+    try {
+        g_continuousProgressCallback = callback;
+
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (captureManager) {
+            if (callback) {
+                captureManager->SetProgressCallback(
+                    [](int frame, double elapsed, ContinuousCaptureState state) {
+                        if (g_continuousProgressCallback) {
+                            g_continuousProgressCallback(frame, elapsed, static_cast<int>(state));
+                        }
+                    });
+            }
+            else {
+                captureManager->SetProgressCallback(nullptr);
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetContinuousCaptureProgressCallback: " + std::string(e.what()));
     }
 }

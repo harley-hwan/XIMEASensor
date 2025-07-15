@@ -8,7 +8,7 @@
 #include <vector>
 #include "IXIMEACallback.h"
 #include "Logger.h"
-
+#include "ContinuousCaptureManager.h"
 
 struct CameraStatistics {
     unsigned long totalFrames;
@@ -56,9 +56,9 @@ private:
     std::vector<IXIMEACallback*> callbacks;
 
     std::atomic<CameraState> currentState;
-
     CameraStatistics stats;
     std::chrono::steady_clock::time_point lastFrameTime;
+    std::unique_ptr<ContinuousCaptureManager> m_continuousCapture;
 
     std::atomic<int> deviceNotReadyCount;
     static const int MAX_DEVICE_NOT_READY_ERRORS = 5;
@@ -104,9 +104,9 @@ public:
     int GetHeight() const { return height; }
     float GetFrameRate();
     CameraState GetState() const { return currentState.load(); }
-
     CameraStatistics GetStatistics() const { return stats; }
     void ResetStatistics() { stats.Reset(); }
+    ContinuousCaptureManager* GetContinuousCaptureManager() { return m_continuousCapture.get(); }
 
     void RegisterCallback(IXIMEACallback* callback);
     void UnregisterCallback(IXIMEACallback* callback);
@@ -114,4 +114,5 @@ public:
 
     int GetConnectedDeviceCount();
     bool GetDeviceInfo(int index, std::string& name, std::string& serial);
+
 };

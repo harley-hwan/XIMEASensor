@@ -34,6 +34,8 @@ CameraController::CameraController()
 
     stats.Reset();
 
+    m_continuousCapture = std::make_unique<ContinuousCaptureManager>();
+
     LOG_INFO("CameraController initialized");
 }
 
@@ -41,22 +43,18 @@ CameraController::~CameraController() {
     LOG_INFO("CameraController destructor called");
 
     try {
-        // 콜백 제거 (콜백 중에 새로운 작업이 시작되는 것을 방지)
+        // 콜백 제거 (콜백 중에 새로운 작업 시작 방지)
         {
             std::lock_guard<std::mutex> lock(callbackMutex);
             callbacks.clear();
         }
 
-        // 캡처 중이면 안전하게 정지
         if (isRunning.load()) {
             isRunning = false;
 
-            // 스레드가 종료될 때까지 최대 3초 대기
             if (captureThread.joinable()) {
-                // condition_variable로 스레드 깨우기 (만약 대기 중이라면)
                 isPaused = false;
 
-                // join with timeout 구현
                 auto start = std::chrono::steady_clock::now();
                 while (captureThread.joinable()) {
                     if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
@@ -74,16 +72,11 @@ CameraController::~CameraController() {
             }
         }
 
-        // 카메라가 열려있으면 닫기
         if (xiH != nullptr) {
-            // 먼저 acquisition 중지 시도
             XI_RETURN stat = xiStopAcquisition(xiH);
-            // 에러는 무시 (이미 중지된 상태일 수 있음)
 
-            // 잠시 대기
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            // 카메라 닫기
             stat = xiCloseDevice(xiH);
             if (stat != XI_OK) {
                 LOG_ERROR("Error closing camera in destructor: " + GetXiApiErrorString(stat));
@@ -91,7 +84,6 @@ CameraController::~CameraController() {
             xiH = nullptr;
         }
 
-        // 버퍼 해제
         {
             std::lock_guard<std::mutex> lock(frameMutex);
             if (frameBuffer) {
@@ -145,81 +137,49 @@ bool CameraController::OpenCamera(int deviceIndex) {
         return false;
     }
 
-    // MQ013MG-ON 초기 설정
+    // MQ013MG-ON init settings
     LOG_INFO("Configuring MQ013MG-ON camera");
 
-    // 픽셀 포맷 설정 - XI_MONO8 사용
+    // pixel format - XI_MONO8
     stat = xiSetParamInt(xiH, XI_PRM_IMAGE_DATA_FORMAT, XI_MONO8);
     if (stat != XI_OK) {
         LOG_WARNING("Failed to set image format: " + GetXiApiErrorString(stat));
     }
 
-    // PYTHON1300 센서는 10비트이지만 8비트로 출력 설정
-    xiSetParamInt(xiH, XI_PRM_OUTPUT_DATA_BIT_DEPTH, XI_BPP_8);
+    xiSetParamInt(xiH, XI_PRM_OUTPUT_DATA_BIT_DEPTH, XI_BPP_8);                         // PYTHON1300 센서는 10비트이지만 8비트로 출력 설정
     xiSetParamInt(xiH, XI_PRM_SENSOR_DATA_BIT_DEPTH, XI_BPP_10);
-
-    // 해상도 설정
     xiSetParamInt(xiH, XI_PRM_WIDTH, PYTHON1300_WIDTH);
     xiSetParamInt(xiH, XI_PRM_HEIGHT, PYTHON1300_HEIGHT);
-
-    // 노출 시간 설정
     xiSetParamInt(xiH, XI_PRM_EXPOSURE, DEFAULT_EXPOSURE_US);
     currentExposure = DEFAULT_EXPOSURE_US;
 
-    // 게인 설정
     xiSetParamFloat(xiH, XI_PRM_GAIN, 0.0f);
     currentGain = 0.0f;
 
-    // 타이밍 모드 설정
     xiSetParamInt(xiH, XI_PRM_ACQ_TIMING_MODE, XI_ACQ_TIMING_MODE_FREE_RUN);
-
-    // 버퍼 정책 설정 - SAFE 모드로 변경하여 안정성 향상
     xiSetParamInt(xiH, XI_PRM_BUFFER_POLICY, XI_BP_SAFE);
-
-    // 자동 대역폭 계산
     xiSetParamInt(xiH, XI_PRM_AUTO_BANDWIDTH_CALCULATION, XI_ON);
-
-    // 트리거 모드 OFF (연속 캡처)
     xiSetParamInt(xiH, XI_PRM_TRG_SOURCE, XI_TRG_OFF);
-
-    // 다운샘플링 비활성화
-    xiSetParamInt(xiH, XI_PRM_DOWNSAMPLING, XI_DWN_1x1);
+    xiSetParamInt(xiH, XI_PRM_DOWNSAMPLING, XI_DWN_1x1);                                // 다운샘플링 비활성화
     xiSetParamInt(xiH, XI_PRM_DOWNSAMPLING_TYPE, XI_BINNING);
 
-    // 센서 탭 설정 (PYTHON1300은 보통 2탭)
-    xiSetParamInt(xiH, XI_PRM_SENSOR_TAPS, XI_TAP_CNT_2);
+    
+    xiSetParamInt(xiH, XI_PRM_SENSOR_TAPS, XI_TAP_CNT_2);                               // 센서 탭 (PYTHON1300은 보통 2탭)
+    xiSetParamInt(xiH, XI_PRM_BUFFERS_QUEUE_SIZE, 20);                                  // 크게 설정하여 프레임 드롭 방지
+    xiSetParamInt(xiH, XI_PRM_RECENT_FRAME, XI_ON);                                     // 최근 프레임 모드 활성화
 
-    // 버퍼 큐 크기 설정 - 더 크게 설정하여 프레임 드롭 방지
-    xiSetParamInt(xiH, XI_PRM_BUFFERS_QUEUE_SIZE, 20);
+    xiSetParamFloat(xiH, XI_PRM_GAMMAY, 1.0f);                                          // 감마 보정 비활성화 (raw 데이터 유지)
+    xiSetParamFloat(xiH, XI_PRM_SHARPNESS, 0.0f);                                       // 샤프닝 비활성화 (raw 데이터 유지)
 
-    // 최근 프레임 모드 활성화 (항상 최신 프레임 제공)
-    xiSetParamInt(xiH, XI_PRM_RECENT_FRAME, XI_ON);
-
-    // 추가 화질 개선 설정
-    // 감마 보정 비활성화 (raw 데이터 유지)
-    xiSetParamFloat(xiH, XI_PRM_GAMMAY, 1.0f);
-
-    // 샤프닝 비활성화 (raw 데이터 유지)
-    xiSetParamFloat(xiH, XI_PRM_SHARPNESS, 0.0f);
-
-    // 노이즈 감소 비활성화 (raw 데이터 유지)
-    xiSetParamInt(xiH, XI_PRM_HDR, XI_OFF);
-
-    // 블랙 레벨 자동 조정
-    xiSetParamInt(xiH, XI_PRM_AUTO_WB, XI_OFF);
+    
+    xiSetParamInt(xiH, XI_PRM_HDR, XI_OFF);                                             // 노이즈 감소 비활성화 (raw 데이터 유지)
+    xiSetParamInt(xiH, XI_PRM_AUTO_WB, XI_OFF);                                         // 블랙 레벨 자동 조정
     xiSetParamInt(xiH, XI_PRM_MANUAL_WB, XI_OFF);
+    xiSetParamInt(xiH, XI_PRM_SENS_DEFECTS_CORR, XI_ON);                                // 센서 결함 픽셀 보정 활성화
+    xiSetParamInt(xiH, XI_PRM_COLOR_FILTER_ARRAY, XI_CFA_NONE);                         // 색상 필터 배열 설정 (모노크롬 센서 -> NONE)
+    xiSetParamInt(xiH, XI_PRM_TRANSPORT_PIXEL_FORMAT, XI_GenTL_Image_Format_Mono8);     // 전송 포맷
 
-    // 센서 결함 픽셀 보정 활성화
-    //xiSetParamInt(xiH, XI_PRM_SENSOR_DEFECTS_CORR, XI_ON);
-    xiSetParamInt(xiH, XI_PRM_SENS_DEFECTS_CORR, XI_ON);
 
-    // 색상 필터 배열 설정 (모노크롬 센서이므로 NONE)
-    xiSetParamInt(xiH, XI_PRM_COLOR_FILTER_ARRAY, XI_CFA_NONE);
-
-    // 전송 포맷 설정
-    xiSetParamInt(xiH, XI_PRM_TRANSPORT_PIXEL_FORMAT, XI_GenTL_Image_Format_Mono8);
-
-    // 버퍼 크기 재할당 - 안전하게 처리
     {
         std::lock_guard<std::mutex> lock(frameMutex);
 
@@ -237,14 +197,12 @@ bool CameraController::OpenCamera(int deviceIndex) {
             frameBuffer = new unsigned char[bufferSize];
             workingBuffer = new unsigned char[bufferSize];
 
-            // 버퍼 초기화
             memset(frameBuffer, 0, bufferSize);
             memset(workingBuffer, 0, bufferSize);
         }
         catch (const std::bad_alloc& e) {
             LOG_ERROR("Failed to allocate frame buffers: " + std::string(e.what()));
 
-            // 정리
             if (frameBuffer) {
                 delete[] frameBuffer;
                 frameBuffer = nullptr;
@@ -254,7 +212,6 @@ bool CameraController::OpenCamera(int deviceIndex) {
                 workingBuffer = nullptr;
             }
 
-            // 카메라 닫기
             xiCloseDevice(xiH);
             xiH = nullptr;
 
@@ -262,7 +219,6 @@ bool CameraController::OpenCamera(int deviceIndex) {
         }
     }
 
-    // 상태 변경 알림
     CameraState oldState = currentState.exchange(CameraState::CONNECTED);
     NotifyStateChanged(CameraState::CONNECTED);
 
@@ -279,12 +235,10 @@ void CameraController::CloseCamera() {
         return;
     }
 
-    // 캡처 중이면 먼저 중지
     if (isRunning.load()) {
         StopCapture();
     }
 
-    // XIMEA 디바이스 닫기
     XI_RETURN stat = xiCloseDevice(xiH);
     if (stat != XI_OK) {
         LOG_ERROR("Error closing camera: " + GetXiApiErrorString(stat));
@@ -292,7 +246,6 @@ void CameraController::CloseCamera() {
 
     xiH = nullptr;
 
-    // 상태 변경
     CameraState oldState = currentState.exchange(CameraState::DISCONNECTED);
     if (oldState != CameraState::DISCONNECTED) {
         NotifyStateChanged(CameraState::DISCONNECTED);
@@ -340,9 +293,7 @@ bool CameraController::StartCapture() {
 void CameraController::StopCapture() {
     LOG_INFO("Stopping capture");
 
-    // 캡처 루프 종료 신호
     bool wasRunning = isRunning.exchange(false);
-    // 이미 isRunning이 false였지만 스레드가 join되지 않은 경우 처리
     if (!wasRunning) {
         if (captureThread.joinable()) {
             try {
@@ -352,10 +303,9 @@ void CameraController::StopCapture() {
                 LOG_ERROR("Exception joining capture thread: " + std::string(e.what()));
             }
         }
-        return;  // 더 이상 캡처 중이 아니므로 종료
+        return;
     }
 
-    // 캡처 스레드 조인 (실행 중이었으면 여기서 대기)
     if (captureThread.joinable()) {
         try {
             captureThread.join();
@@ -365,7 +315,6 @@ void CameraController::StopCapture() {
         }
     }
 
-    // 스트리밍 중이었다면 XIMEA API에 캡처 중지 호출
     if (xiH) {
         XI_RETURN stat = xiStopAcquisition(xiH);
         if (stat != XI_OK) {
@@ -373,8 +322,7 @@ void CameraController::StopCapture() {
         }
     }
 
-    // 상태를 CAPTURING에서 CONNECTED로 변경 (오류로 인한 중단 경우 kERROR 상태는 덮어쓰지 않음)
-    CameraState prevState = currentState.exchange(CameraState::CONNECTED);
+	CameraState prevState = currentState.exchange(CameraState::CONNECTED);          // CAPTURING -> CONNECTED
     if (prevState == CameraState::CAPTURING) {
         NotifyStateChanged(CameraState::CONNECTED);
     }
@@ -394,7 +342,7 @@ void CameraController::CaptureLoop() {
 
     LOG_INFO("Capture loop started");
 
-    while (isRunning) {
+    while (isRunning.load()) {
         if (isPaused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
@@ -403,7 +351,6 @@ void CameraController::CaptureLoop() {
         XI_RETURN stat = xiGetImage(xiH, 100, &image);
 
         if (stat == XI_OK) {
-            // 성공적으로 프레임을 받았으므로 에러 카운트 리셋
             deviceNotReadyCount = 0;
 
             auto now = std::chrono::steady_clock::now();
@@ -455,16 +402,20 @@ void CameraController::CaptureLoop() {
                 memcpy(frameBuffer, image.bp, imageSize);
             }
 
+            // 2025-07-15 continuos capture
+            if (m_continuousCapture && m_continuousCapture->IsCapturing()) {
+                m_continuousCapture->ProcessFrame(frameBuffer, width, height);
+            }
+
             NotifyFrameReceived(frameInfo);
             UpdateStatistics(true);
         }
         else if (stat == XI_TIMEOUT) {
-            // 타임아웃은 정상, 에러 카운트 리셋
+            // 타임아웃은 정상
             deviceNotReadyCount = 0;
             UpdateStatistics(false);
         }
         else if (stat == XI_DEVICE_NOT_READY) {
-            // Device not ready 에러 처리
             deviceNotReadyCount++;
             LOG_ERROR("Frame grab error: " + GetXiApiErrorString(stat) +
                 " (count: " + std::to_string(deviceNotReadyCount.load()) + ")");
@@ -472,14 +423,11 @@ void CameraController::CaptureLoop() {
             if (deviceNotReadyCount >= MAX_DEVICE_NOT_READY_ERRORS) {
                 LOG_ERROR("Device not ready error exceeded limit. Stopping capture.");
 
-                // 에러 콜백 호출
                 NotifyError(CameraError::DEVICE_NOT_READY,
                     "Camera disconnected - Device not ready error exceeded limit");
 
-                // 캡처 중지
                 isRunning = false;
 
-                // 상태 변경 알림
                 CameraState oldState = currentState.exchange(CameraState::kERROR);
                 NotifyStateChanged(CameraState::kERROR);
 
@@ -489,7 +437,6 @@ void CameraController::CaptureLoop() {
             UpdateStatistics(false);
         }
         else {
-            // 다른 에러는 기존처럼 처리
             LOG_ERROR("Frame grab error: " + GetXiApiErrorString(stat));
             NotifyError(static_cast<CameraError>(stat),
                 "Frame grab error: " + GetXiApiErrorString(stat));
@@ -603,7 +550,6 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
         std::to_string(offsetY) + "), size(" + std::to_string(w) +
         "x" + std::to_string(h) + ")");
 
-    // 캡처 중이면 일시 정지
     bool wasCapturing = isRunning && !isPaused;
     if (wasCapturing) {
         PauseCapture(true);

@@ -44,4 +44,16 @@ extern "C" {
 
     XIMEASENSOR_API void Camera_SetLogLevel(int level);
     XIMEASENSOR_API void Camera_FlushLog();
+
+    XIMEASENSOR_API bool Camera_SaveSnapshot(const char* filename, int format = 0, int quality = 90);
+    XIMEASENSOR_API bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize, int* width, int* height, const char* filename, int format = 0, int quality = 90);
+
+    // 2025-07-15: continus capture API
+    XIMEASENSOR_API bool Camera_SetContinuousCaptureConfig(double duration, int format, int quality, bool asyncSave);
+    XIMEASENSOR_API bool Camera_StartContinuousCapture();
+    XIMEASENSOR_API void Camera_StopContinuousCapture();
+    XIMEASENSOR_API bool Camera_IsContinuousCapturing();
+    XIMEASENSOR_API int Camera_GetContinuousCaptureState();
+    XIMEASENSOR_API bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames, int* droppedFrames, double* duration, char* folderPath, int pathSize);
+    XIMEASENSOR_API void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFrame, double elapsedSeconds, int state));
 }
