@@ -645,7 +645,7 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateFPS(WPARAM wParam, LPARAM lParam)
 {
     double fps = lParam / 10.0;
     CString str;
-    str.Format(_T("FPS: %.1f"), fps);
+    str.Format(_T("%.1f"), fps);    // FPS: %.1f
 
     if (m_staticFPS) {
         m_staticFPS->SetWindowText(str);

@@ -13,6 +13,7 @@ ContinuousCaptureManager::ContinuousCaptureManager()
     m_frameCount(0),
     m_savedCount(0),
     m_droppedCount(0),
+    m_processingCount(0),
     m_saveThreadRunning(false),
     m_actualDuration(0.0) {
 
@@ -55,6 +56,7 @@ bool ContinuousCaptureManager::StartCapture() {
     m_frameCount = 0;
     m_savedCount = 0;
     m_droppedCount = 0;
+    m_processingCount = 0;
     m_actualDuration = 0.0;
     m_isCapturing = true;
     m_startTime = std::chrono::steady_clock::now();
@@ -93,16 +95,16 @@ void ContinuousCaptureManager::StopCapture() {
 
     m_state = ContinuousCaptureState::STOPPING;
 
-    // Wait for async save queue
+    // Wait for all complete
     if (m_config.useAsyncSave && m_saveThreadRunning) {
-        auto waitStart = std::chrono::steady_clock::now();
-        while (!m_saveQueue.empty()) {
-            auto elapsed = std::chrono::steady_clock::now() - waitStart;
-            if (elapsed > std::chrono::seconds(5)) {
-                LOG_WARNING("Timeout waiting for save queue to empty");
-                break;
+        if (!WaitForSaveCompletion(30)) {  // 30s timeout
+            LOG_ERROR("Timeout waiting for save operations to complete");
+            // timeout -> drop the rest
+            int pendingFrames = m_frameCount.load() - m_savedCount.load() - m_droppedCount.load();
+            if (pendingFrames > 0) {
+                m_droppedCount += pendingFrames;
+                LOG_WARNING("Dropped " + std::to_string(pendingFrames) + " frames due to timeout");
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
@@ -117,7 +119,8 @@ void ContinuousCaptureManager::StopCapture() {
     }
 
     LOG_INFO("Continuous capture completed. Frames: " + std::to_string(m_savedCount.load()) +
-        "/" + std::to_string(m_frameCount.load()));
+        "/" + std::to_string(m_frameCount.load()) +
+        " (dropped: " + std::to_string(m_droppedCount.load()) + ")");
 }
 
 void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width, int height) {
@@ -148,6 +151,7 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
         }
         else {
             m_droppedCount++;
+            LOG_ERROR("Failed to save frame: " + filename);
         }
     }
 
@@ -204,8 +208,11 @@ void ContinuousCaptureManager::SaveFrameAsync(const unsigned char* data, int wid
         m_saveQueue.push(SaveItem{ std::move(buffer), ss.str(), width, height });
 
         if (m_saveQueue.size() > 100) {
-            m_droppedCount++;
+            auto droppedItem = std::move(m_saveQueue.front());
             m_saveQueue.pop();
+            m_droppedCount++;
+            ReturnBufferToPool(std::move(droppedItem.data));
+            LOG_WARNING("Dropped frame due to queue overflow: " + droppedItem.filename);
         }
     }
     m_queueCV.notify_one();
@@ -214,7 +221,7 @@ void ContinuousCaptureManager::SaveFrameAsync(const unsigned char* data, int wid
 void ContinuousCaptureManager::SaveThreadWorker() {
     LOG_INFO("Save thread started");
 
-    while (m_saveThreadRunning.load() || !m_saveQueue.empty()) {
+    while (m_saveThreadRunning.load() || !m_saveQueue.empty() || m_processingCount > 0) {
         std::unique_lock<std::mutex> lock(m_queueMutex);
 
         m_queueCV.wait(lock, [this] {
@@ -224,12 +231,16 @@ void ContinuousCaptureManager::SaveThreadWorker() {
         while (!m_saveQueue.empty()) {
             auto item = std::move(m_saveQueue.front());
             m_saveQueue.pop();
+            m_processingCount++;
             lock.unlock();
 
-            if (ImageSaver::SaveGrayscaleImage(item.data.data(), item.width, item.height,
+            bool saveSuccess = ImageSaver::SaveGrayscaleImage(
+                item.data.data(), item.width, item.height,
                 item.filename,
                 static_cast<ImageFormat>(m_config.imageFormat),
-                m_config.jpgQuality)) {
+                m_config.jpgQuality);
+
+            if (saveSuccess) {
                 m_savedCount++;
             }
             else {
@@ -239,11 +250,52 @@ void ContinuousCaptureManager::SaveThreadWorker() {
 
             ReturnBufferToPool(std::move(item.data));
 
+            m_processingCount--;
+			m_completionCV.notify_all();    // Notify completion
+
             lock.lock();
         }
     }
 
     LOG_INFO("Save thread ended");
+}
+
+bool ContinuousCaptureManager::WaitForSaveCompletion(int timeoutSeconds) {
+    auto startWait = std::chrono::steady_clock::now();
+    auto timeout = std::chrono::seconds(timeoutSeconds);
+
+    std::unique_lock<std::mutex> lock(m_queueMutex);
+
+    bool completed = m_completionCV.wait_for(lock, timeout, [this, &startWait, &timeout] {
+
+        auto elapsed = std::chrono::steady_clock::now() - startWait;
+        if (elapsed >= timeout) {
+            return false;  // timeout
+        }
+
+        bool queueEmpty = m_saveQueue.empty();
+        bool noProcessing = (m_processingCount == 0);
+        bool allSaved = (m_savedCount + m_droppedCount) >= m_frameCount;
+
+        // debug log (every 1sec)
+        static auto lastLog = std::chrono::steady_clock::now();
+        if (std::chrono::steady_clock::now() - lastLog > std::chrono::seconds(1)) {
+            LOG_DEBUG("Waiting for save completion - Queue: " + std::to_string(m_saveQueue.size()) +
+                ", Processing: " + std::to_string(m_processingCount.load()) +
+                ", Saved: " + std::to_string(m_savedCount.load()) +
+                ", Dropped: " + std::to_string(m_droppedCount.load()) +
+                ", Total: " + std::to_string(m_frameCount.load()));
+            lastLog = std::chrono::steady_clock::now();
+        }
+
+        return queueEmpty && noProcessing && allSaved;
+        });
+
+    if (!completed) {
+        LOG_WARNING("Save completion wait timed out after " + std::to_string(timeoutSeconds) + " seconds");
+    }
+
+    return completed;
 }
 
 void ContinuousCaptureManager::SaveMetadata() {
@@ -289,13 +341,20 @@ void ContinuousCaptureManager::SaveMetadata() {
         file << "  Average FPS: N/A\n";
     }
 
+	// success rate
+    if (m_frameCount > 0) {
+        float successRate = (float)m_savedCount.load() / m_frameCount.load() * 100.0f;
+        file << "  Save Success Rate: " << std::fixed << std::setprecision(1)
+            << successRate << "%\n";
+    }
+
     file.close();
     LOG_INFO("Metadata saved to: " + metaFile);
 }
 
 ContinuousCaptureResult ContinuousCaptureManager::GetResult() const {
     ContinuousCaptureResult result;
-    result.success = (m_state == ContinuousCaptureState::COMPLETED);
+    result.success = (m_state == ContinuousCaptureState::COMPLETED) && (m_savedCount == m_frameCount);  // evry frame saved successfully
     result.totalFrames = m_frameCount.load();
     result.savedFrames = m_savedCount.load();
     result.droppedFrames = m_droppedCount.load();
@@ -304,6 +363,9 @@ ContinuousCaptureResult ContinuousCaptureManager::GetResult() const {
 
     if (m_state == ContinuousCaptureState::kERROR) {
         result.errorMessage = "Capture failed";
+    }
+    else if (result.droppedFrames > 0) {
+        result.errorMessage = "Some frames were dropped";
     }
 
     return result;
@@ -339,7 +401,7 @@ std::vector<unsigned char> ContinuousCaptureManager::GetBufferFromPool(size_t si
 
 void ContinuousCaptureManager::ReturnBufferToPool(std::vector<unsigned char>&& buffer) {
     std::lock_guard<std::mutex> lock(m_poolMutex);
-    if (m_bufferPool.size() < 20) {  // Max 20 buffers
+    if (m_bufferPool.size() < 20) {  // max 20 buffers
         m_bufferPool.push(std::move(buffer));
     }
 }
@@ -349,6 +411,7 @@ void ContinuousCaptureManager::Reset() {
         StopCapture();
     }
 
+    // wait for finish if running
     if (m_saveThreadRunning && m_saveThread.joinable()) {
         m_saveThreadRunning = false;
         m_queueCV.notify_all();
@@ -366,6 +429,7 @@ void ContinuousCaptureManager::Reset() {
     m_frameCount = 0;
     m_savedCount = 0;
     m_droppedCount = 0;
+    m_processingCount = 0;
     m_actualDuration = 0.0;
     m_captureFolder.clear();
     m_isCapturing = false;

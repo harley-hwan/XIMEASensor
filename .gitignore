@@ -113,3 +113,6 @@ out/
 *.raw
 *.png
 *.jpg
+
+
+Capture_*/

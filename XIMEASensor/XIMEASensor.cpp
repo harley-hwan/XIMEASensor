@@ -9,6 +9,7 @@
 
 static void(*g_continuousProgressCallback)(int, double, int) = nullptr; // 2025-07-15: continuous capture
 
+// default settings
 namespace CameraDefaults {
     const int EXPOSURE_US = 4000;        // 4ms default exposure
     const float GAIN_DB = 0.0f;          // 0dB default gain

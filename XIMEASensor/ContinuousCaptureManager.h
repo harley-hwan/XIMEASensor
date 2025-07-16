@@ -45,6 +45,7 @@ private:
     std::atomic<int> m_frameCount;
     std::atomic<int> m_savedCount;
     std::atomic<int> m_droppedCount;
+    std::atomic<int> m_processingCount;
 
     std::chrono::steady_clock::time_point m_startTime;
     std::string m_captureFolder;
@@ -62,6 +63,7 @@ private:
     std::queue<SaveItem> m_saveQueue;
     std::mutex m_queueMutex;
     std::condition_variable m_queueCV;
+    std::condition_variable m_completionCV;
     std::atomic<bool> m_saveThreadRunning;
 
     // Buffer pool for performance
@@ -77,6 +79,7 @@ private:
     void SaveMetadata();
     std::vector<unsigned char> GetBufferFromPool(size_t size);
     void ReturnBufferToPool(std::vector<unsigned char>&& buffer);
+    bool WaitForSaveCompletion(int timeoutSeconds = 30);
 
 public:
     ContinuousCaptureManager();
