@@ -354,14 +354,14 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         defaults.format = (result == IDYES) ? 0 : 1;
 
         // Ball detection 설정 추가
-        defaults.enableGolfBallDetection = true;  // Ball detection 활성화
+        defaults.enableBallDetection = true;  // Ball detection 활성화
         defaults.saveOriginalImages = true;
         defaults.saveDetectionImages = true;
 
         // 수정된 defaults를 설정
         Camera_SetContinuousCaptureDefaults(&defaults);
 
-        if (defaults.enableGolfBallDetection) {
+        if (defaults.enableBallDetection) {
             MessageBox(_T("Ball detection will be performed on captured frames.\n\n"
                 "Results will be saved in:\n"
                 "- original/ : Original captured frames\n"

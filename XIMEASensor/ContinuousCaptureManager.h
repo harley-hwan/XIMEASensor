@@ -26,7 +26,7 @@ struct ContinuousCaptureConfig {
     std::string baseFolder = ".";
 
     // Ball detection options
-    bool enableGolfBallDetection = false;
+    bool enableBallDetection = false;
     bool saveOriginalImages = true;
     bool saveDetectionImages = true;
 };
@@ -48,7 +48,7 @@ class BallDetector;
 struct BallDetectionResult;
 
 struct ContinuousCaptureDetectionResult {
-    int framesWithGolfBall = 0;
+    int framesWithBall = 0;
     int totalBallsDetected = 0;
     float averageConfidence = 0.0f;
     std::string detectionFolder;
