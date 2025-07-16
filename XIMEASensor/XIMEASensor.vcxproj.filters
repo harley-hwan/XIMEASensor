@@ -39,6 +39,9 @@
     <ClInclude Include="ContinuousCaptureManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="GolfBallDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -60,6 +63,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ContinuousCaptureManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="GolfBallDetector.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

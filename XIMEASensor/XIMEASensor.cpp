@@ -47,7 +47,6 @@ static SnapshotDefaults g_snapshotDefaults = {
 };
 
 bool Camera_Initialize(const char* logPath, int logLevel) {
-    std::cout << "in XIMEASensor initialize" << std::endl;
     try {
         std::string path = logPath ? logPath : "XIMEASensor.log";
         Logger::GetInstance().Initialize(path, static_cast<LogLevel>(logLevel));
@@ -698,6 +697,46 @@ bool Camera_SaveSnapshotWithDefaults(const char* filename) {
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_SaveSnapshotWithDefaults: " +
             std::string(e.what()));
+        return false;
+    }
+}
+
+
+
+bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int quality,
+    bool asyncSave, bool enableGolfBallDetection,
+    bool saveOriginalImages, bool saveDetectionImages) {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (!captureManager) {
+            LOG_ERROR("Continuous capture manager not available");
+            return false;
+        }
+
+        ContinuousCaptureConfig config;
+        config.durationSeconds = duration;
+        config.imageFormat = format;
+        config.jpgQuality = quality;
+        config.useAsyncSave = asyncSave;
+        config.createMetadata = true;
+        config.baseFolder = ".";
+
+        // Golf ball detection settings - 명시적으로 설정
+        config.enableGolfBallDetection = enableGolfBallDetection;
+        config.saveOriginalImages = saveOriginalImages;
+        config.saveDetectionImages = saveDetectionImages;
+
+        LOG_INFO("Setting continuous capture config with golf ball detection: " +
+            std::string(enableGolfBallDetection ? "ENABLED" : "DISABLED") +
+            ", saveOriginal: " + std::string(saveOriginalImages ? "YES" : "NO") +
+            ", saveDetection: " + std::string(saveDetectionImages ? "YES" : "NO"));
+
+        captureManager->SetConfig(config);
+
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetContinuousCaptureConfigEx: " + std::string(e.what()));
         return false;
     }
 }

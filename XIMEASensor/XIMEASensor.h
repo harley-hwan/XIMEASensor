@@ -33,6 +33,7 @@ namespace CameraDefaults {
     XIMEASENSOR_API extern const int SNAPSHOT_QUALITY;
 }
 
+// Exported structures for external use
 struct ContinuousCaptureDefaults {
     double duration;
     int format;
@@ -44,6 +45,9 @@ struct SnapshotDefaults {
     int format;
     int quality;
 };
+
+// Forward declare the internal config struct
+struct ContinuousCaptureConfig;
 
 extern "C" {
     XIMEASENSOR_API bool Camera_Initialize(const char* logPath = nullptr, int logLevel = 1);
@@ -105,4 +109,7 @@ extern "C" {
     // Simplified API
     XIMEASENSOR_API bool Camera_StartContinuousCaptureWithDefaults();
     XIMEASENSOR_API bool Camera_SaveSnapshotWithDefaults(const char* filename);
+
+    XIMEASENSOR_API bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int quality, bool asyncSave, bool enableGolfBallDetection, bool saveOriginalImages, bool saveDetectionImages);
+    XIMEASENSOR_API bool Camera_GetContinuousCaptureDetectionResult(int* framesWithGolfBall, int* totalBallsDetected, float* averageConfidence, char* detectionFolder, int folderSize);
 }

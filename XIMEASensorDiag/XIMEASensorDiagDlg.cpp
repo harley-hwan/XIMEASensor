@@ -340,12 +340,12 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
     BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
 
     if (isContinuous) {
-        // Continuous capture mode
+        // Continuous capture mode with golf ball detection
 
         ContinuousCaptureDefaults defaults;
         Camera_GetContinuousCaptureDefaults(&defaults);
 
-        int result = MessageBox(_T("PNG (Yes)\nJPG (No)"),
+        int result = MessageBox(_T("Select image format:\n\nPNG (Yes) - Lossless, larger files\nJPG (No) - Compressed, smaller files"),
             _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
 
         if (result == IDCANCEL) {
@@ -355,13 +355,34 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         defaults.format = (result == IDYES) ? 0 : 1;
 
         Camera_SetContinuousCaptureDefaults(&defaults);
+
+        // Enable golf ball detection when checkbox is checked
+        bool enableDetection = (isContinuous == TRUE);
+
+        if (!Camera_SetContinuousCaptureConfigEx(defaults.duration, defaults.format, defaults.quality, defaults.asyncSave,
+            enableDetection,    // Enable golf ball detection
+            true,              // Save original images
+            true)) {           // Save detection images
+            AfxMessageBox(_T("Failed to set continuous capture configuration!"));
+            return;
+        }
+
+        if (enableDetection) {
+            MessageBox(_T("Golf ball detection will be performed on captured frames.\n\n"
+                "Results will be saved in:\n"
+                "- original/ : Original captured frames\n"
+                "- detection/ : Frames with detection results\n\n"
+                "Detection results will be included in metadata."),
+                _T("Golf Ball Detection Enabled"), MB_OK | MB_ICONINFORMATION);
+        }
+
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 
         // Start continuous capture
         if (Camera_StartContinuousCaptureWithDefaults()) {
             if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
             if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
-            if (m_staticStatus) m_staticStatus->SetWindowText(_T("Continuous capture in progress..."));
+            if (m_staticStatus) m_staticStatus->SetWindowText(_T("Continuous capture with golf ball detection in progress..."));
         }
         else {
             AfxMessageBox(_T("Failed to start continuous capture!"));
@@ -412,7 +433,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         }
     }
 }
-
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
 {
