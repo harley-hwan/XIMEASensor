@@ -340,8 +340,7 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
     BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
 
     if (isContinuous) {
-        // Continuous capture mode with golf ball detection
-
+        // Continuous capture mode with ball detection
         ContinuousCaptureDefaults defaults;
         Camera_GetContinuousCaptureDefaults(&defaults);
 
@@ -354,43 +353,37 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 
         defaults.format = (result == IDYES) ? 0 : 1;
 
+        // Ball detection 설정 추가
+        defaults.enableGolfBallDetection = true;  // Ball detection 활성화
+        defaults.saveOriginalImages = true;
+        defaults.saveDetectionImages = true;
+
+        // 수정된 defaults를 설정
         Camera_SetContinuousCaptureDefaults(&defaults);
 
-        // Enable golf ball detection when checkbox is checked
-        bool enableDetection = (isContinuous == TRUE);
-
-        if (!Camera_SetContinuousCaptureConfigEx(defaults.duration, defaults.format, defaults.quality, defaults.asyncSave,
-            enableDetection,    // Enable golf ball detection
-            true,              // Save original images
-            true)) {           // Save detection images
-            AfxMessageBox(_T("Failed to set continuous capture configuration!"));
-            return;
-        }
-
-        if (enableDetection) {
-            MessageBox(_T("Golf ball detection will be performed on captured frames.\n\n"
+        if (defaults.enableGolfBallDetection) {
+            MessageBox(_T("Ball detection will be performed on captured frames.\n\n"
                 "Results will be saved in:\n"
                 "- original/ : Original captured frames\n"
                 "- detection/ : Frames with detection results\n\n"
                 "Detection results will be included in metadata."),
-                _T("Golf Ball Detection Enabled"), MB_OK | MB_ICONINFORMATION);
+                _T("Ball Detection Enabled"), MB_OK | MB_ICONINFORMATION);
         }
 
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 
-        // Start continuous capture
+        // Start continuous capture with defaults (이제 ball detection 설정이 포함됨)
         if (Camera_StartContinuousCaptureWithDefaults()) {
             if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
             if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
-            if (m_staticStatus) m_staticStatus->SetWindowText(_T("Continuous capture with golf ball detection in progress..."));
+            if (m_staticStatus) m_staticStatus->SetWindowText(_T("Continuous capture with ball detection in progress..."));
         }
         else {
             AfxMessageBox(_T("Failed to start continuous capture!"));
         }
     }
     else {
-        // Single snapshot
-
+        // Single snapshot code remains the same
         SnapshotDefaults defaults;
         Camera_GetSnapshotDefaults(&defaults);
 
@@ -433,6 +426,7 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         }
     }
 }
+
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
 {
@@ -809,6 +803,29 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
             totalFrames, savedFrames, droppedFrames,
             duration, totalFrames / duration,
             CString(folderPath).GetString());
+
+        // Ball detection 결과가 있다면 추가로 표시
+        BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
+        if (isContinuous) {
+            int framesWithBalls = 0;
+            int totalBallsDetected = 0;
+            float averageConfidence = 0.0f;
+            char detectionFolder[256] = { 0 };
+
+            if (Camera_GetContinuousCaptureDetectionResult(&framesWithBalls, &totalBallsDetected,
+                &averageConfidence, detectionFolder, sizeof(detectionFolder))) {
+                CString detectionMsg;
+                detectionMsg.Format(_T("\n\nBall Detection Results:\n")
+                    _T("Frames with balls: %d\n")
+                    _T("Total balls detected: %d\n")
+                    _T("Average confidence: %.1f%%\n")
+                    _T("Detection images: %s"),
+                    framesWithBalls, totalBallsDetected,
+                    averageConfidence * 100.0f,
+                    CString(detectionFolder).GetString());
+                msg += detectionMsg;
+            }
+        }
     }
     else {
         msg = _T("Continuous capture failed!");

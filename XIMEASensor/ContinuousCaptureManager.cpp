@@ -2,7 +2,7 @@
 #include "ContinuousCaptureManager.h"
 #include "ImageSaver.h"
 #include "Logger.h"
-#include "GolfBallDetector.h"
+#include "BallDetector.h"
 #include <filesystem>
 #include <sstream>
 #include <iomanip>
@@ -23,26 +23,26 @@ ContinuousCaptureManager::ContinuousCaptureManager()
         m_bufferPool.push(std::vector<unsigned char>());
     }
 
-    // Initialize golf ball detector
-    m_golfBallDetector = std::make_unique<GolfBallDetector>();
+    // Initialize ball detector
+    m_ballDetector = std::make_unique<BallDetector>();
 
-    // 골프공 검출 파라미터 설정
-    GolfBallDetector::DetectionParams params;
-    params.minRadius = 10;      // 최소 반지름을 좀 더 크게
-    params.maxRadius = 40;      // 최대 반지름 조정
+    // 공 검출 파라미터 설정
+    BallDetector::DetectionParams params;
+    params.minRadius = 10;
+    params.maxRadius = 40;
     params.dp = 1.2;
     params.minDist = 30.0;
     params.param1 = 100.0;
-    params.param2 = 25.0;       // 민감도 높임
-    params.brightnessThreshold = 180;  // 밝기 임계값 조정
-    params.minCircularity = 0.7f;      // 원형도 기준 완화
+    params.param2 = 25.0;
+    params.brightnessThreshold = 180;
+    params.minCircularity = 0.7f;
     params.useColorFilter = true;
     params.useCircularityCheck = true;
-    params.detectMultiple = true;       // 여러 개 검출 허용
+    params.detectMultiple = true;
 
-    m_golfBallDetector->SetParameters(params);
+    m_ballDetector->SetParameters(params);
 
-    LOG_INFO("Golf ball detector initialized with parameters");
+    LOG_INFO("Ball detector initialized with parameters");
 }
 
 ContinuousCaptureManager::~ContinuousCaptureManager() {
@@ -60,13 +60,25 @@ void ContinuousCaptureManager::SetConfig(const ContinuousCaptureConfig& config) 
         LOG_WARNING("Cannot change config while capturing");
         return;
     }
+
+    // 이전 설정과 새 설정 비교 로그
+    LOG_INFO("========== Setting new configuration ==========");
+    LOG_INFO("Previous config:");
+    LOG_INFO("  Ball Detection: " + std::string(m_config.enableGolfBallDetection ? "ENABLED" : "DISABLED"));
+    LOG_INFO("  Save Original: " + std::string(m_config.saveOriginalImages ? "YES" : "NO"));
+    LOG_INFO("  Save Detection: " + std::string(m_config.saveDetectionImages ? "YES" : "NO"));
+
     m_config = config;
 
-    LOG_INFO("ContinuousCaptureConfig set: duration=" + std::to_string(config.durationSeconds) +
-        "s, format=" + std::to_string(config.imageFormat) +
-        ", enableGolfBallDetection=" + (config.enableGolfBallDetection ? "true" : "false") +
-        ", saveOriginalImages=" + (config.saveOriginalImages ? "true" : "false") +
-        ", saveDetectionImages=" + (config.saveDetectionImages ? "true" : "false"));
+    LOG_INFO("New config:");
+    LOG_INFO("  Duration: " + std::to_string(config.durationSeconds) + "s");
+    LOG_INFO("  Format: " + std::to_string(config.imageFormat) + " (0=PNG, 1=JPG)");
+    LOG_INFO("  JPG Quality: " + std::to_string(config.jpgQuality));
+    LOG_INFO("  Async Save: " + std::string(config.useAsyncSave ? "YES" : "NO"));
+    LOG_INFO("  Ball Detection: " + std::string(config.enableGolfBallDetection ? "ENABLED" : "DISABLED"));
+    LOG_INFO("  Save Original: " + std::string(config.saveOriginalImages ? "YES" : "NO"));
+    LOG_INFO("  Save Detection: " + std::string(config.saveDetectionImages ? "YES" : "NO"));
+    LOG_INFO("==============================================");
 }
 
 bool ContinuousCaptureManager::StartCapture() {
@@ -79,8 +91,18 @@ bool ContinuousCaptureManager::StartCapture() {
 
     m_state = ContinuousCaptureState::CAPTURING;
 
-    LOG_INFO("Starting continuous capture for " + std::to_string(m_config.durationSeconds) + " seconds");
-    LOG_INFO("Golf ball detection: " + std::string(m_config.enableGolfBallDetection ? "ENABLED" : "DISABLED"));
+    // 현재 설정 로그 출력
+    LOG_INFO("========== Starting continuous capture ==========");
+    LOG_INFO("Duration: " + std::to_string(m_config.durationSeconds) + " seconds");
+    LOG_INFO("Format: " + std::to_string(m_config.imageFormat) + " (0=PNG, 1=JPG)");
+    LOG_INFO("JPG Quality: " + std::to_string(m_config.jpgQuality));
+    LOG_INFO("Async Save: " + std::string(m_config.useAsyncSave ? "YES" : "NO"));
+    LOG_INFO("Create Metadata: " + std::string(m_config.createMetadata ? "YES" : "NO"));
+    LOG_INFO("Base Folder: " + m_config.baseFolder);
+    LOG_INFO("Ball Detection: " + std::string(m_config.enableGolfBallDetection ? "ENABLED" : "DISABLED"));
+    LOG_INFO("Save Original Images: " + std::string(m_config.saveOriginalImages ? "YES" : "NO"));
+    LOG_INFO("Save Detection Images: " + std::string(m_config.saveDetectionImages ? "YES" : "NO"));
+    LOG_INFO("===============================================");
 
     m_frameCount = 0;
     m_savedCount = 0;
@@ -112,6 +134,7 @@ bool ContinuousCaptureManager::StartCapture() {
     return true;
 }
 
+
 void ContinuousCaptureManager::StopCapture() {
     if (!m_isCapturing.load()) {
         return;
@@ -129,7 +152,7 @@ void ContinuousCaptureManager::StopCapture() {
 
     // Wait for all async save operations to complete
     if (m_config.useAsyncSave && m_saveThreadRunning) {
-        if (!WaitForSaveCompletion(30)) {  // 30초 타임아웃
+        if (!WaitForSaveCompletion(30)) {
             LOG_ERROR("Timeout waiting for save operations to complete");
             int pendingFrames = m_frameCount.load() - m_savedCount.load() - m_droppedCount.load();
             if (pendingFrames > 0) {
@@ -143,7 +166,7 @@ void ContinuousCaptureManager::StopCapture() {
     if (m_config.createMetadata) {
         SaveMetadata();
 
-        // Save detection metadata if golf ball detection was enabled
+        // Save detection metadata if ball detection was enabled
         if (m_config.enableGolfBallDetection) {
             SaveDetectionMetadata();
         }
@@ -160,8 +183,8 @@ void ContinuousCaptureManager::StopCapture() {
         " (dropped: " + std::to_string(m_droppedCount.load()) + ")");
 
     if (m_config.enableGolfBallDetection) {
-        LOG_INFO("Golf ball detection results: " +
-            std::to_string(m_detectionResult.framesWithGolfBall) + " frames with golf balls, " +
+        LOG_INFO("Ball detection results: " +
+            std::to_string(m_detectionResult.framesWithGolfBall) + " frames with balls, " +
             std::to_string(m_detectionResult.totalBallsDetected) + " total balls detected");
     }
 }
@@ -183,22 +206,24 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
         SaveFrameAsync(data, width, height);
     }
     else {
-        // 동기 저장 모드에서도 골프공 검출을 수행
+        // 동기 저장 모드
         std::string saveFolder = m_captureFolder;
         if (m_config.enableGolfBallDetection && m_config.saveOriginalImages) {
             saveFolder = m_originalFolder;
         }
 
-        std::string filename = saveFolder + "/frame_" +
-            std::to_string(m_frameCount.load() - 1) +
-            (m_config.imageFormat == 0 ? ".png" : ".jpg");
+        std::stringstream ss;
+        ss << saveFolder << "/frame_"
+            << std::setfill('0') << std::setw(5) << (m_frameCount.load() - 1)
+            << (m_config.imageFormat == 0 ? ".png" : ".jpg");
+        std::string filename = ss.str();
 
         if (ImageSaver::SaveGrayscaleImage(data, width, height, filename,
             static_cast<ImageFormat>(m_config.imageFormat),
             m_config.jpgQuality)) {
             m_savedCount++;
 
-            // 골프공 검출 수행
+            // 공 검출 수행
             if (m_config.enableGolfBallDetection) {
                 SaveItem item;
                 item.data.resize(width * height);
@@ -208,7 +233,7 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
                 item.frameIndex = m_frameCount.load() - 1;
                 item.filename = filename;
 
-                ProcessGolfBallDetection(item);
+                ProcessBallDetection(item);
             }
         }
         else {
@@ -245,8 +270,8 @@ bool ContinuousCaptureManager::CreateCaptureFolder() {
         std::filesystem::create_directories(m_captureFolder);
         LOG_INFO("Created capture folder: " + m_captureFolder);
 
-        // Create subfolders for golf ball detection - 항상 생성
-        if (!m_config.enableGolfBallDetection) {
+        // Create subfolders for ball detection if enabled
+        if (m_config.enableGolfBallDetection) {     // check 여기서 false.
             // Original images folder
             m_originalFolder = m_captureFolder + "/original";
             std::filesystem::create_directories(m_originalFolder);
@@ -281,7 +306,7 @@ void ContinuousCaptureManager::SaveFrameAsync(const unsigned char* data, int wid
 
     // Determine save path based on configuration
     std::string saveFolder = m_captureFolder;
-    if (m_config.enableGolfBallDetection && m_config.saveOriginalImages) {
+    if (m_config.enableGolfBallDetection && m_config.saveOriginalImages) {      // check: 여기서 false임.
         saveFolder = m_originalFolder;
     }
 
@@ -330,10 +355,10 @@ void ContinuousCaptureManager::SaveThreadWorker() {
                 m_savedCount++;
                 LOG_DEBUG("Saved frame: " + item.filename);
 
-                // Process golf ball detection if enabled
+                // Process ball detection if enabled
                 if (m_config.enableGolfBallDetection) {
-                    LOG_DEBUG("Processing golf ball detection for frame " + std::to_string(item.frameIndex));
-                    ProcessGolfBallDetection(item);
+                    LOG_DEBUG("Processing ball detection for frame " + std::to_string(item.frameIndex));
+                    ProcessBallDetection(item);
                 }
             }
             else {
@@ -353,16 +378,16 @@ void ContinuousCaptureManager::SaveThreadWorker() {
     LOG_INFO("Save thread ended");
 }
 
-void ContinuousCaptureManager::ProcessGolfBallDetection(const SaveItem& item) {
-    if (!m_golfBallDetector) {
-        LOG_ERROR("Golf ball detector not initialized");
+void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
+    if (!m_ballDetector) {
+        LOG_ERROR("Ball detector not initialized");
         return;
     }
 
-    LOG_DEBUG("Starting golf ball detection for frame " + std::to_string(item.frameIndex));
+    LOG_DEBUG("Starting ball detection for frame " + std::to_string(item.frameIndex));
 
-    // Detect golf ball
-    auto result = m_golfBallDetector->DetectGolfBall(
+    // Detect ball
+    auto result = m_ballDetector->DetectBall(
         item.data.data(), item.width, item.height, item.frameIndex);
 
     // Update statistics
@@ -388,7 +413,7 @@ void ContinuousCaptureManager::ProcessGolfBallDetection(const SaveItem& item) {
             }
 
             LOG_INFO("Frame " + std::to_string(item.frameIndex) +
-                ": Detected " + std::to_string(result.balls.size()) + " golf ball(s)");
+                ": Detected " + std::to_string(result.balls.size()) + " ball(s)");
         }
     }
 
@@ -412,7 +437,7 @@ void ContinuousCaptureManager::ProcessGolfBallDetection(const SaveItem& item) {
         detectionPath << (m_config.imageFormat == 0 ? ".png" : ".jpg");
 
         // 검출 결과가 그려진 이미지 저장
-        if (!m_golfBallDetector->SaveDetectionImage(
+        if (!m_ballDetector->SaveDetectionImage(
             item.data.data(), item.width, item.height,
             result, detectionPath.str())) {
             LOG_ERROR("Failed to save detection image: " + detectionPath.str());
@@ -450,7 +475,7 @@ void ContinuousCaptureManager::SaveMetadata() {
         file << "  JPG Quality: " << m_config.jpgQuality << "\n";
     }
     file << "  Async Save: " << (m_config.useAsyncSave ? "Yes" : "No") << "\n";
-    file << "  Golf Ball Detection: " << (m_config.enableGolfBallDetection ? "Yes" : "No") << "\n\n";
+    file << "  Ball Detection: " << (m_config.enableGolfBallDetection ? "Yes" : "No") << "\n\n";
 
     file << "Results:\n";
     file << "  Total Frames: " << m_frameCount.load() << "\n";
@@ -491,16 +516,16 @@ void ContinuousCaptureManager::SaveDetectionMetadata() {
     struct tm localTime;
     localtime_s(&localTime, &time_t);
 
-    file << "Golf Ball Detection Results\n";
-    file << "===========================\n\n";
+    file << "Ball Detection Results\n";
+    file << "=====================\n\n";
 
     file << "Detection Date: "
         << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S") << "\n\n";
 
     file << "Summary:\n";
     file << "  Total Frames Analyzed: " << m_frameCount.load() << "\n";
-    file << "  Frames with Golf Ball: " << m_detectionResult.framesWithGolfBall << "\n";
-    file << "  Total Golf Balls Detected: " << m_detectionResult.totalBallsDetected << "\n";
+    file << "  Frames with Ball: " << m_detectionResult.framesWithGolfBall << "\n";
+    file << "  Total Balls Detected: " << m_detectionResult.totalBallsDetected << "\n";
     file << "  Detection Rate: " << std::fixed << std::setprecision(1)
         << (m_frameCount > 0 ?
             (float)m_detectionResult.framesWithGolfBall / m_frameCount * 100.0f : 0.0f)
@@ -509,7 +534,7 @@ void ContinuousCaptureManager::SaveDetectionMetadata() {
         << m_detectionResult.averageConfidence << "\n\n";
 
     file << "Detection Parameters:\n";
-    auto params = m_golfBallDetector->GetParameters();
+    auto params = m_ballDetector->GetParameters();
     file << "  Min Radius: " << params.minRadius << " pixels\n";
     file << "  Max Radius: " << params.maxRadius << " pixels\n";
     file << "  Brightness Threshold: " << params.brightnessThreshold << "\n";

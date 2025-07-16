@@ -38,7 +38,10 @@ static ContinuousCaptureDefaults g_continuousCaptureDefaults = {
     CameraDefaults::CONTINUOUS_CAPTURE_DURATION,
     CameraDefaults::CONTINUOUS_CAPTURE_FORMAT,
     CameraDefaults::CONTINUOUS_CAPTURE_QUALITY,
-    CameraDefaults::CONTINUOUS_CAPTURE_ASYNC_SAVE
+    CameraDefaults::CONTINUOUS_CAPTURE_ASYNC_SAVE,
+    false,  // enableGolfBallDetection
+    true,   // saveOriginalImages
+    true    // saveDetectionImages
 };
 
 static SnapshotDefaults g_snapshotDefaults = {
@@ -387,10 +390,7 @@ bool Camera_SaveSnapshot(const char* filename, int format, int quality) {
         bool result = controller.GetFrame(buffer, bufferSize, width, height);
 
         if (result) {
-            result = ImageSaver::SaveGrayscaleImage(buffer, width, height,
-                filename,
-                static_cast<ImageFormat>(format),
-                quality);
+            result = ImageSaver::SaveGrayscaleImage(buffer, width, height, filename, static_cast<ImageFormat>(format), quality);
         }
 
         delete[] buffer;
@@ -594,7 +594,8 @@ void Camera_GetContinuousCaptureDefaults(ContinuousCaptureDefaults* defaults) {
     *defaults = g_continuousCaptureDefaults;
     LOG_DEBUG("Retrieved continuous capture defaults: duration=" +
         std::to_string(defaults->duration) + "s, format=" +
-        std::to_string(defaults->format));
+        std::to_string(defaults->format) + ", enableGolfBallDetection=" +
+        std::to_string(defaults->enableGolfBallDetection));
 }
 
 void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureDefaults* defaults) {
@@ -623,7 +624,8 @@ void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureDefaults* defaul
     LOG_INFO("Updated continuous capture defaults: duration=" +
         std::to_string(defaults->duration) + "s, format=" +
         std::to_string(defaults->format) + ", quality=" +
-        std::to_string(defaults->quality));
+        std::to_string(defaults->quality) + ", enableGolfBallDetection=" +
+        std::to_string(defaults->enableGolfBallDetection));
 }
 
 void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults) {
@@ -663,12 +665,15 @@ void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults) {
 
 bool Camera_StartContinuousCaptureWithDefaults() {
     try {
-        // Apply default configuration
-        if (!Camera_SetContinuousCaptureConfig(
+        // Apply default configuration including ball detection settings
+        if (!Camera_SetContinuousCaptureConfigEx(
             g_continuousCaptureDefaults.duration,
             g_continuousCaptureDefaults.format,
             g_continuousCaptureDefaults.quality,
-            g_continuousCaptureDefaults.asyncSave)) {
+            g_continuousCaptureDefaults.asyncSave,
+            g_continuousCaptureDefaults.enableGolfBallDetection,
+            g_continuousCaptureDefaults.saveOriginalImages,
+            g_continuousCaptureDefaults.saveDetectionImages)) {
             LOG_ERROR("Failed to set continuous capture config with defaults");
             return false;
         }
@@ -721,12 +726,12 @@ bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int qualit
         config.createMetadata = true;
         config.baseFolder = ".";
 
-        // Golf ball detection settings - 명시적으로 설정
+        // Ball detection settings
         config.enableGolfBallDetection = enableGolfBallDetection;
         config.saveOriginalImages = saveOriginalImages;
         config.saveDetectionImages = saveDetectionImages;
 
-        LOG_INFO("Setting continuous capture config with golf ball detection: " +
+        LOG_INFO("Setting continuous capture config with ball detection: " +
             std::string(enableGolfBallDetection ? "ENABLED" : "DISABLED") +
             ", saveOriginal: " + std::string(saveOriginalImages ? "YES" : "NO") +
             ", saveDetection: " + std::string(saveDetectionImages ? "YES" : "NO"));
@@ -737,6 +742,33 @@ bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int qualit
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_SetContinuousCaptureConfigEx: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* totalBallsDetected,
+    float* averageConfidence, char* detectionFolder, int folderSize) {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (!captureManager) {
+            LOG_ERROR("Continuous capture manager not available");
+            return false;
+        }
+
+        auto result = captureManager->GetDetectionResult();
+
+        if (framesWithBalls) *framesWithBalls = result.framesWithGolfBall;
+        if (totalBallsDetected) *totalBallsDetected = result.totalBallsDetected;
+        if (averageConfidence) *averageConfidence = result.averageConfidence;
+
+        if (detectionFolder && folderSize > 0) {
+            strncpy_s(detectionFolder, folderSize, result.detectionFolder.c_str(), _TRUNCATE);
+        }
+
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetContinuousCaptureDetectionResult: " + std::string(e.what()));
         return false;
     }
 }
