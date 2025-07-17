@@ -1,4 +1,4 @@
-﻿#include "pch.h"                 // Precompiled header (if used in the project)
+﻿#include "pch.h"
 #include "BallDetector.h"
 #include "Logger.h"
 #include <opencv2/opencv.hpp>
@@ -13,6 +13,32 @@
 
 namespace fs = std::filesystem;
 
+// Constructor for DetectionParams struct: set all default values
+BallDetector::DetectionParams::DetectionParams() {
+    // Default parameters optimized for overhead (ceiling) camera detecting a golf ball on the floor
+    dp = 1.5;
+    minDist = 30.0;
+    param1 = 100.0;
+    param2 = 0.9;
+    minRadius = 10;
+    maxRadius = 80;
+    brightnessThreshold = 100;     // Brightness threshold for white balls
+    minCircularity = 0.7f;
+    contrastThreshold = 10.0f;
+    useColorFilter = true;
+    useCircularityCheck = true;
+    useHoughGradientAlt = true;
+    detectMultiple = false;    // single-ball mode
+    useMorphology = true;
+    useAdaptiveThreshold = true;
+    correctPerspective = false;
+    enhanceShadows = true;
+    shadowEnhanceFactor = 0.7f;
+    saveIntermediateImages = true;
+    debugOutputDir = "detect_outputs";
+}
+
+// BallDetector implementation (PIMPL idiom for internal details)
 class BallDetector::Impl {
 public:
     // Calibration data for perspective correction
@@ -45,9 +71,9 @@ public:
     void saveIntermediateImages(const std::string& basePath, int frameIndex);
 };
 
-// Constructor
-BallDetector::BallDetector() : pImpl(std::make_unique<Impl>()) {
-    // Simple OpenCV functionality test (to ensure OpenCV is initialized)
+// BallDetector Constructor
+BallDetector::BallDetector() : m_params(), pImpl(std::make_unique<Impl>()) {
+    // Ensure OpenCV is initialized
     cv::Mat testMat(10, 10, CV_8UC1);
     if (testMat.empty()) {
         LOG_ERROR("OpenCV initialization failed");
@@ -61,33 +87,14 @@ BallDetector::BallDetector() : pImpl(std::make_unique<Impl>()) {
 BallDetector::~BallDetector() = default;
 
 void BallDetector::InitializeDefaultParams() {
-    // Default parameters optimized for overhead (ceiling) camera detecting a golf ball on the floor
-    m_params.minRadius = 10;         // Detect slightly smaller balls
-    m_params.maxRadius = 80;        // Adjust based on camera height (3m ceiling approx.)
-    m_params.dp = 1.5;
-    m_params.minDist = 30.0;
-    m_params.param1 = 100.0;         // Lower Canny high threshold (account for shadows)
-    m_params.param2 = 0.9;         // Lower accumulator threshold to detect more candidates
-    m_params.brightnessThreshold = 150;  // Brightness threshold for white balls (consider shadows)
-    m_params.minCircularity = 0.7f;      // Allow some shape distortion (e.g., motion blur)
-    m_params.contrastThreshold = 10.0f;  // Minimum background contrast
-    m_params.useColorFilter = true;
-    m_params.useCircularityCheck = true;
-    m_params.useHoughGradientAlt = true;
-    m_params.detectMultiple = false;     // Only one ball expected in scene
-    m_params.useMorphology = true;
-    m_params.useAdaptiveThreshold = true;
-    m_params.correctPerspective = false;
-    m_params.enhanceShadows = true;
-    m_params.shadowEnhanceFactor = 0.7f;
-    m_params.saveIntermediateImages = true;
-    m_params.debugOutputDir = "detect_outputs";
+    // Set detection parameters to default values (for ceiling-mounted camera scenario)
+    m_params = DetectionParams();  // Use the DetectionParams constructor to set defaults
 
     LOG_INFO("BallDetector parameters initialized for ceiling camera:");
     LOG_INFO("  - Radius range: " + std::to_string(m_params.minRadius) + " - " + std::to_string(m_params.maxRadius));
     LOG_INFO("  - Shadow enhancement: " + std::string(m_params.enhanceShadows ? "ON" : "OFF"));
     LOG_INFO("  - Adaptive thresholding: " + std::string(m_params.useAdaptiveThreshold ? "ON" : "OFF"));
-    LOG_INFO("  - Mode: Single-ball detection");
+    LOG_INFO("  - Mode: " + std::string(m_params.detectMultiple ? "Multi-ball" : "Single-ball") + " detection");
 }
 
 void BallDetector::ResetToDefaults() {
@@ -117,7 +124,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
     try {
         LOG_DEBUG("Starting ball detection for frame " + std::to_string(frameIndex));
 
-        // 1. Construct grayscale image from input buffer (8-bit, single channel)
+        // 1. Construct grayscale image from input buffer (8-bit single-channel)
         cv::Mat grayImage(height, width, CV_8UC1, const_cast<unsigned char*>(imageData));
 
         // 2. Correct lens distortion/perspective if calibration data is available
@@ -138,14 +145,14 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         allCandidates.insert(allCandidates.end(), houghCircles.begin(), houghCircles.end());
         LOG_DEBUG("HoughCircles found " + std::to_string(houghCircles.size()) + " candidate(s)");
 
-        // 4-2. Adaptive threshold + contour-based detection
+        // 4-2. Adaptive threshold + contour-based detection (if enabled)
         if (m_params.useAdaptiveThreshold) {
             std::vector<cv::Vec3f> adaptiveCircles = pImpl->detectByAdaptiveThreshold(processedImage, m_params);
             allCandidates.insert(allCandidates.end(), adaptiveCircles.begin(), adaptiveCircles.end());
             LOG_DEBUG("Adaptive thresholding found " + std::to_string(adaptiveCircles.size()) + " candidate(s)");
         }
 
-        // 4-3. Otsu threshold + contour detection (backup method, if no candidates yet)
+        // 4-3. Otsu threshold + contour detection (backup method if no candidates yet)
         if (allCandidates.empty()) {
             cv::Mat binary;
             cv::threshold(processedImage, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
@@ -228,7 +235,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
             // 6-5. Compute overall confidence score for this detection
             info.confidence = pImpl->calculateConfidence(processedImage, circle, m_params);
 
-            // If confidence above a threshold, accept this detection
+            // Accept this detection if confidence is above a threshold
             if (info.confidence >= 0.4f) {
                 validBalls.push_back(info);
             }
@@ -238,7 +245,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         if (!validBalls.empty()) {
             std::sort(validBalls.begin(), validBalls.end(),
                 [](const BallInfo& a, const BallInfo& b) { return a.confidence > b.confidence; });
-            // We only care about the top result for single-ball detection
+            // Only keep the top result for single-ball detection mode
             result.balls.push_back(validBalls[0]);
             result.found = true;
 
@@ -304,9 +311,9 @@ cv::Mat BallDetector::Impl::preprocessImage(const cv::Mat& grayImage, const Dete
     return processed;
 }
 
-// Enhance shadow regions by brightening dark areas
+// Brighten dark (shadow) regions to enhance ball visibility
 cv::Mat BallDetector::Impl::enhanceShadowRegions(const cv::Mat& image, float factor) {
-    // Create a mask of dark regions (thresholding inverse to get shadows)
+    // Create a mask of dark regions (threshold inverse to get shadows)
     cv::Mat darkMask;
     cv::threshold(image, darkMask, 100, 255, cv::THRESH_BINARY_INV);
 
@@ -316,10 +323,9 @@ cv::Mat BallDetector::Impl::enhanceShadowRegions(const cv::Mat& image, float fac
     // Brighten the shadow regions
     shadows *= factor;
 
-    // Add the brightened shadows back to the original image
+    // Add the brightened shadows back to the original image, then clip to 255
     cv::Mat result;
     cv::add(image, shadows, result);
-    // Clip values to 255 (since adding might exceed 255)
     cv::threshold(result, result, 255, 255, cv::THRESH_TRUNC);
     return result;
 }
@@ -327,14 +333,14 @@ cv::Mat BallDetector::Impl::enhanceShadowRegions(const cv::Mat& image, float fac
 // Correct lens distortion/perspective using calibration matrix (if available)
 cv::Mat BallDetector::Impl::correctPerspective(const cv::Mat& image) {
     if (m_cameraMatrix.empty() || m_distCoeffs.empty()) {
-        return image;  // nothing to do if no calibration data
+        return image;  // No calibration data available
     }
     cv::Mat undistorted;
     cv::undistort(image, undistorted, m_cameraMatrix, m_distCoeffs);
     return undistorted;
 }
 
-// Detect circles using Hough Circle Transform
+// Detect circles using Hough Circle Transform (standard or alternate method)
 std::vector<cv::Vec3f> BallDetector::Impl::detectCirclesHough(const cv::Mat& image, const DetectionParams& params) {
     std::vector<cv::Vec3f> circles;
     // Use Canny to find edges (for debugging or to assist HOUGH_GRADIENT; not directly used by HOUGH_GRADIENT_ALT)
@@ -353,9 +359,7 @@ std::vector<cv::Vec3f> BallDetector::Impl::detectCirclesHough(const cv::Mat& ima
     return circles;
 }
 
-// Detect circles by adaptive thresholding and contour analysis
 std::vector<cv::Vec3f> BallDetector::Impl::detectByAdaptiveThreshold(const cv::Mat& image, const DetectionParams& params) {
-    // Apply adaptive threshold (Gaussian) to create binary image
     cv::Mat binary;
     cv::adaptiveThreshold(image, binary, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C,
         cv::THRESH_BINARY, 21, -5);
@@ -391,7 +395,7 @@ std::vector<cv::Vec3f> BallDetector::Impl::detectCircleByContour(const cv::Mat& 
         double perimeter = cv::arcLength(contour, true);
         if (perimeter <= 0) continue;
         double circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
-        // Allow some leniency (80% of minCircularity) because this is an initial filter
+        // Allow some leniency (80% of minCircularity) for initial filtering
         if (circularity >= params.minCircularity * 0.8f) {
             circles.emplace_back(center.x, center.y, radius);
         }
@@ -405,7 +409,7 @@ float BallDetector::Impl::calculateCircularity(const cv::Mat& image, const cv::V
     int cy = cvRound(circle[1]);
     int radius = cvRound(circle[2]);
 
-    // Define a ROI around the circle (with some margin to include edges)
+    // Define a ROI around the circle (with margin to include edges)
     int margin = 10;
     int x = std::max(0, cx - radius - margin);
     int y = std::max(0, cy - radius - margin);
@@ -445,14 +449,13 @@ float BallDetector::Impl::calculateCircularity(const cv::Mat& image, const cv::V
         return 0.0f;
     }
 
-    // Calculate circularity of the best matching contour
+    // Calculate circularity of the best matching contour (cap at 1.0)
     double area = cv::contourArea(contours[bestIdx]);
     double perimeter = cv::arcLength(contours[bestIdx], true);
     if (perimeter <= 0) {
         return 0.0f;
     }
     double circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
-    // Cap circularity at 1.0 (perfect circle) and return as float
     return static_cast<float>(std::min(circularity, 1.0));
 }
 
@@ -491,11 +494,11 @@ bool BallDetector::Impl::passesColorFilter(const cv::Mat& grayImage, const cv::V
     if (contrast >= params.contrastThreshold) {
         return true;
     }
-    // 3. Uniform color ball (low standard deviation in intensity)
+    // 3. Uniform color ball (low standard deviation in intensity within the ball)
     if (ballStdDev < 20.0) {
         return true;
     }
-    // If none of the conditions met, reject this candidate
+    // If none of the conditions are met, reject this candidate
     return false;
 }
 
@@ -505,10 +508,10 @@ float BallDetector::Impl::calculateContrastScore(const cv::Mat& image, const cv:
     int cy = cvRound(circle[1]);
     int radius = cvRound(circle[2]);
 
-    // Mask for the ball (slightly inside the ball to avoid edges)
+    // Mask for the ball (slightly inside the ball to avoid edge effects)
     cv::Mat ballMask = cv::Mat::zeros(image.size(), CV_8UC1);
     cv::circle(ballMask, cv::Point(cx, cy), static_cast<int>(radius * 0.9), cv::Scalar(255), -1);
-    // Mask for a ring around the ball (background)
+    // Mask for a ring around the ball (background region)
     cv::Mat bgMask = cv::Mat::zeros(image.size(), CV_8UC1);
     cv::circle(bgMask, cv::Point(cx, cy), static_cast<int>(radius * 1.5), cv::Scalar(255), -1);
     cv::circle(bgMask, cv::Point(cx, cy), radius, cv::Scalar(0), -1);
@@ -520,16 +523,16 @@ float BallDetector::Impl::calculateContrastScore(const cv::Mat& image, const cv:
 
 // Calculate an overall confidence score for a detected circle
 float BallDetector::Impl::calculateConfidence(const cv::Mat& image, const cv::Vec3f& circle, const DetectionParams& params) {
-    // 1. Circularity component (30%)
+    // 1. Circularity component (30% of total score)
     float circScore = calculateCircularity(image, circle, params);
     float confidence = circScore * 0.3f;
 
     // 2. Contrast component (30%)
     float contrast = calculateContrastScore(image, circle);
-    float contrastNorm = std::min(1.0f, contrast / 50.0f);  // normalize contrast: 50 intensity difference = full score
+    float contrastNorm = std::min(1.0f, contrast / 50.0f);  // normalize contrast (50 intensity difference = full score)
     confidence += contrastNorm * 0.3f;
 
-    // 3. Size suitability component (20%) – how close the radius is to expected optimal size
+    // 3. Size suitability component (20%) – how close the radius is to the expected optimal size
     float optimalRadius = (params.minRadius + params.maxRadius) / 2.0f;
     float radiusRange = (params.maxRadius - params.minRadius) / 2.0f;
     float sizeScore = 1.0f;
@@ -544,7 +547,6 @@ float BallDetector::Impl::calculateConfidence(const cv::Mat& image, const cv::Ve
     cv::circle(mask, cv::Point(cvRound(circle[0]), cvRound(circle[1])), cvRound(circle[2] * 0.8), cv::Scalar(255), -1);
     cv::Scalar meanVal, stdDevVal;
     cv::meanStdDev(image, meanVal, stdDevVal, mask);
-    // Compute uniformity (1 - normalized stddev, capped at 1)
     float stdDevIntensity = static_cast<float>(stdDevVal[0]);
     float uniformity = 1.0f - std::min(1.0f, stdDevIntensity / 40.0f);
     confidence += uniformity * 0.2f;
@@ -618,7 +620,7 @@ bool BallDetector::DrawDetectionResult(unsigned char* imageData, int width, int 
                 cv::Scalar(0, 0, 255), 1);
         }
 
-        // Convert back to grayscale (the drawing is colored, but we write into original buffer in grayscale form)
+        // Convert back to grayscale (drawings are colored, but output must remain grayscale)
         cv::cvtColor(colorImg, grayImg, cv::COLOR_BGR2GRAY);
         return true;
     }
@@ -628,7 +630,7 @@ bool BallDetector::DrawDetectionResult(unsigned char* imageData, int width, int 
     }
 }
 
-// Save a detection result image to disk with annotations (for debugging or analysis)
+// Save a detection result image to disk with annotations (for debugging/analysis)
 bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int width, int height,
     const BallDetectionResult& result,
     const std::string& outputPath) {
@@ -760,7 +762,7 @@ void BallDetector::AutoTuneParameters(const std::vector<unsigned char*>& sampleI
         }
     }
 
-    // Apply the best found parameters
+    // Restore original parameters (just in case) and apply the best found parameters
     m_params = bestParams;
     LOG_INFO("Auto-tune completed. Best score: " + std::to_string(bestScore));
     LOG_INFO("Optimal parameters: circularity=" + std::to_string(bestParams.minCircularity) +

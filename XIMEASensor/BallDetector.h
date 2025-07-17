@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <opencv2/core/types.hpp>
+#include <memory>
 
 namespace cv {
     class Mat;
@@ -30,34 +31,37 @@ class BallDetector {
 public:
     struct DetectionParams {
         // Hough Circle detection parameters
-        double dp = 1.5;             // Inverse ratio of the accumulator resolution to image resolution
-        double minDist = 30.0;       // Minimum distance between detected centers
-        double param1 = 100.0;        // Higher threshold for Canny (lower is half of this)
-        double param2 = 0.9;        // Circle detection threshold (smaller -> more false circles possible)
-        int minRadius = 10;          // Minimum circle radius to detect (pixels)
-        int maxRadius = 80;         // Maximum circle radius to detect
+        double dp;             // Inverse ratio of the accumulator resolution to image resolution
+        double minDist;        // Minimum distance between detected centers
+        double param1;         // Higher threshold for Canny (lower is half of this)
+        double param2;         // Circle detection threshold (smaller -> more false circles possible)
+        int minRadius;         // Minimum circle radius to detect (pixels)
+        int maxRadius;         // Maximum circle radius to detect
 
         // Color/Brightness filtering and shape validation
-        int brightnessThreshold = 130;   // Brightness threshold for definitely bright (white) balls
-        float minCircularity = 0.7f;     // Minimum acceptable circularity
-        float contrastThreshold = 10.0f; // Minimum intensity difference from background
+        int brightnessThreshold;   // Brightness threshold for definitely bright (white) balls
+        float minCircularity;      // Minimum acceptable circularity
+        float contrastThreshold;   // Minimum intensity difference from background
 
         // Detection options
-        bool useColorFilter = true;        // Use brightness/color filtering
-        bool useCircularityCheck = true;   // Use circularity check on candidates
-        bool useHoughGradientAlt = true;   // Use HOUGH_GRADIENT_ALT (more accurate circle detection)
-        bool detectMultiple = false;       // Detect only a single ball (most likely scenario for ceiling cam)
-        bool useMorphology = true;         // Use morphological operations to clean binary images
-        bool useAdaptiveThreshold = true;  // Use adaptive threshold + contour detection method
+        bool useColorFilter;        // Use brightness/color filtering
+        bool useCircularityCheck;   // Use circularity check on candidates
+        bool useHoughGradientAlt;   // Use HOUGH_GRADIENT_ALT (more accurate circle detection)
+        bool detectMultiple;        // Detect multiple balls vs single ball (false = single-ball mode)
+        bool useMorphology;         // Use morphological operations to clean binary images
+        bool useAdaptiveThreshold;  // Use adaptive threshold + contour detection method
 
         // Ceiling camera specific options
-        bool correctPerspective = false;   // Apply lens distortion correction if calibration provided
-        bool enhanceShadows = true;        // Enhance dark (shadow) regions to help detection
-        float shadowEnhanceFactor = 0.7f;  // Brightening factor for shadow regions
+        bool correctPerspective;    // Apply lens distortion correction if calibration provided
+        bool enhanceShadows;        // Enhance dark (shadow) regions to help detection
+        float shadowEnhanceFactor;  // Brightening factor for shadow regions
 
         // Debug options
-        bool saveIntermediateImages = true;        // Save intermediate processing images for debugging
-        std::string debugOutputDir = "detect_outputs"; // Directory to save debug images
+        bool saveIntermediateImages;        // Save intermediate processing images for debugging
+        std::string debugOutputDir;         // Directory to save debug images
+
+        // Constructor: initialize with default values (defined in BallDetector.cpp)
+        DetectionParams();
     };
 
 private:
