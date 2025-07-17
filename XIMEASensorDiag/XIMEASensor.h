@@ -114,9 +114,6 @@ extern "C" {
     XIMEASENSOR_API bool Camera_StartContinuousCaptureWithDefaults();
     XIMEASENSOR_API bool Camera_SaveSnapshotWithDefaults(const char* filename);
 
-    XIMEASENSOR_API bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int quality,
-        bool asyncSave, bool enableBallDetection, bool saveOriginalImages, bool saveDetectionImages);
-
-    XIMEASENSOR_API bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls,
-        int* totalBallsDetected, float* averageConfidence, char* detectionFolder, int folderSize);
+    XIMEASENSOR_API bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int quality, bool asyncSave, bool enableBallDetection, bool saveOriginalImages, bool saveDetectionImages);
+    XIMEASENSOR_API bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* totalBallsDetected, float* averageConfidence, char* detectionFolder, int folderSize);
 }

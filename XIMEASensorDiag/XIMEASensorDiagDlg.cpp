@@ -361,14 +361,14 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         // 수정된 defaults를 설정
         Camera_SetContinuousCaptureDefaults(&defaults);
 
-        if (defaults.enableBallDetection) {
-            MessageBox(_T("Ball detection will be performed on captured frames.\n\n"
-                "Results will be saved in:\n"
-                "- original/ : Original captured frames\n"
-                "- detection/ : Frames with detection results\n\n"
-                "Detection results will be included in metadata."),
-                _T("Ball Detection Enabled"), MB_OK | MB_ICONINFORMATION);
-        }
+        //if (defaults.enableBallDetection) {
+        //    MessageBox(_T("Ball detection will be performed on captured frames.\n\n"
+        //        "Results will be saved in:\n"
+        //        "- original/ : Original captured frames\n"
+        //        "- detection/ : Frames with detection results\n\n"
+        //        "Detection results will be included in metadata."),
+        //        _T("Ball Detection Enabled"), MB_OK | MB_ICONINFORMATION);
+        //}
 
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 

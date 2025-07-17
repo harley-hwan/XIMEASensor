@@ -23,26 +23,10 @@ ContinuousCaptureManager::ContinuousCaptureManager()
         m_bufferPool.push(std::vector<unsigned char>());
     }
 
-    // Initialize ball detector
+    // Initialize ball detector - BallDetector가 내부적으로 기본 파라미터를 설정함
     m_ballDetector = std::make_unique<BallDetector>();
 
-    // 공 검출 파라미터 설정
-    BallDetector::DetectionParams params;
-    params.minRadius = 40;
-    params.maxRadius = 150;
-    params.dp = 1.2;
-    params.minDist = 30.0;
-    params.param1 = 100.0;
-    params.param2 = 25.0;
-    params.brightnessThreshold = 180;
-    params.minCircularity = 0.7f;
-    params.useColorFilter = true;
-    params.useCircularityCheck = true;
-    params.detectMultiple = true;
-
-    m_ballDetector->SetParameters(params);
-
-    LOG_INFO("Ball detector initialized with parameters");
+    LOG_INFO("ContinuousCaptureManager initialized with BallDetector");
 }
 
 ContinuousCaptureManager::~ContinuousCaptureManager() {
@@ -61,7 +45,6 @@ void ContinuousCaptureManager::SetConfig(const ContinuousCaptureConfig& config) 
         return;
     }
 
-    // 이전 설정과 새 설정 비교 로그
     LOG_INFO("========== Setting new configuration ==========");
     LOG_INFO("Previous config:");
     LOG_INFO("  Ball Detection: " + std::string(m_config.enableBallDetection ? "ENABLED" : "DISABLED"));
@@ -91,7 +74,6 @@ bool ContinuousCaptureManager::StartCapture() {
 
     m_state = ContinuousCaptureState::CAPTURING;
 
-    // 현재 설정 로그 출력
     LOG_INFO("========== Starting continuous capture ==========");
     LOG_INFO("Duration: " + std::to_string(m_config.durationSeconds) + " seconds");
     LOG_INFO("Format: " + std::to_string(m_config.imageFormat) + " (0=PNG, 1=JPG)");
@@ -112,7 +94,6 @@ bool ContinuousCaptureManager::StartCapture() {
     m_isCapturing = true;
     m_startTime = std::chrono::steady_clock::now();
 
-    // Reset detection results
     m_detectionResult = ContinuousCaptureDetectionResult();
 
     if (!CreateCaptureFolder()) {
@@ -150,9 +131,9 @@ void ContinuousCaptureManager::StopCapture() {
 
     m_state = ContinuousCaptureState::STOPPING;
 
-    // Wait for all async save operations to complete
+    // Wait for all complete
     if (m_config.useAsyncSave && m_saveThreadRunning) {
-        if (!WaitForSaveCompletion(30)) {
+        if (!WaitForSaveCompletion(60)) {
             LOG_ERROR("Timeout waiting for save operations to complete");
             int pendingFrames = m_frameCount.load() - m_savedCount.load() - m_droppedCount.load();
             if (pendingFrames > 0) {
@@ -162,11 +143,9 @@ void ContinuousCaptureManager::StopCapture() {
         }
     }
 
-    // 모든 저장 작업이 완료된 후에 메타데이터 저장
     if (m_config.createMetadata) {
         SaveMetadata();
 
-        // Save detection metadata if ball detection was enabled
         if (m_config.enableBallDetection) {
             SaveDetectionMetadata();
         }
@@ -206,7 +185,6 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
         SaveFrameAsync(data, width, height);
     }
     else {
-        // 동기 저장 모드
         std::string saveFolder = m_captureFolder;
         if (m_config.enableBallDetection && m_config.saveOriginalImages) {
             saveFolder = m_originalFolder;
@@ -270,14 +248,13 @@ bool ContinuousCaptureManager::CreateCaptureFolder() {
         std::filesystem::create_directories(m_captureFolder);
         LOG_INFO("Created capture folder: " + m_captureFolder);
 
-        // Create subfolders for ball detection if enabled
-        if (m_config.enableBallDetection) {     // check 여기서 false.
-            // Original images folder
+        if (m_config.enableBallDetection) {
+            // Original images
             m_originalFolder = m_captureFolder + "/original";
             std::filesystem::create_directories(m_originalFolder);
             LOG_INFO("Created original images folder: " + m_originalFolder);
 
-            // Detection images folder
+            // Detection images
             m_detectionFolder = m_captureFolder + "/detection";
             std::filesystem::create_directories(m_detectionFolder);
             LOG_INFO("Created detection images folder: " + m_detectionFolder);
@@ -304,9 +281,8 @@ void ContinuousCaptureManager::SaveFrameAsync(const unsigned char* data, int wid
     int frameIndex = m_frameCount.load() - 1;
     std::stringstream ss;
 
-    // Determine save path based on configuration
     std::string saveFolder = m_captureFolder;
-    if (m_config.enableBallDetection && m_config.saveOriginalImages) {      // check: 여기서 false임.
+    if (m_config.enableBallDetection && m_config.saveOriginalImages) {
         saveFolder = m_originalFolder;
     }
 
@@ -355,7 +331,7 @@ void ContinuousCaptureManager::SaveThreadWorker() {
                 m_savedCount++;
                 LOG_DEBUG("Saved frame: " + item.filename);
 
-                // Process ball detection if enabled
+                // Process ball detection
                 if (m_config.enableBallDetection) {
                     LOG_DEBUG("Processing ball detection for frame " + std::to_string(item.frameIndex));
                     ProcessBallDetection(item);
@@ -390,7 +366,6 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
     auto result = m_ballDetector->DetectBall(
         item.data.data(), item.width, item.height, item.frameIndex);
 
-    // Update statistics
     {
         std::lock_guard<std::mutex> lock(m_detectionMutex);
 
@@ -398,13 +373,12 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
             m_detectionResult.framesWithBall++;
             m_detectionResult.totalBallsDetected += static_cast<int>(result.balls.size());
 
-            // Update average confidence
+            // average confidence
             float sumConfidence = 0.0f;
             for (const auto& ball : result.balls) {
                 sumConfidence += ball.confidence;
             }
 
-            // Running average calculation
             float currentAvg = m_detectionResult.averageConfidence;
             int currentCount = m_detectionResult.totalBallsDetected - static_cast<int>(result.balls.size());
             if (m_detectionResult.totalBallsDetected > 0) {
@@ -417,7 +391,7 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
         }
     }
 
-    // Save detection image if enabled
+    // Save detection image
     if (m_config.saveDetectionImages) {
         std::stringstream detectionPath;
         detectionPath << m_detectionFolder << "/frame_"
@@ -426,7 +400,7 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
         if (result.found) {
             detectionPath << "_detected";
 
-            // 검출된 공의 좌표 정보를 파일명에 추가
+            // 좌표 정보
             if (!result.balls.empty()) {
                 const auto& firstBall = result.balls[0];
                 detectionPath << "_x" << static_cast<int>(firstBall.center.x)
@@ -436,7 +410,6 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
 
         detectionPath << (m_config.imageFormat == 0 ? ".png" : ".jpg");
 
-        // 검출 결과가 그려진 이미지 저장
         if (!m_ballDetector->SaveDetectionImage(
             item.data.data(), item.width, item.height,
             result, detectionPath.str())) {
@@ -677,7 +650,6 @@ void ContinuousCaptureManager::Reset() {
     m_isCapturing = false;
     m_saveThreadRunning = false;
 
-    // Reset detection results
     m_detectionResult = ContinuousCaptureDetectionResult();
 
     LOG_INFO("ContinuousCaptureManager reset completed");
