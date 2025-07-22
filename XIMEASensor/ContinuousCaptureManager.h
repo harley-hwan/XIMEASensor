@@ -56,6 +56,43 @@ struct ContinuousCaptureDetectionResult {
 
 class ContinuousCaptureManager {
 private:
+    // 2025-07-21: performance report
+private:
+    struct SessionPerformanceData {
+        struct FrameTimingData {
+            int frameIndex = 0;
+            double totalFrameProcessingTime_ms = 0;     // 전체 프레임 처리 시간
+            double imageLoadTime_ms = 0;                // 이미지 로드 시간
+            double preprocessingTime_ms = 0;             // 전처리 시간 (BallDetector 내부)
+            double detectionTime_ms = 0;                 // 검출 시간 (BallDetector 내부)
+            double saveDetectionImageTime_ms = 0;        // 검출 이미지 저장 시간
+            double otherOperationsTime_ms = 0;          // 기타 작업 시간
+        };
+
+        std::vector<FrameTimingData> frameTimings;      // 각 프레임별 상세 타이밍
+
+        int totalFramesProcessed = 0;
+        int framesWithBallDetected = 0;
+        double totalProcessingTime_ms = 0.0;
+        double minFrameTime_ms = std::numeric_limits<double>::max();
+        double maxFrameTime_ms = 0.0;
+        double avgFrameTime_ms = 0.0;
+
+        void Reset() {
+            frameTimings.clear();
+            totalFramesProcessed = 0;
+            framesWithBallDetected = 0;
+            totalProcessingTime_ms = 0.0;
+            minFrameTime_ms = std::numeric_limits<double>::max();
+            maxFrameTime_ms = 0.0;
+            avgFrameTime_ms = 0.0;
+        }
+    };
+
+	SessionPerformanceData m_sessionPerformance;    // 2025-07-21: performance report
+
+    static constexpr int DEFAULT_WAIT_TIMEOUT_SECONDS = 300;     // 2025-07-21
+
     ContinuousCaptureConfig m_config;
     std::atomic<ContinuousCaptureState> m_state;
     std::atomic<bool> m_isCapturing;
@@ -63,6 +100,8 @@ private:
     std::atomic<int> m_savedCount;
     std::atomic<int> m_droppedCount;
     std::atomic<int> m_processingCount;
+    std::atomic<int> m_ballDetectionPendingCount;   // 2025-07-21
+    std::atomic<int> m_ballDetectionCompletedCount; // 2025-07-21
     mutable std::mutex m_detectionMutex;
 
     std::chrono::steady_clock::time_point m_startTime;
@@ -104,11 +143,12 @@ private:
     void SaveMetadata();
     std::vector<unsigned char> GetBufferFromPool(size_t size);
     void ReturnBufferToPool(std::vector<unsigned char>&& buffer);
-    bool WaitForSaveCompletion(int timeoutSeconds = 30);
+    bool WaitForSaveCompletion(int timeoutSeconds = 0);
 
     // Ball detection
     void ProcessBallDetection(const SaveItem& item);
     void SaveDetectionMetadata();
+    void SaveSessionPerformanceReport();    // 2025-07-21: performance report
 
 public:
     ContinuousCaptureManager();

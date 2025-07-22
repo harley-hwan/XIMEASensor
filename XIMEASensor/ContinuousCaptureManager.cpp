@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "ContinuousCaptureManager.h"
 #include "ImageSaver.h"
 #include "Logger.h"
@@ -7,6 +7,7 @@
 #include <sstream>
 #include <iomanip>
 #include <fstream>
+#include <numeric>      // std::accumulate
 
 ContinuousCaptureManager::ContinuousCaptureManager()
     : m_state(ContinuousCaptureState::IDLE),
@@ -15,6 +16,8 @@ ContinuousCaptureManager::ContinuousCaptureManager()
     m_savedCount(0),
     m_droppedCount(0),
     m_processingCount(0),
+    m_ballDetectionPendingCount(0),
+    m_ballDetectionCompletedCount(0),
     m_saveThreadRunning(false),
     m_actualDuration(0.0) {
 
@@ -23,7 +26,7 @@ ContinuousCaptureManager::ContinuousCaptureManager()
         m_bufferPool.push(std::vector<unsigned char>());
     }
 
-    // Initialize ball detector - BallDetector�� ���������� �⺻ �Ķ���͸� ������
+    // Initialize ball detector - BallDetector가 내부적으로 기본 파라미터를 설정함
     m_ballDetector = std::make_unique<BallDetector>();
 
     LOG_INFO("ContinuousCaptureManager initialized with BallDetector");
@@ -94,7 +97,12 @@ bool ContinuousCaptureManager::StartCapture() {
     m_isCapturing = true;
     m_startTime = std::chrono::steady_clock::now();
 
+    // 2025-07-21
+    m_ballDetectionPendingCount = 0;
+    m_ballDetectionCompletedCount = 0;
+
     m_detectionResult = ContinuousCaptureDetectionResult();
+    m_sessionPerformance.Reset();
 
     if (!CreateCaptureFolder()) {
         m_state = ContinuousCaptureState::kERROR;
@@ -116,6 +124,261 @@ bool ContinuousCaptureManager::StartCapture() {
 }
 
 
+void ContinuousCaptureManager::SaveSessionPerformanceReport() {
+    if (m_sessionPerformance.totalFramesProcessed == 0) {
+        LOG_WARNING("No frames processed for performance report");
+        return;
+    }
+
+    auto now = std::chrono::system_clock::now();
+    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    struct tm localTime;
+    localtime_s(&localTime, &time_t_now);
+
+    // Calculate statistics
+    m_sessionPerformance.avgFrameTime_ms =
+        m_sessionPerformance.totalProcessingTime_ms / m_sessionPerformance.totalFramesProcessed;
+
+    // Generate comprehensive performance report
+    std::stringstream report;
+    report << std::fixed << std::setprecision(2);
+    report << "========== Continuous Capture Performance Report ==========\n";
+    report << "Generated: " << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S") << "\n";
+    report << "Capture Duration: " << m_actualDuration << " seconds\n";
+    report << "Total Frames Processed: " << m_sessionPerformance.totalFramesProcessed << "\n";
+    report << "Frames with Ball Detected: " << m_sessionPerformance.framesWithBallDetected << "\n";
+    report << "Detection Rate: " << (m_sessionPerformance.framesWithBallDetected * 100.0 / m_sessionPerformance.totalFramesProcessed) << "%\n\n";
+
+    report << "Performance Metrics:\n";
+    report << "  Total Processing Time: " << m_sessionPerformance.totalProcessingTime_ms << " ms\n";
+    report << "  Average Frame Processing Time: " << m_sessionPerformance.avgFrameTime_ms << " ms\n";
+    report << "  Min Frame Processing Time: " << m_sessionPerformance.minFrameTime_ms << " ms\n";
+    report << "  Max Frame Processing Time: " << m_sessionPerformance.maxFrameTime_ms << " ms\n";
+    report << "  Standard Deviation: ";
+
+    // Calculate standard deviation using frame timings
+    if (m_sessionPerformance.frameTimings.size() > 1) {
+        double variance = 0.0;
+        for (const auto& timing : m_sessionPerformance.frameTimings) {
+            variance += std::pow(timing.totalFrameProcessingTime_ms - m_sessionPerformance.avgFrameTime_ms, 2);
+        }
+        variance /= (m_sessionPerformance.frameTimings.size() - 1);
+        double stdDev = std::sqrt(variance);
+        report << stdDev << " ms\n";
+    }
+    else {
+        report << "N/A\n";
+    }
+
+    report << "  Real-time Factor: " << (1000.0 / m_sessionPerformance.avgFrameTime_ms) << " FPS capability\n\n";
+
+    // Calculate percentiles
+    if (!m_sessionPerformance.frameTimings.empty()) {
+        std::vector<double> sortedTimes;
+        for (const auto& timing : m_sessionPerformance.frameTimings) {
+            sortedTimes.push_back(timing.totalFrameProcessingTime_ms);
+        }
+        std::sort(sortedTimes.begin(), sortedTimes.end());
+
+        auto getPercentile = [&sortedTimes](double percentile) -> double {
+            size_t idx = static_cast<size_t>((sortedTimes.size() - 1) * percentile);
+            return sortedTimes[idx];
+            };
+
+        report << "Processing Time Percentiles:\n";
+        report << "  25th percentile: " << getPercentile(0.25) << " ms\n";
+        report << "  50th percentile (median): " << getPercentile(0.50) << " ms\n";
+        report << "  75th percentile: " << getPercentile(0.75) << " ms\n";
+        report << "  90th percentile: " << getPercentile(0.90) << " ms\n";
+        report << "  95th percentile: " << getPercentile(0.95) << " ms\n";
+        report << "  99th percentile: " << getPercentile(0.99) << " ms\n\n";
+    }
+
+    // Processing breakdown with corrected calculations
+    if (!m_sessionPerformance.frameTimings.empty()) {
+        // Calculate average times for each component
+        double avgImageLoadTime = 0.0;
+        double avgPreprocTime = 0.0;
+        double avgCoreDetectTime = 0.0;
+        double avgSaveImageTime = 0.0;
+        double avgOtherTime = 0.0;
+        size_t frameCount = m_sessionPerformance.frameTimings.size();
+        for (const auto& ft : m_sessionPerformance.frameTimings) {
+            avgImageLoadTime += ft.imageLoadTime_ms;
+            avgPreprocTime += ft.preprocessingTime_ms;
+            avgCoreDetectTime += ft.detectionTime_ms;      // already core-only now
+            avgSaveImageTime += ft.saveDetectionImageTime_ms;
+            avgOtherTime += ft.otherOperationsTime_ms;
+        }
+        if (frameCount > 0) {
+            avgImageLoadTime /= frameCount;
+            avgPreprocTime /= frameCount;
+            avgCoreDetectTime /= frameCount;
+            avgSaveImageTime /= frameCount;
+            avgOtherTime /= frameCount;
+        }
+        report << "Average Processing Breakdown:\n";
+        report << "  Image Load: " << avgImageLoadTime << " ms ("
+            << (avgImageLoadTime / m_sessionPerformance.avgFrameTime_ms * 100.0) << "%)\n";
+        report << "  Preprocessing (BallDetector): " << avgPreprocTime << " ms ("
+            << (avgPreprocTime / m_sessionPerformance.avgFrameTime_ms * 100.0) << "%)\n";
+        report << "  Ball Detection (BallDetector core): " << avgCoreDetectTime << " ms ("
+            << (avgCoreDetectTime / m_sessionPerformance.avgFrameTime_ms * 100.0) << "%)\n";
+        report << "  Save Detection Image: " << avgSaveImageTime << " ms ("
+            << (avgSaveImageTime / m_sessionPerformance.avgFrameTime_ms * 100.0) << "%)\n";
+        report << "  Other Operations: " << avgOtherTime << " ms ("
+            << (avgOtherTime / m_sessionPerformance.avgFrameTime_ms * 100.0) << "%)\n\n";
+        // Verify that breakdown sums approximately to 100% of avg frame time
+        double sumCheck = avgImageLoadTime + avgPreprocTime + avgCoreDetectTime + avgSaveImageTime + avgOtherTime;
+        report << "  Timing Verification: Sum = " << sumCheck << " ms, Average = "
+            << m_sessionPerformance.avgFrameTime_ms << " ms\n";
+        double discrepancy = std::abs(sumCheck - m_sessionPerformance.avgFrameTime_ms);
+        if (discrepancy > 0.1) {
+            report << "  WARNING: Timing discrepancy detected (" << discrepancy << " ms)\n";
+        }
+        report << "\nNote: \"Preprocessing\" and \"Ball Detection (core)\" are measured inside BallDetector.\n"
+            << "      \"Ball Detection (core)\" represents the detection algorithm runtime after preprocessing.\n"
+            << "      All percentages are of the total frame processing time.\n\n";
+    }
+
+    // Performance analysis
+    report << "Performance Analysis:\n";
+
+    // Analyze based on target frame rate
+    const double targetFPS = m_config.durationSeconds > 0 ?
+        m_sessionPerformance.totalFramesProcessed / m_config.durationSeconds : 60.0;
+    const double targetFrameTime = 1000.0 / targetFPS;
+
+    if (m_sessionPerformance.avgFrameTime_ms < targetFrameTime) {
+        report << "  ✓ Excellent: Processing faster than capture rate (" << targetFPS << " FPS)\n";
+    }
+    else if (m_sessionPerformance.avgFrameTime_ms < targetFrameTime * 1.5) {
+        report << "  ⚠ Warning: Processing speed marginal for " << targetFPS << " FPS capture\n";
+    }
+    else {
+        report << "  ✗ Poor: Cannot keep up with " << targetFPS << " FPS capture rate\n";
+    }
+
+    // Frame drop analysis
+    double frameDropPercentage = (m_droppedCount.load() * 100.0) / m_frameCount.load();
+    if (frameDropPercentage > 5.0) {
+        report << "  ✗ High frame drop rate: " << frameDropPercentage << "%\n";
+    }
+    else if (frameDropPercentage > 1.0) {
+        report << "  ⚠ Moderate frame drop rate: " << frameDropPercentage << "%\n";
+    }
+    else {
+        report << "  ✓ Low frame drop rate: " << frameDropPercentage << "%\n";
+    }
+
+    // Jitter analysis
+    if (m_sessionPerformance.frameTimings.size() > 1) {
+        double variance = 0.0;
+        for (const auto& timing : m_sessionPerformance.frameTimings) {
+            variance += std::pow(timing.totalFrameProcessingTime_ms - m_sessionPerformance.avgFrameTime_ms, 2);
+        }
+        variance /= (m_sessionPerformance.frameTimings.size() - 1);
+        double coefficientOfVariation = (std::sqrt(variance) / m_sessionPerformance.avgFrameTime_ms) * 100;
+
+        if (coefficientOfVariation < 10) {
+            report << "  ✓ Stable performance: CV = " << coefficientOfVariation << "%\n";
+        }
+        else if (coefficientOfVariation < 25) {
+            report << "  ⚠ Moderate performance variation: CV = " << coefficientOfVariation << "%\n";
+        }
+        else {
+            report << "  ✗ High performance variation: CV = " << coefficientOfVariation << "%\n";
+        }
+    }
+
+    // Identify slowest frames for debugging
+    if (!m_sessionPerformance.frameTimings.empty()) {
+        report << "\nSlowest Frames (Top 5):\n";
+        std::vector<SessionPerformanceData::FrameTimingData> sortedFrames = m_sessionPerformance.frameTimings;
+        std::sort(sortedFrames.begin(), sortedFrames.end(),
+            [](const auto& a, const auto& b) {
+                return a.totalFrameProcessingTime_ms > b.totalFrameProcessingTime_ms;
+            });
+
+        int count = std::min(5, static_cast<int>(sortedFrames.size()));
+        for (int i = 0; i < count; ++i) {
+            const auto& timing = sortedFrames[i];
+            report << "  Frame " << timing.frameIndex << ": "
+                << timing.totalFrameProcessingTime_ms << " ms"
+                << " (Preprocessing: " << timing.preprocessingTime_ms << " ms,"
+                << " Detection: " << timing.detectionTime_ms << " ms)\n";
+        }
+    }
+
+    report << "\nRecommendations:\n";
+
+    // Generate specific recommendations based on analysis
+    if (m_sessionPerformance.avgFrameTime_ms > targetFrameTime) {
+        report << "  - Reduce processing complexity to match capture rate\n";
+        report << "  - Consider frame skipping or parallel processing\n";
+    }
+
+    if (frameDropPercentage > 1.0) {
+        report << "  - Increase buffer sizes to handle processing spikes\n";
+        report << "  - Optimize I/O operations (use faster storage)\n";
+    }
+
+    if (m_sessionPerformance.maxFrameTime_ms > 2 * m_sessionPerformance.avgFrameTime_ms) {
+        report << "  - Investigate cause of processing time spikes\n";
+        report << "  - Consider pre-allocating resources\n";
+    }
+
+    // Component-specific recommendations
+    if (!m_sessionPerformance.frameTimings.empty()) {
+        double avgDetectionTime = 0.0;
+        for (const auto& timing : m_sessionPerformance.frameTimings) {
+            avgDetectionTime += timing.detectionTime_ms;
+        }
+        avgDetectionTime /= m_sessionPerformance.frameTimings.size();
+
+        if (avgDetectionTime > 50.0) {
+            report << "  - Ball detection is the bottleneck - consider optimizing detection parameters\n";
+            report << "  - Reduce image resolution or detection complexity if possible\n";
+        }
+    }
+
+    // Get detailed report from BallDetector
+    if (m_ballDetector) {
+        report << "\n" << m_ballDetector->GeneratePerformanceReport();
+    }
+
+    report << "=========================================================\n";
+
+    // Save report to file
+    std::stringstream filename;
+    filename << m_captureFolder << "/performance_report_" << std::put_time(&localTime, "%Y%m%d_%H%M%S") << ".txt";
+
+    std::string reportPath = filename.str();
+
+    try {
+        std::ofstream reportFile(reportPath);
+        if (reportFile.is_open()) {
+            reportFile << report.str();
+            reportFile.close();
+            LOG_INFO("Session performance report saved to: " + reportPath);
+        }
+        else {
+            LOG_ERROR("Failed to open performance report file: " + reportPath);
+        }
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Failed to save performance report: " + std::string(e.what()));
+    }
+
+    // Also log the summary
+    LOG_INFO("Performance Summary - Avg: " +
+        std::to_string(m_sessionPerformance.avgFrameTime_ms) + " ms/frame, " +
+        "Total frames: " + std::to_string(m_sessionPerformance.totalFramesProcessed) +
+        ", Detection rate: " + std::to_string(m_sessionPerformance.framesWithBallDetected * 100.0 /
+            m_sessionPerformance.totalFramesProcessed) + "%");
+}
+
+
 void ContinuousCaptureManager::StopCapture() {
     if (!m_isCapturing.load()) {
         return;
@@ -131,16 +394,21 @@ void ContinuousCaptureManager::StopCapture() {
 
     m_state = ContinuousCaptureState::STOPPING;
 
-    // Wait for all complete
+    // 모든 저장 작업이 완료될 때까지 대기 - 타임아웃을 무한대로 설정
     if (m_config.useAsyncSave && m_saveThreadRunning) {
-        if (!WaitForSaveCompletion(60)) {
-            LOG_ERROR("Timeout waiting for save operations to complete");
-            int pendingFrames = m_frameCount.load() - m_savedCount.load() - m_droppedCount.load();
-            if (pendingFrames > 0) {
-                m_droppedCount += pendingFrames;
-                LOG_WARNING("Dropped " + std::to_string(pendingFrames) + " frames due to timeout");
-            }
+        LOG_INFO("Waiting for asynchronous save operations to complete...");
+
+        // 타임아웃을 기본값으로 설정 (0이 아닌 값)
+        bool completed = WaitForSaveCompletion(DEFAULT_WAIT_TIMEOUT_SECONDS);
+
+        if (!completed) {
+            LOG_WARNING("Save operations did not complete within timeout period");
         }
+    }
+
+    // Save performance report for the entire session
+    if (m_config.enableBallDetection) {
+        SaveSessionPerformanceReport();
     }
 
     if (m_config.createMetadata) {
@@ -168,6 +436,7 @@ void ContinuousCaptureManager::StopCapture() {
     }
 }
 
+
 void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width, int height) {
     if (!m_isCapturing.load()) {
         return;
@@ -185,6 +454,11 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
         SaveFrameAsync(data, width, height);
     }
     else {
+        // 동기 저장의 경우에도 ball detection 카운트 관리
+        if (m_config.enableBallDetection) {
+            m_ballDetectionPendingCount++;
+        }
+
         std::string saveFolder = m_captureFolder;
         if (m_config.enableBallDetection && m_config.saveOriginalImages) {
             saveFolder = m_originalFolder;
@@ -201,7 +475,6 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
             m_config.jpgQuality)) {
             m_savedCount++;
 
-            // �� ���� ����
             if (m_config.enableBallDetection) {
                 SaveItem item;
                 item.data.resize(width * height);
@@ -212,11 +485,16 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
                 item.filename = filename;
 
                 ProcessBallDetection(item);
+                m_ballDetectionCompletedCount++;
             }
         }
         else {
             m_droppedCount++;
             LOG_ERROR("Failed to save frame: " + filename);
+
+            if (m_config.enableBallDetection) {
+                m_ballDetectionCompletedCount++;
+            }
         }
     }
 
@@ -225,6 +503,7 @@ void ContinuousCaptureManager::ProcessFrame(const unsigned char* data, int width
         m_progressCallback(m_frameCount.load(), elapsed, ContinuousCaptureState::CAPTURING);
     }
 }
+
 
 bool ContinuousCaptureManager::CreateCaptureFolder() {
     auto now = std::chrono::system_clock::now();
@@ -290,6 +569,10 @@ void ContinuousCaptureManager::SaveFrameAsync(const unsigned char* data, int wid
         << std::setfill('0') << std::setw(5) << frameIndex
         << (m_config.imageFormat == 0 ? ".png" : ".jpg");
 
+    if (m_config.enableBallDetection) {
+        m_ballDetectionPendingCount++;
+    }
+
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
         m_saveQueue.push(SaveItem{ std::move(buffer), ss.str(), width, height, frameIndex });
@@ -311,7 +594,8 @@ void ContinuousCaptureManager::SaveThreadWorker() {
     while (m_saveThreadRunning.load() || !m_saveQueue.empty() || m_processingCount > 0) {
         std::unique_lock<std::mutex> lock(m_queueMutex);
 
-        m_queueCV.wait(lock, [this] {
+        // 대기 조건 수정
+        m_queueCV.wait_for(lock, std::chrono::milliseconds(100), [this] {
             return !m_saveQueue.empty() || !m_saveThreadRunning.load();
             });
 
@@ -335,16 +619,24 @@ void ContinuousCaptureManager::SaveThreadWorker() {
                 if (m_config.enableBallDetection) {
                     LOG_DEBUG("Processing ball detection for frame " + std::to_string(item.frameIndex));
                     ProcessBallDetection(item);
+                    m_ballDetectionCompletedCount++;
                 }
             }
             else {
                 m_droppedCount++;
                 LOG_ERROR("Failed to save frame: " + item.filename);
+
+                // Ball detection 실패 시에도 카운트 업데이트
+                if (m_config.enableBallDetection) {
+                    m_ballDetectionCompletedCount++;
+                }
             }
 
             ReturnBufferToPool(std::move(item.data));
 
             m_processingCount--;
+
+            // 완료 신호 전송
             m_completionCV.notify_all();
 
             lock.lock();
@@ -362,36 +654,57 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
 
     LOG_DEBUG("Starting ball detection for frame " + std::to_string(item.frameIndex));
 
-    // Detect ball
+    // 전체 프레임 처리 시작 시간
+    auto frameProcessingStart = std::chrono::high_resolution_clock::now();
+
+    // 프레임별 타이밍 데이터
+    SessionPerformanceData::FrameTimingData frameTiming;
+    frameTiming.frameIndex = item.frameIndex;
+
+    // 1. 이미지 로드/준비 시간 (이미 메모리에 있으므로 최소)
+    auto imageLoadStart = std::chrono::high_resolution_clock::now();
+    // 이미지는 이미 item.data에 있음
+    auto imageLoadEnd = std::chrono::high_resolution_clock::now();
+    frameTiming.imageLoadTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+        imageLoadEnd - imageLoadStart).count() / 1000.0;
+
+    // 2. Enable performance profiling
+    m_ballDetector->EnablePerformanceProfiling(true);
+
+    // 3. Set debug output directory
+    auto setupStart = std::chrono::high_resolution_clock::now();
+    auto params = m_ballDetector->GetParameters();
+    params.debugOutputDir = m_captureFolder + "/detect_outputs";
+    params.saveIntermediateImages = true;
+    m_ballDetector->SetParameters(params);
+
+    // Create detect_outputs directory if it doesn't exist
+    try {
+        std::filesystem::create_directories(params.debugOutputDir);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Failed to create detect_outputs directory: " + std::string(e.what()));
+    }
+    auto setupEnd = std::chrono::high_resolution_clock::now();
+    double setupTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+        setupEnd - setupStart).count() / 1000.0;
+
+    // 4. Detect ball 
+    auto detectionStart = std::chrono::high_resolution_clock::now();
     auto result = m_ballDetector->DetectBall(
         item.data.data(), item.width, item.height, item.frameIndex);
+    auto detectionEnd = std::chrono::high_resolution_clock::now();
+    double ballDetectorTotalTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+        detectionEnd - detectionStart).count() / 1000.0;
 
-    {
-        std::lock_guard<std::mutex> lock(m_detectionMutex);
+    // 5. Get performance metrics from BallDetector
+    auto metrics = m_ballDetector->GetLastPerformanceMetrics();
+    frameTiming.preprocessingTime_ms = metrics.preprocessingTime_ms;
+    // Store only the core detection time (total detection minus preprocessing)
+    frameTiming.detectionTime_ms = metrics.totalDetectionTime_ms - metrics.preprocessingTime_ms;
 
-        if (result.found && !result.balls.empty()) {
-            m_detectionResult.framesWithBall++;
-            m_detectionResult.totalBallsDetected += static_cast<int>(result.balls.size());
-
-            // average confidence
-            float sumConfidence = 0.0f;
-            for (const auto& ball : result.balls) {
-                sumConfidence += ball.confidence;
-            }
-
-            float currentAvg = m_detectionResult.averageConfidence;
-            int currentCount = m_detectionResult.totalBallsDetected - static_cast<int>(result.balls.size());
-            if (m_detectionResult.totalBallsDetected > 0) {
-                m_detectionResult.averageConfidence =
-                    (currentAvg * currentCount + sumConfidence) / m_detectionResult.totalBallsDetected;
-            }
-
-            LOG_INFO("Frame " + std::to_string(item.frameIndex) +
-                ": Detected " + std::to_string(result.balls.size()) + " ball(s)");
-        }
-    }
-
-    // Save detection image
+    // 6. Save detection image
+    auto saveImageStart = std::chrono::high_resolution_clock::now();
     if (m_config.saveDetectionImages) {
         std::stringstream detectionPath;
         detectionPath << m_detectionFolder << "/frame_"
@@ -399,15 +712,12 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
 
         if (result.found) {
             detectionPath << "_detected";
-
-            // ��ǥ ����
             if (!result.balls.empty()) {
                 const auto& firstBall = result.balls[0];
                 detectionPath << "_x" << static_cast<int>(firstBall.center.x)
                     << "_y" << static_cast<int>(firstBall.center.y);
             }
         }
-
         detectionPath << (m_config.imageFormat == 0 ? ".png" : ".jpg");
 
         if (!m_ballDetector->SaveDetectionImage(
@@ -419,7 +729,70 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
             LOG_DEBUG("Saved detection image: " + detectionPath.str());
         }
     }
+    auto saveImageEnd = std::chrono::high_resolution_clock::now();
+    frameTiming.saveDetectionImageTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+        saveImageEnd - saveImageStart).count() / 1000.0;
+
+    // 7. 전체 프레임 처리 완료
+    auto frameProcessingEnd = std::chrono::high_resolution_clock::now();
+    frameTiming.totalFrameProcessingTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+        frameProcessingEnd - frameProcessingStart).count() / 1000.0;
+
+    // 8. 기타 작업 시간 계산 (전체 시간 - 각 단계별 시간)
+    frameTiming.otherOperationsTime_ms = frameTiming.totalFrameProcessingTime_ms
+        - (frameTiming.imageLoadTime_ms
+            + ballDetectorTotalTime_ms
+            + frameTiming.saveDetectionImageTime_ms);
+
+    // 9. Update session performance data
+    {
+        std::lock_guard<std::mutex> lock(m_detectionMutex);
+
+        m_sessionPerformance.frameTimings.push_back(frameTiming);
+        m_sessionPerformance.totalFramesProcessed++;
+        m_sessionPerformance.totalProcessingTime_ms += frameTiming.totalFrameProcessingTime_ms;
+
+        if (frameTiming.totalFrameProcessingTime_ms < m_sessionPerformance.minFrameTime_ms) {
+            m_sessionPerformance.minFrameTime_ms = frameTiming.totalFrameProcessingTime_ms;
+        }
+        if (frameTiming.totalFrameProcessingTime_ms > m_sessionPerformance.maxFrameTime_ms) {
+            m_sessionPerformance.maxFrameTime_ms = frameTiming.totalFrameProcessingTime_ms;
+        }
+
+        // Update basic detection statistics
+        if (result.found && !result.balls.empty()) {
+            m_sessionPerformance.framesWithBallDetected++;
+            m_detectionResult.framesWithBall++;
+            m_detectionResult.totalBallsDetected += static_cast<int>(result.balls.size());
+
+            // Calculate average confidence
+            float sumConfidence = 0.0f;
+            for (const auto& ball : result.balls) {
+                sumConfidence += ball.confidence;
+            }
+            float currentAvg = m_detectionResult.averageConfidence;
+            int currentCount = m_detectionResult.totalBallsDetected - static_cast<int>(result.balls.size());
+            if (m_detectionResult.totalBallsDetected > 0) {
+                m_detectionResult.averageConfidence =
+                    (currentAvg * currentCount + sumConfidence) / m_detectionResult.totalBallsDetected;
+            }
+
+            LOG_INFO("Frame " + std::to_string(item.frameIndex) +
+                ": Detected " + std::to_string(result.balls.size()) + " ball(s)" +
+                " in " + std::to_string(frameTiming.totalFrameProcessingTime_ms) + " ms total" +
+                " (BallDetector: " + std::to_string(ballDetectorTotalTime_ms) + " ms)" +
+                " (confidence: " + std::to_string(result.balls[0].confidence) + ")");
+        }
+    }
+
+    // Log performance warning if too slow
+    if (frameTiming.totalFrameProcessingTime_ms > 100.0) {
+        LOG_WARNING("Frame " + std::to_string(item.frameIndex) +
+            " processing took " + std::to_string(frameTiming.totalFrameProcessingTime_ms) +
+            " ms - may impact real-time processing");
+    }
 }
+
 
 void ContinuousCaptureManager::SaveMetadata() {
     std::string metaFile = m_captureFolder + "/metadata.txt";
@@ -529,41 +902,64 @@ void ContinuousCaptureManager::SaveDetectionMetadata() {
     LOG_INFO("Detection metadata saved to: " + metaFile);
 }
 
+
 bool ContinuousCaptureManager::WaitForSaveCompletion(int timeoutSeconds) {
     auto startWait = std::chrono::steady_clock::now();
-    auto timeout = std::chrono::seconds(timeoutSeconds);
+
+    // 타임아웃이 0이면 기본값 사용
+    int actualTimeout = (timeoutSeconds <= 0) ? DEFAULT_WAIT_TIMEOUT_SECONDS : timeoutSeconds;
+    auto timeout = std::chrono::seconds(actualTimeout);
+
+    LOG_INFO("Waiting for save completion with timeout: " + std::to_string(actualTimeout) + " seconds");
 
     std::unique_lock<std::mutex> lock(m_queueMutex);
 
     bool completed = m_completionCV.wait_for(lock, timeout, [this, &startWait, &timeout] {
-        auto elapsed = std::chrono::steady_clock::now() - startWait;
-        if (elapsed >= timeout) {
-            return false;
-        }
-
+        // 현재 상태 로깅
         bool queueEmpty = m_saveQueue.empty();
         bool noProcessing = (m_processingCount == 0);
         bool allSaved = (m_savedCount + m_droppedCount) >= m_frameCount;
+        bool ballDetectionComplete = true;
 
+        if (m_config.enableBallDetection) {
+            ballDetectionComplete = (m_ballDetectionCompletedCount >= m_ballDetectionPendingCount);
+        }
+
+        // 주기적인 상태 로깅
         static auto lastLog = std::chrono::steady_clock::now();
-        if (std::chrono::steady_clock::now() - lastLog > std::chrono::seconds(1)) {
-            LOG_DEBUG("Waiting for save completion - Queue: " + std::to_string(m_saveQueue.size()) +
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastLog > std::chrono::seconds(1)) {
+            LOG_DEBUG("Wait status - Queue: " + std::to_string(m_saveQueue.size()) +
                 ", Processing: " + std::to_string(m_processingCount.load()) +
                 ", Saved: " + std::to_string(m_savedCount.load()) +
                 ", Dropped: " + std::to_string(m_droppedCount.load()) +
-                ", Total: " + std::to_string(m_frameCount.load()));
-            lastLog = std::chrono::steady_clock::now();
+                ", Total: " + std::to_string(m_frameCount.load()) +
+                ", BallDetection Pending: " + std::to_string(m_ballDetectionPendingCount.load()) +
+                ", BallDetection Completed: " + std::to_string(m_ballDetectionCompletedCount.load()));
+            lastLog = now;
         }
 
-        return queueEmpty && noProcessing && allSaved;
+        // 모든 조건이 충족되면 완료
+        return queueEmpty && noProcessing && allSaved && ballDetectionComplete;
         });
 
     if (!completed) {
-        LOG_WARNING("Save completion wait timed out after " + std::to_string(timeoutSeconds) + " seconds");
+        LOG_WARNING("Save completion wait timed out after " + std::to_string(actualTimeout) + " seconds");
+        LOG_WARNING("Final state - Queue: " + std::to_string(m_saveQueue.size()) +
+            ", Processing: " + std::to_string(m_processingCount.load()) +
+            ", Saved: " + std::to_string(m_savedCount.load()) +
+            ", Dropped: " + std::to_string(m_droppedCount.load()) +
+            ", Total: " + std::to_string(m_frameCount.load()));
+    }
+    else {
+        auto elapsed = std::chrono::steady_clock::now() - startWait;
+        auto elapsedSeconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+        LOG_INFO("Save completion successful after " + std::to_string(elapsedSeconds) + " seconds");
     }
 
     return completed;
 }
+
 
 ContinuousCaptureResult ContinuousCaptureManager::GetResult() const {
     ContinuousCaptureResult result;
@@ -644,6 +1040,8 @@ void ContinuousCaptureManager::Reset() {
     m_droppedCount = 0;
     m_processingCount = 0;
     m_actualDuration = 0.0;
+    m_ballDetectionPendingCount = 0;
+    m_ballDetectionCompletedCount = 0;
     m_captureFolder.clear();
     m_originalFolder.clear();
     m_detectionFolder.clear();

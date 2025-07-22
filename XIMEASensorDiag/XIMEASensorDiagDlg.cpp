@@ -62,6 +62,9 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_MESSAGE(WM_UPDATE_ERROR, &CXIMEASensorDiagDlg::OnUpdateError)
     ON_MESSAGE(WM_UPDATE_FPS, &CXIMEASensorDiagDlg::OnUpdateFPS)
     ON_MESSAGE(WM_CONTINUOUS_CAPTURE_COMPLETE, &CXIMEASensorDiagDlg::OnContinuousCaptureComplete)
+    ON_EN_CHANGE(IDC_EDIT_EXPOSURE, &CXIMEASensorDiagDlg::OnEnChangeEditExposure)
+    ON_EN_CHANGE(IDC_EDIT_GAIN, &CXIMEASensorDiagDlg::OnEnChangeEditGain)
+    ON_EN_CHANGE(IDC_EDIT_FRAMERATE, &CXIMEASensorDiagDlg::OnEnChangeEditFramerate)
 END_MESSAGE_MAP()
 
 
@@ -98,6 +101,11 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     m_sliderFramerate = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_FRAMERATE);
     m_comboDevices = (CComboBox*)GetDlgItem(IDC_COMBO_DEVICES);
 
+    // Get Edit Control pointers
+    m_editExposure = (CEdit*)GetDlgItem(IDC_EDIT_EXPOSURE);
+    m_editGain = (CEdit*)GetDlgItem(IDC_EDIT_GAIN);
+    m_editFramerate = (CEdit*)GetDlgItem(IDC_EDIT_FRAMERATE);
+
     if (!Camera_Initialize("./logs/XIMEASensor.log", 1)) {
         AfxMessageBox(_T("Failed to initialize camera system!"));
         return FALSE;
@@ -109,34 +117,39 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         m_sliderExposure->SetRange(CameraDefaults::MIN_EXPOSURE_US, CameraDefaults::MAX_EXPOSURE_US);
         m_sliderExposure->SetPos(m_defaultExposureUs);
         m_sliderExposure->SetTicFreq(10000);
-
-        CString strExposure;
-        strExposure.Format(_T("Exposure: %d us"), m_defaultExposureUs);
-        GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(strExposure);
     }
 
-    // gain slider
     if (m_sliderGain) {
         m_sliderGain->SetRange(static_cast<int>(CameraDefaults::MIN_GAIN_DB * 10),
             static_cast<int>(CameraDefaults::MAX_GAIN_DB * 10));
         m_sliderGain->SetPos(static_cast<int>(m_defaultGainDb * 10));
         m_sliderGain->SetTicFreq(30);
-
-        CString strGain;
-        strGain.Format(_T("Gain: %.1f dB"), m_defaultGainDb);
-        GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(strGain);
     }
 
-    // framerate slider
     if (m_sliderFramerate) {
         m_sliderFramerate->SetRange(static_cast<int>(CameraDefaults::MIN_FPS * 10),
             static_cast<int>(CameraDefaults::MAX_FPS * 10));
         m_sliderFramerate->SetPos(static_cast<int>(m_defaultFps * 10));
         m_sliderFramerate->SetTicFreq(100);
+    }
 
+    // Set initial values in Edit Controls
+    if (m_editExposure) {
+        CString strExposure;
+        strExposure.Format(_T("%d"), m_defaultExposureUs);
+        m_editExposure->SetWindowText(strExposure);
+    }
+
+    if (m_editGain) {
+        CString strGain;
+        strGain.Format(_T("%.1f"), m_defaultGainDb);
+        m_editGain->SetWindowText(strGain);
+    }
+
+    if (m_editFramerate) {
         CString strFPS;
-        strFPS.Format(_T("%.1f FPS"), m_defaultFps);
-        GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(strFPS);
+        strFPS.Format(_T("%.1f"), m_defaultFps);
+        m_editFramerate->SetWindowText(strFPS);
     }
 
     // Setup callbacks
@@ -160,7 +173,7 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
 
     Camera_RegisterCallback(m_cameraCallback.get());
 
-    size_t maxBufferSize = 2048 * 2048;  // 4MP max
+    size_t maxBufferSize = 2048 * 2048;
     m_pDisplayBuffer = new unsigned char[maxBufferSize];
     memset(m_pDisplayBuffer, 0, maxBufferSize);
 
@@ -271,33 +284,35 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
 
 void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
 {
-    // Sync exposure slider
     int currentExposure = Camera_GetExposure();
     float currentGain = Camera_GetGain();
     float currentFramerate = Camera_GetFrameRate();
 
     if (m_sliderExposure && currentExposure > 0) {
         m_sliderExposure->SetPos(currentExposure);
-
-        CString strExposure;
-        strExposure.Format(_T("Exposure: %d us"), currentExposure);
-        GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(strExposure);
+        if (m_editExposure) {
+            CString strExposure;
+            strExposure.Format(_T("%d"), currentExposure);
+            m_editExposure->SetWindowText(strExposure);
+        }
     }
 
     if (m_sliderGain) {
         m_sliderGain->SetPos((int)(currentGain * 10));
-
-        CString strGain;
-        strGain.Format(_T("Gain: %.1f dB"), currentGain);
-        GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(strGain);
+        if (m_editGain) {
+            CString strGain;
+            strGain.Format(_T("%.1f"), currentGain);
+            m_editGain->SetWindowText(strGain);
+        }
     }
 
     if (m_sliderFramerate && currentFramerate > 0) {
         m_sliderFramerate->SetPos((int)(currentFramerate * 10));
-
-        CString strFPS;
-        strFPS.Format(_T("%.1f FPS"), currentFramerate);
-        GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(strFPS);
+        if (m_editFramerate) {
+            CString strFPS;
+            strFPS.Format(_T("%.1f"), currentFramerate);
+            m_editFramerate->SetWindowText(strFPS);
+        }
     }
 }
 
@@ -438,23 +453,23 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
     CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
 
     if (!m_isStreaming) {
-        if (pSlider == m_sliderExposure) {
+        if (pSlider == m_sliderExposure && m_editExposure) {
             int exposure = m_sliderExposure->GetPos();
             CString str;
-            str.Format(_T("Exposure: %d us"), exposure);
-            GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
+            str.Format(_T("%d"), exposure);
+            m_editExposure->SetWindowText(str);
         }
-        else if (pSlider == m_sliderGain) {
+        else if (pSlider == m_sliderGain && m_editGain) {
             float gain = m_sliderGain->GetPos() / 10.0f;
             CString str;
-            str.Format(_T("Gain: %.1f dB"), gain);
-            GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+            str.Format(_T("%.1f"), gain);
+            m_editGain->SetWindowText(str);
         }
-        else if (pSlider == m_sliderFramerate) {
+        else if (pSlider == m_sliderFramerate && m_editFramerate) {
             float fps = m_sliderFramerate->GetPos() / 10.0f;
             CString str;
-            str.Format(_T("%.1f FPS"), fps);
-            GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(str);
+            str.Format(_T("%.1f"), fps);
+            m_editFramerate->SetWindowText(str);
         }
 
         CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
@@ -466,48 +481,53 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
         int exposure = m_sliderExposure->GetPos();
 
         if (Camera_SetExposure(exposure)) {
-            CString str;
-            str.Format(_T("Exposure: %d us"), exposure);
-            GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
+            if (m_editExposure) {
+                CString str;
+                str.Format(_T("%d"), exposure);
+                m_editExposure->SetWindowText(str);
+            }
         }
         else {
-            // Revert to actual value if failed
             int currentExposure = Camera_GetExposure();
             m_sliderExposure->SetPos(currentExposure);
-
-            CString str;
-            str.Format(_T("Exposure: %d us"), currentExposure);
-            GetDlgItem(IDC_STATIC_EXPOSURE)->SetWindowText(str);
+            if (m_editExposure) {
+                CString str;
+                str.Format(_T("%d"), currentExposure);
+                m_editExposure->SetWindowText(str);
+            }
         }
     }
     else if (pSlider == m_sliderGain) {
         float gain = m_sliderGain->GetPos() / 10.0f;
 
         if (Camera_SetGain(gain)) {
-            CString str;
-            str.Format(_T("Gain: %.1f dB"), gain);
-            GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+            if (m_editGain) {
+                CString str;
+                str.Format(_T("%.1f"), gain);
+                m_editGain->SetWindowText(str);
+            }
         }
         else {
-            // Revert to actual value if failed
             float currentGain = Camera_GetGain();
             m_sliderGain->SetPos((int)(currentGain * 10));
-
-            CString str;
-            str.Format(_T("Gain: %.1f dB"), currentGain);
-            GetDlgItem(IDC_STATIC_GAIN)->SetWindowText(str);
+            if (m_editGain) {
+                CString str;
+                str.Format(_T("%.1f"), currentGain);
+                m_editGain->SetWindowText(str);
+            }
         }
     }
     else if (pSlider == m_sliderFramerate) {
         float fps = m_sliderFramerate->GetPos() / 10.0f;
 
         if (Camera_SetFrameRate(fps)) {
-            CString str;
-            str.Format(_T("%.1f FPS"), fps);
-            GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(str);
+            if (m_editFramerate) {
+                CString str;
+                str.Format(_T("%.1f"), fps);
+                m_editFramerate->SetWindowText(str);
+            }
         }
         else {
-            // exposure time limit
             int currentExposure = Camera_GetExposure();
             float maxPossibleFPS = 1000000.0f / currentExposure;
 
@@ -516,13 +536,13 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
                 fps, currentExposure, maxPossibleFPS);
             MessageBox(msg, _T("FPS Limitation"), MB_OK | MB_ICONWARNING);
 
-            // Revert to actual value
             float currentFPS = Camera_GetFrameRate();
             m_sliderFramerate->SetPos((int)(currentFPS * 10));
-
-            CString str;
-            str.Format(_T("%.1f FPS"), currentFPS);
-            GetDlgItem(IDC_STATIC_FRAMERATE)->SetWindowText(str);
+            if (m_editFramerate) {
+                CString str;
+                str.Format(_T("%.1f"), currentFPS);
+                m_editFramerate->SetWindowText(str);
+            }
         }
     }
 
@@ -838,4 +858,75 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
     }
 
     return 0;
+}
+
+
+void CXIMEASensorDiagDlg::OnEnChangeEditExposure()
+{
+    if (!m_editExposure || !m_sliderExposure) return;
+
+    CString str;
+    m_editExposure->GetWindowText(str);
+    int exposure = _ttoi(str);
+
+    // Validate range
+    if (exposure >= CameraDefaults::MIN_EXPOSURE_US && exposure <= CameraDefaults::MAX_EXPOSURE_US) {
+        m_sliderExposure->SetPos(exposure);
+
+        if (m_isStreaming) {
+            Camera_SetExposure(exposure);
+        }
+    }
+}
+
+void CXIMEASensorDiagDlg::OnEnChangeEditGain()
+{
+    if (!m_editGain || !m_sliderGain) return;
+
+    CString str;
+    m_editGain->GetWindowText(str);
+    float gain = (float)_ttof(str);
+
+    // Validate range
+    if (gain >= CameraDefaults::MIN_GAIN_DB && gain <= CameraDefaults::MAX_GAIN_DB) {
+        m_sliderGain->SetPos((int)(gain * 10));
+
+        if (m_isStreaming) {
+            Camera_SetGain(gain);
+        }
+    }
+}
+
+void CXIMEASensorDiagDlg::OnEnChangeEditFramerate()
+{
+    if (!m_editFramerate || !m_sliderFramerate) return;
+
+    CString str;
+    m_editFramerate->GetWindowText(str);
+    float fps = (float)_ttof(str);
+
+    // Validate range
+    if (fps >= CameraDefaults::MIN_FPS && fps <= CameraDefaults::MAX_FPS) {
+        m_sliderFramerate->SetPos((int)(fps * 10));
+
+        if (m_isStreaming) {
+            if (!Camera_SetFrameRate(fps)) {
+                // Show warning about FPS limitation
+                int currentExposure = Camera_GetExposure();
+                float maxPossibleFPS = 1000000.0f / currentExposure;
+
+                CString msg;
+                msg.Format(_T("Cannot set %.1f FPS with current exposure time (%d us).\nMaximum possible FPS: %.1f"),
+                    fps, currentExposure, maxPossibleFPS);
+                MessageBox(msg, _T("FPS Limitation"), MB_OK | MB_ICONWARNING);
+
+                // Revert to actual value
+                float currentFPS = Camera_GetFrameRate();
+                m_sliderFramerate->SetPos((int)(currentFPS * 10));
+                CString strFPS;
+                strFPS.Format(_T("%.1f"), currentFPS);
+                m_editFramerate->SetWindowText(strFPS);
+            }
+        }
+    }
 }

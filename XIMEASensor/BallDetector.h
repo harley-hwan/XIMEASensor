@@ -64,12 +64,43 @@ public:
         DetectionParams();
     };
 
+    struct PerformanceMetrics {
+        double totalDetectionTime_ms;
+        double preprocessingTime_ms;
+        double houghDetectionTime_ms;
+        double adaptiveThresholdTime_ms;
+        double contourDetectionTime_ms;
+        double candidateEvaluationTime_ms;
+        double imagesSavingTime_ms;
+        int candidatesFound;
+        int candidatesEvaluated;
+        bool ballDetected;
+
+        void Reset() {
+            totalDetectionTime_ms = 0;
+            preprocessingTime_ms = 0;
+            houghDetectionTime_ms = 0;
+            adaptiveThresholdTime_ms = 0;
+            contourDetectionTime_ms = 0;
+            candidateEvaluationTime_ms = 0;
+            imagesSavingTime_ms = 0;
+            candidatesFound = 0;
+            candidatesEvaluated = 0;
+            ballDetected = false;
+        }
+    };
+
 private:
     DetectionParams m_params;
 
     // PIMPL: internal implementation details
     class Impl;
     std::unique_ptr<Impl> pImpl;
+
+    mutable PerformanceMetrics m_lastMetrics;
+    
+    // Performance profiling control
+    bool m_performanceProfilingEnabled;
 
     // Initialize default parameters optimized for ceiling camera
     void InitializeDefaultParams();
@@ -88,6 +119,12 @@ public:
     // Set camera calibration data (for perspective correction)
     void SetCalibrationData(const cv::Mat& cameraMatrix, const cv::Mat& distCoeffs);
 
+    // Enable/disable performance profiling
+    // When enabled, timing information will be collected and logged
+    // Comment out ENABLE_PERFORMANCE_PROFILING in BallDetector.cpp to disable at compile time
+    void EnablePerformanceProfiling(bool enable);
+    bool IsPerformanceProfilingEnabled() const;
+
     // Main function: detect ball from a grayscale image frame
     BallDetectionResult DetectBall(const unsigned char* imageData, int width, int height, int frameIndex = 0);
 
@@ -104,4 +141,11 @@ public:
 
     // Auto-tune parameters based on a set of sample images (experimental)
     void AutoTuneParameters(const std::vector<unsigned char*>& sampleImages, int width, int height);
+
+    // Get performance metrics from the last detection
+    PerformanceMetrics GetLastPerformanceMetrics() const { return m_lastMetrics; }
+    
+    // Generate a detailed performance report
+    // Returns a formatted string with timing breakdown and recommendations
+    std::string GeneratePerformanceReport() const;
 };

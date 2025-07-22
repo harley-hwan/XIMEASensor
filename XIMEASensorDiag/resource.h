@@ -21,9 +21,11 @@
 #define IDC_BUTTON_SNAPSHOT             1011
 #define IDC_BUTTON_SETTINGS             1012
 #define IDC_CHECK_CONTINUOUS            1013
-
 #define IDC_SLIDER_FRAMERATE            1020
 #define IDC_STATIC_FRAMERATE            1021
+#define IDC_EDIT_EXPOSURE               1022
+#define IDC_EDIT_GAIN                   1023
+#define IDC_EDIT_FRAMERATE              1024
 
 // Next default values for new objects
 // 
