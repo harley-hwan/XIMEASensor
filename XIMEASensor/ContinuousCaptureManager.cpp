@@ -26,10 +26,17 @@ ContinuousCaptureManager::ContinuousCaptureManager()
         m_bufferPool.push(std::vector<unsigned char>());
     }
 
-    // Initialize ball detector - BallDetector가 내부적으로 기본 파라미터를 설정함
+    // Initialize ball detector with optimized parameters
     m_ballDetector = std::make_unique<BallDetector>();
 
-    LOG_INFO("ContinuousCaptureManager initialized with BallDetector");
+    // Enable performance optimizations
+    auto params = m_ballDetector->GetParameters();
+    params.useParallelDetection = true;
+    params.numThreads = 0;  // Auto-detect optimal thread count
+    params.maxCandidates = 20;  // Limit candidates for faster processing
+    m_ballDetector->SetParameters(params);
+
+    LOG_INFO("ContinuousCaptureManager initialized with optimized BallDetector");
 }
 
 ContinuousCaptureManager::~ContinuousCaptureManager() {
@@ -668,12 +675,18 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
     frameTiming.imageLoadTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
         imageLoadEnd - imageLoadStart).count() / 1000.0;
 
-    // 2. Enable performance profiling
+    // 2. Enable performance profiling only in debug mode
+#ifdef ENABLE_PERFORMANCE_PROFILING
     m_ballDetector->EnablePerformanceProfiling(true);
+#else
+    m_ballDetector->EnablePerformanceProfiling(false);
+#endif
 
-    // 3. Set debug output directory
+    // 3. Configure parameters for production/debug mode
     auto setupStart = std::chrono::high_resolution_clock::now();
     auto params = m_ballDetector->GetParameters();
+
+#ifdef ENABLE_DEBUG_OUTPUT
     params.debugOutputDir = m_captureFolder + "/detect_outputs";
     params.saveIntermediateImages = true;
     m_ballDetector->SetParameters(params);
@@ -685,6 +698,12 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
     catch (const std::exception& e) {
         LOG_ERROR("Failed to create detect_outputs directory: " + std::string(e.what()));
     }
+#else
+    params.saveIntermediateImages = false;
+    params.debugOutputDir = "";
+    m_ballDetector->SetParameters(params);
+#endif
+
     auto setupEnd = std::chrono::high_resolution_clock::now();
     double setupTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
         setupEnd - setupStart).count() / 1000.0;
@@ -785,13 +804,14 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
         }
     }
 
-    // Log performance warning if too slow
-    if (frameTiming.totalFrameProcessingTime_ms > 100.0) {
+    // Log performance warning if too slow (adjusted threshold for optimized version)
+    if (frameTiming.totalFrameProcessingTime_ms > 150.0) {
         LOG_WARNING("Frame " + std::to_string(item.frameIndex) +
             " processing took " + std::to_string(frameTiming.totalFrameProcessingTime_ms) +
             " ms - may impact real-time processing");
     }
 }
+
 
 
 void ContinuousCaptureManager::SaveMetadata() {

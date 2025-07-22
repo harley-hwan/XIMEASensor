@@ -3,6 +3,12 @@
 #include <string>
 #include <opencv2/core/types.hpp>
 #include <memory>
+#include <thread>
+#include <future>
+
+// Performance optimization flags
+#define ENABLE_DEBUG_OUTPUT      // Comment out for production builds
+#define ENABLE_PERFORMANCE_PROFILING  // Comment out for production builds
 
 namespace cv {
     class Mat;
@@ -60,7 +66,12 @@ public:
         bool saveIntermediateImages;        // Save intermediate processing images for debugging
         std::string debugOutputDir;         // Directory to save debug images
 
-        // Constructor: initialize with default values (defined in BallDetector.cpp)
+        // Performance optimization parameters
+        int numThreads;             // Number of threads for parallel processing (0 = auto)
+        bool useParallelDetection;  // Enable parallel detection methods
+        int maxCandidates;          // Maximum candidates to evaluate (early termination)
+
+        // Constructor: initialize with default values
         DetectionParams();
     };
 
@@ -98,19 +109,30 @@ private:
     std::unique_ptr<Impl> pImpl;
 
     mutable PerformanceMetrics m_lastMetrics;
-    
+
     // Performance profiling control
     bool m_performanceProfilingEnabled;
 
+    // Thread pool for parallel processing
+    std::unique_ptr<std::thread[]> m_threadPool;
+    int m_numThreads;
+
     // Initialize default parameters optimized for ceiling camera
     void InitializeDefaultParams();
+
+    // Initialize thread pool
+    void InitializeThreadPool();
 
 public:
     BallDetector();
     ~BallDetector();
 
+    // Disable copy constructor and assignment operator
+    BallDetector(const BallDetector&) = delete;
+    BallDetector& operator=(const BallDetector&) = delete;
+
     // Set or get current detection parameters
-    void SetParameters(const DetectionParams& params) { m_params = params; }
+    void SetParameters(const DetectionParams& params);
     DetectionParams GetParameters() const { return m_params; }
 
     // Reset parameters to their default values
@@ -120,8 +142,6 @@ public:
     void SetCalibrationData(const cv::Mat& cameraMatrix, const cv::Mat& distCoeffs);
 
     // Enable/disable performance profiling
-    // When enabled, timing information will be collected and logged
-    // Comment out ENABLE_PERFORMANCE_PROFILING in BallDetector.cpp to disable at compile time
     void EnablePerformanceProfiling(bool enable);
     bool IsPerformanceProfilingEnabled() const;
 
@@ -144,8 +164,7 @@ public:
 
     // Get performance metrics from the last detection
     PerformanceMetrics GetLastPerformanceMetrics() const { return m_lastMetrics; }
-    
+
     // Generate a detailed performance report
-    // Returns a formatted string with timing breakdown and recommendations
     std::string GeneratePerformanceReport() const;
 };
