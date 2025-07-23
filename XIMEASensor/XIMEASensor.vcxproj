@@ -136,13 +136,13 @@ xcopy /y "$(TargetDir)$(TargetName).lib" "$(SolutionDir)XIMEASensorDiag\"
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\include;C:\oneTBB\oneapi-tbb-2022.2.0\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Dev\XIMEA\API\xiAPI;C:\Dev\opencv\build\include;C:\Dev\oneTBB\oneapi-tbb-2022.2.0\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalLibraryDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\x64\vc16\lib;C:\oneTBB\oneapi-tbb-2022.2.0\lib\intel64\vc14</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\Dev\XIMEA\API\xiAPI;C:\Dev\opencv\build\x64\vc16\lib;C:\Dev\oneTBB\oneapi-tbb-2022.2.0\lib\intel64\vc14</AdditionalLibraryDirectories>
       <AdditionalDependencies>xiapi64.lib;opencv_world4120.lib;tbb.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
