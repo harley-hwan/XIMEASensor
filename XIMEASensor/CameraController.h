@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 #include <cmath>
-#include <condition_variable>  // std::condition_variable를 위해 추가
+#include <condition_variable>  // std::condition_variable
 #include "XIMEASensor.h" 
 #include "IXIMEACallback.h"
 #include "Logger.h"
