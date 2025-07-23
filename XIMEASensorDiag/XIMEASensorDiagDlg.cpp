@@ -133,7 +133,6 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         m_sliderFramerate->SetTicFreq(100);
     }
 
-    // Set initial values in Edit Controls
     if (m_editExposure) {
         CString strExposure;
         strExposure.Format(_T("%d"), m_defaultExposureUs);
@@ -152,7 +151,6 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
         m_editFramerate->SetWindowText(strFPS);
     }
 
-    // Setup callbacks
     m_cameraCallback->SetFrameCallback(
         [this](const FrameInfo& info) { OnFrameReceivedCallback(info); });
 
@@ -373,7 +371,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         defaults.saveOriginalImages = true;
         defaults.saveDetectionImages = true;
 
-        // 수정된 defaults를 설정
         Camera_SetContinuousCaptureDefaults(&defaults);
 
         //if (defaults.enableBallDetection) {
@@ -389,7 +386,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 
         TRACE(_T("Starting continuous capture for %.1f seconds\n"), defaults.duration);
 
-        // Start continuous capture with defaults (이제 ball detection 설정이 포함됨)
         if (Camera_StartContinuousCaptureWithDefaults()) {
             if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
             if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
@@ -400,7 +396,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
                 m_staticStatus->SetWindowText(status);
             }
 
-            // 디버그 정보 출력
             TRACE(_T("Continuous capture started successfully\n"));
         }
         else {
@@ -409,7 +404,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         }
     }
     else {
-        // Single snapshot code remains the same
         SnapshotDefaults defaults;
         Camera_GetSnapshotDefaults(&defaults);
 
@@ -487,7 +481,6 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
         return;
     }
 
-    // Apply settings to camera when streaming
     if (pSlider == m_sliderExposure) {
         int exposure = m_sliderExposure->GetPos();
 
@@ -835,7 +828,6 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
             duration, totalFrames / duration,
             CString(folderPath).GetString());
 
-        // Ball detection 결과가 있다면 추가로 표시
         BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
         if (isContinuous) {
             int framesWithBalls = 0;
@@ -880,7 +872,6 @@ void CXIMEASensorDiagDlg::OnEnChangeEditExposure()
     m_editExposure->GetWindowText(str);
     int exposure = _ttoi(str);
 
-    // Validate range
     if (exposure >= CameraDefaults::MIN_EXPOSURE_US && exposure <= CameraDefaults::MAX_EXPOSURE_US) {
         m_sliderExposure->SetPos(exposure);
 
@@ -916,13 +907,11 @@ void CXIMEASensorDiagDlg::OnEnChangeEditFramerate()
     m_editFramerate->GetWindowText(str);
     float fps = (float)_ttof(str);
 
-    // Validate range
     if (fps >= CameraDefaults::MIN_FPS && fps <= CameraDefaults::MAX_FPS) {
         m_sliderFramerate->SetPos((int)(fps * 10));
 
         if (m_isStreaming) {
             if (!Camera_SetFrameRate(fps)) {
-                // Show warning about FPS limitation
                 int currentExposure = Camera_GetExposure();
                 float maxPossibleFPS = 1000000.0f / currentExposure;
 
@@ -931,7 +920,6 @@ void CXIMEASensorDiagDlg::OnEnChangeEditFramerate()
                     fps, currentExposure, maxPossibleFPS);
                 MessageBox(msg, _T("FPS Limitation"), MB_OK | MB_ICONWARNING);
 
-                // Revert to actual value
                 float currentFPS = Camera_GetFrameRate();
                 m_sliderFramerate->SetPos((int)(currentFPS * 10));
                 CString strFPS;
