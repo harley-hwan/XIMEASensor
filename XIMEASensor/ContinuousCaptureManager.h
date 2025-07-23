@@ -56,20 +56,19 @@ struct ContinuousCaptureDetectionResult {
 
 class ContinuousCaptureManager {
 private:
-    // 2025-07-21: performance report
-private:
+    // Performance report structure
     struct SessionPerformanceData {
         struct FrameTimingData {
             int frameIndex = 0;
-            double totalFrameProcessingTime_ms = 0;     // 전체 프레임 처리 시간
-            double imageLoadTime_ms = 0;                // 이미지 로드 시간
-            double preprocessingTime_ms = 0;             // 전처리 시간 (BallDetector 내부)
-            double detectionTime_ms = 0;                 // 검출 시간 (BallDetector 내부)
-            double saveDetectionImageTime_ms = 0;        // 검출 이미지 저장 시간
-            double otherOperationsTime_ms = 0;          // 기타 작업 시간
+            double totalFrameProcessingTime_ms = 0;
+            double imageLoadTime_ms = 0;
+            double preprocessingTime_ms = 0;
+            double detectionTime_ms = 0;
+            double saveDetectionImageTime_ms = 0;
+            double otherOperationsTime_ms = 0;
         };
 
-        std::vector<FrameTimingData> frameTimings;      // 각 프레임별 상세 타이밍
+        std::vector<FrameTimingData> frameTimings;
 
         int totalFramesProcessed = 0;
         int framesWithBallDetected = 0;
@@ -89,9 +88,12 @@ private:
         }
     };
 
-	SessionPerformanceData m_sessionPerformance;    // 2025-07-21: performance report
+    SessionPerformanceData m_sessionPerformance;
 
-    static constexpr int DEFAULT_WAIT_TIMEOUT_SECONDS = 300;     // 2025-07-21
+    static constexpr int DEFAULT_WAIT_TIMEOUT_SECONDS = 300;
+    static constexpr int BUFFER_POOL_SIZE = 20;
+    static constexpr int MAX_QUEUE_SIZE = 100;
+    static constexpr int PROGRESS_UPDATE_INTERVAL = 10;
 
     ContinuousCaptureConfig m_config;
     std::atomic<ContinuousCaptureState> m_state;
@@ -100,19 +102,34 @@ private:
     std::atomic<int> m_savedCount;
     std::atomic<int> m_droppedCount;
     std::atomic<int> m_processingCount;
-    std::atomic<int> m_ballDetectionPendingCount;   // 2025-07-21
-    std::atomic<int> m_ballDetectionCompletedCount; // 2025-07-21
+    std::atomic<int> m_ballDetectionPendingCount;
+    std::atomic<int> m_ballDetectionCompletedCount;
     mutable std::mutex m_detectionMutex;
 
     std::chrono::steady_clock::time_point m_startTime;
     std::string m_captureFolder;
-    std::string m_originalFolder;    // 원본 이미지 폴더
-    std::string m_detectionFolder;   // 검출 결과 이미지 폴더
+    std::string m_originalFolder;
+    std::string m_detectionFolder;
     double m_actualDuration;
 
     // Ball detection
     std::unique_ptr<BallDetector> m_ballDetector;
     ContinuousCaptureDetectionResult m_detectionResult;
+
+    // Performance statistics (simplified)
+    struct PerformanceStats {
+        std::atomic<int> totalProcessedFrames{ 0 };
+        std::atomic<int> framesWithBallDetected{ 0 };
+        std::atomic<double> totalProcessingTime{ 0.0 };
+        std::chrono::steady_clock::time_point startTime;
+
+        void Reset() {
+            totalProcessedFrames = 0;
+            framesWithBallDetected = 0;
+            totalProcessingTime = 0.0;
+            startTime = std::chrono::steady_clock::now();
+        }
+    } m_performanceStats;
 
     // Async save structure
     struct SaveItem {
@@ -137,6 +154,7 @@ private:
     ContinuousCaptureProgressCallback m_progressCallback;
     std::mutex m_callbackMutex;
 
+    // Private methods
     bool CreateCaptureFolder();
     void SaveThreadWorker();
     void SaveFrameAsync(const unsigned char* data, int width, int height);
@@ -148,17 +166,21 @@ private:
     // Ball detection
     void ProcessBallDetection(const SaveItem& item);
     void SaveDetectionMetadata();
-    void SaveSessionPerformanceReport();    // 2025-07-21: performance report
+
+    // Configure ball detector with fixed optimal settings
+    void ConfigureBallDetectorOptimal();
 
 public:
     ContinuousCaptureManager();
     ~ContinuousCaptureManager();
 
     void SetConfig(const ContinuousCaptureConfig& config);
-
     bool StartCapture();
+    void SaveSessionPerformanceReport();
     void StopCapture();
     bool IsCapturing() const { return m_isCapturing.load(); }
+
+    BallDetector* GetBallDetector() { return m_ballDetector.get(); }
     ContinuousCaptureState GetState() const { return m_state.load(); }
 
     void ProcessFrame(const unsigned char* data, int width, int height);

@@ -1,14 +1,9 @@
-﻿#pragma once
+﻿// BallDetector.h - Complete Optimized Version with TBB
+#pragma once
 #include <vector>
 #include <string>
 #include <opencv2/core/types.hpp>
 #include <memory>
-#include <thread>
-#include <future>
-
-// Performance optimization flags
-#define ENABLE_DEBUG_OUTPUT      // Comment out for production builds
-#define ENABLE_PERFORMANCE_PROFILING  // Comment out for production builds
 
 namespace cv {
     class Mat;
@@ -29,7 +24,7 @@ struct BallInfo {
 
 struct BallDetectionResult {
     bool found;                   // Whether a ball was detected
-    std::vector<BallInfo> balls;  // Detected ball information (usually 1 ball for ceiling camera)
+    std::vector<BallInfo> balls;  // Detected ball information
     std::string errorMessage;     // Error message if detection failed
 };
 
@@ -37,41 +32,51 @@ class BallDetector {
 public:
     struct DetectionParams {
         // Hough Circle detection parameters
-        double dp;             // Inverse ratio of the accumulator resolution to image resolution
+        double dp;             // Inverse ratio of accumulator resolution
         double minDist;        // Minimum distance between detected centers
-        double param1;         // Higher threshold for Canny (lower is half of this)
-        double param2;         // Circle detection threshold (smaller -> more false circles possible)
-        int minRadius;         // Minimum circle radius to detect (pixels)
-        int maxRadius;         // Maximum circle radius to detect
+        double param1;         // Higher threshold for Canny
+        double param2;         // Circle detection threshold
+        int minRadius;         // Minimum circle radius (pixels)
+        int maxRadius;         // Maximum circle radius
 
-        // Color/Brightness filtering and shape validation
-        int brightnessThreshold;   // Brightness threshold for definitely bright (white) balls
+        // Filtering and validation
+        int brightnessThreshold;   // Brightness threshold
         float minCircularity;      // Minimum acceptable circularity
-        float contrastThreshold;   // Minimum intensity difference from background
+        float contrastThreshold;   // Minimum contrast from background
 
         // Detection options
         bool useColorFilter;        // Use brightness/color filtering
-        bool useCircularityCheck;   // Use circularity check on candidates
-        bool useHoughGradientAlt;   // Use HOUGH_GRADIENT_ALT (more accurate circle detection)
-        bool detectMultiple;        // Detect multiple balls vs single ball (false = single-ball mode)
-        bool useMorphology;         // Use morphological operations to clean binary images
-        bool useAdaptiveThreshold;  // Use adaptive threshold + contour detection method
+        bool useCircularityCheck;   // Use circularity check
+        bool useHoughGradientAlt;   // Use alternative Hough method
+        bool detectMultiple;        // Detect multiple balls
+        bool useMorphology;         // Use morphological operations
+        bool useAdaptiveThreshold;  // Use adaptive threshold
 
-        // Ceiling camera specific options
-        bool correctPerspective;    // Apply lens distortion correction if calibration provided
-        bool enhanceShadows;        // Enhance dark (shadow) regions to help detection
-        float shadowEnhanceFactor;  // Brightening factor for shadow regions
+        // Camera specific options
+        bool correctPerspective;    // Apply lens distortion correction
+        bool enhanceShadows;        // Enhance shadow regions
+        float shadowEnhanceFactor;  // Shadow enhancement factor
 
         // Debug options
-        bool saveIntermediateImages;        // Save intermediate processing images for debugging
-        std::string debugOutputDir;         // Directory to save debug images
+        bool saveIntermediateImages;
+        std::string debugOutputDir;
 
-        // Performance optimization parameters
-        int numThreads;             // Number of threads for parallel processing (0 = auto)
-        bool useParallelDetection;  // Enable parallel detection methods
-        int maxCandidates;          // Maximum candidates to evaluate (early termination)
+        // === OPTIMIZATION PARAMETERS ===
+        // Performance optimization
+        bool fastMode;              // Enable all speed optimizations
+        bool useROI;                // Process only center region
+        float roiScale;             // ROI scale (0.5-1.0)
+        int downscaleFactor;        // Image downscale factor (1-4)
+        bool useParallel;           // Enable parallel processing
+        int maxCandidates;          // Maximum candidates to evaluate
 
-        // Constructor: initialize with default values
+        // Advanced optimization
+        bool skipPreprocessing;     // Skip preprocessing for max speed
+        int edgeThreshold;          // Edge detection threshold
+        bool useCache;              // Cache intermediate results
+        int processingThreads;      // Number of processing threads
+
+        // Constructor with optimized defaults
         DetectionParams();
     };
 
@@ -104,67 +109,129 @@ public:
 private:
     DetectionParams m_params;
 
-    // PIMPL: internal implementation details
+    // PIMPL idiom for implementation
     class Impl;
     std::unique_ptr<Impl> pImpl;
 
     mutable PerformanceMetrics m_lastMetrics;
-
-    // Performance profiling control
     bool m_performanceProfilingEnabled;
 
-    // Thread pool for parallel processing
-    std::unique_ptr<std::thread[]> m_threadPool;
-    int m_numThreads;
-
-    // Initialize default parameters optimized for ceiling camera
     void InitializeDefaultParams();
-
-    // Initialize thread pool
-    void InitializeThreadPool();
 
 public:
     BallDetector();
     ~BallDetector();
 
-    // Disable copy constructor and assignment operator
-    BallDetector(const BallDetector&) = delete;
-    BallDetector& operator=(const BallDetector&) = delete;
-
-    // Set or get current detection parameters
-    void SetParameters(const DetectionParams& params);
+    // Parameter management
+    void SetParameters(const DetectionParams& params) { m_params = params; }
     DetectionParams GetParameters() const { return m_params; }
-
-    // Reset parameters to their default values
     void ResetToDefaults();
 
-    // Set camera calibration data (for perspective correction)
+    // Camera calibration
     void SetCalibrationData(const cv::Mat& cameraMatrix, const cv::Mat& distCoeffs);
 
-    // Enable/disable performance profiling
+    // Performance profiling
     void EnablePerformanceProfiling(bool enable);
     bool IsPerformanceProfilingEnabled() const;
 
-    // Main function: detect ball from a grayscale image frame
+    // === MAIN DETECTION FUNCTION ===
     BallDetectionResult DetectBall(const unsigned char* imageData, int width, int height, int frameIndex = 0);
 
-    // Utility: draw detection result on a grayscale image buffer (in-place)
+    // === OPTIMIZATION METHODS ===
+    // Quick configuration methods
+    void EnableFastMode(bool enable);
+    void SetDownscaleFactor(int factor);
+    void SetROIScale(float scale);
+    void SetMaxCandidates(int maxCandidates);
+    void SetProcessingThreads(int threads);
+
+    // Advanced optimization controls
+    void EnableParallelProcessing(bool enable) { m_params.useParallel = enable; }
+    void EnableCaching(bool enable) { m_params.useCache = enable; }
+    void SkipPreprocessing(bool skip) { m_params.skipPreprocessing = skip; }
+
+    // Preset configurations
+    void ConfigureForRealtime();     // Fastest settings for 60+ FPS
+    void ConfigureForAccuracy();     // Best accuracy, slower
+    void ConfigureForBalance();      // Balanced speed/accuracy
+
+    // Visualization utilities
     bool DrawDetectionResult(unsigned char* imageData, int width, int height,
         const BallDetectionResult& result,
         cv::Scalar color = cv::Scalar(0, 255, 0),
         int thickness = 2);
 
-    // Utility: save detection result as a color image with annotations (for debugging)
     bool SaveDetectionImage(const unsigned char* originalImage, int width, int height,
         const BallDetectionResult& result,
         const std::string& outputPath);
 
-    // Auto-tune parameters based on a set of sample images (experimental)
+    // Auto-tuning
     void AutoTuneParameters(const std::vector<unsigned char*>& sampleImages, int width, int height);
 
-    // Get performance metrics from the last detection
+    // Performance analysis
     PerformanceMetrics GetLastPerformanceMetrics() const { return m_lastMetrics; }
-
-    // Generate a detailed performance report
     std::string GeneratePerformanceReport() const;
+
+    // === UTILITY METHODS ===
+    // Get estimated processing time for given image size
+    double EstimateProcessingTime(int width, int height) const;
+
+    // Check if current settings can achieve target FPS
+    bool CanAchieveTargetFPS(int targetFPS, int imageWidth, int imageHeight) const;
+
+    // Get recommended settings for target performance
+    DetectionParams GetRecommendedSettings(int targetFPS, int imageWidth, int imageHeight) const;
 };
+
+// Inline optimization preset methods
+inline void BallDetector::ConfigureForRealtime() {
+    m_params.fastMode = true;
+    m_params.useROI = true;
+    m_params.roiScale = 0.6f;
+    m_params.downscaleFactor = 3;
+    m_params.useParallel = true;
+    m_params.maxCandidates = 5;
+    m_params.skipPreprocessing = false;
+    m_params.enhanceShadows = false;
+    m_params.useMorphology = false;
+    m_params.useAdaptiveThreshold = false;
+    m_params.saveIntermediateImages = false;
+    m_params.useCircularityCheck = false;
+    m_params.dp = 2.5;
+    m_params.param1 = 150.0;
+    m_params.param2 = 0.9;
+}
+
+inline void BallDetector::ConfigureForAccuracy() {
+    m_params.fastMode = false;
+    m_params.useROI = false;
+    m_params.roiScale = 1.0f;
+    m_params.downscaleFactor = 1;
+    m_params.useParallel = true;
+    m_params.maxCandidates = 50;
+    m_params.skipPreprocessing = false;
+    m_params.enhanceShadows = true;
+    m_params.useMorphology = true;
+    m_params.useAdaptiveThreshold = true;
+    m_params.useCircularityCheck = true;
+    m_params.dp = 1.0;
+    m_params.param1 = 100.0;
+    m_params.param2 = 0.85;
+}
+
+inline void BallDetector::ConfigureForBalance() {
+    m_params.fastMode = false;
+    m_params.useROI = true;
+    m_params.roiScale = 0.9f;
+    m_params.downscaleFactor = 1;
+    m_params.useParallel = true;
+    m_params.maxCandidates = 20;
+    m_params.skipPreprocessing = false;
+    m_params.enhanceShadows = false;
+    m_params.useMorphology = false;
+    m_params.useAdaptiveThreshold = false;
+    m_params.useCircularityCheck = true;
+    m_params.dp = 1.5;
+    m_params.param1 = 120.0;
+    m_params.param2 = 0.85;
+}

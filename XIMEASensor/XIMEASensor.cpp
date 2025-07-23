@@ -665,7 +665,25 @@ void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults) {
 
 bool Camera_StartContinuousCaptureWithDefaults() {
     try {
-        // Apply default configuration including ball detection settings
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (!captureManager) {
+            LOG_ERROR("Continuous capture manager not available");
+            return false;
+        }
+
+        // 현재 캡처 상태 확인
+        ContinuousCaptureState currentState = captureManager->GetState();
+        LOG_INFO("Current capture state before start: " +
+            std::to_string(static_cast<int>(currentState)));
+
+        // 이전 세션이 남아있다면 리셋
+        if (currentState == ContinuousCaptureState::COMPLETED ||
+            currentState == ContinuousCaptureState::kERROR) {
+            LOG_INFO("Resetting previous capture session");
+            captureManager->Reset();
+        }
+
+        // 기본 설정 적용
         if (!Camera_SetContinuousCaptureConfigEx(
             g_continuousCaptureDefaults.duration,
             g_continuousCaptureDefaults.format,
@@ -678,8 +696,18 @@ bool Camera_StartContinuousCaptureWithDefaults() {
             return false;
         }
 
-        // Start capture
-        return Camera_StartContinuousCapture();
+        // 캡처 시작
+        bool result = captureManager->StartCapture();
+
+        if (result) {
+            LOG_INFO("Continuous capture started with defaults - Duration: " +
+                std::to_string(g_continuousCaptureDefaults.duration) + "s");
+        }
+        else {
+            LOG_ERROR("Failed to start continuous capture");
+        }
+
+        return result;
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_StartContinuousCaptureWithDefaults: " +

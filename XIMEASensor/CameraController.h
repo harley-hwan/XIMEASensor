@@ -14,7 +14,7 @@
 #include "ContinuousCaptureManager.h"
 
 #define PYTHON1300_WIDTH    1280
-#define PYTHON1300_HEIGHT   1024
+#define PYTHON1300_HEIGHT   960
 #define PYTHON1300_MAX_FPS  210
 
 struct CameraStatistics {

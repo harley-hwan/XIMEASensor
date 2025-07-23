@@ -110,15 +110,15 @@
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\include;C:\oneTBB\oneapi-tbb-2022.2.0\include</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalLibraryDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\x64\vc16\lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>xiapi64.lib;opencv_world4120d.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\x64\vc16\lib;C:\oneTBB\oneapi-tbb-2022.2.0\lib\intel64\vc14</AdditionalLibraryDirectories>
+      <AdditionalDependencies>xiapi64.lib;opencv_world4120d.lib;tbb_debug.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /y "$(TargetDir)$(TargetName).dll" "$(SolutionDir)XIMEASensorDiag\"
@@ -136,14 +136,14 @@ xcopy /y "$(TargetDir)$(TargetName).lib" "$(SolutionDir)XIMEASensorDiag\"
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\include;C:\oneTBB\oneapi-tbb-2022.2.0\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalLibraryDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\x64\vc16\lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>xiapi64.lib;opencv_world4120.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\XIMEA\API\xiAPI;C:\opencv\build\x64\vc16\lib;C:\oneTBB\oneapi-tbb-2022.2.0\lib\intel64\vc14</AdditionalLibraryDirectories>
+      <AdditionalDependencies>xiapi64.lib;opencv_world4120.lib;tbb.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

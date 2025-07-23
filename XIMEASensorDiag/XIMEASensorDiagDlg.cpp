@@ -355,7 +355,7 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
     BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
 
     if (isContinuous) {
-        // Continuous capture mode with ball detection
+        // Continuous capture mode
         ContinuousCaptureDefaults defaults;
         Camera_GetContinuousCaptureDefaults(&defaults);
 
@@ -369,7 +369,7 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         defaults.format = (result == IDYES) ? 0 : 1;
 
         // Ball detection 설정 추가
-        defaults.enableBallDetection = true;  // Ball detection 활성화
+        defaults.enableBallDetection = true;
         defaults.saveOriginalImages = true;
         defaults.saveDetectionImages = true;
 
@@ -387,14 +387,25 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 
+        TRACE(_T("Starting continuous capture for %.1f seconds\n"), defaults.duration);
+
         // Start continuous capture with defaults (이제 ball detection 설정이 포함됨)
         if (Camera_StartContinuousCaptureWithDefaults()) {
             if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
             if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
-            if (m_staticStatus) m_staticStatus->SetWindowText(_T("Continuous capture with ball detection in progress..."));
+            if (m_staticStatus) {
+                CString status;
+                status.Format(_T("Continuous capture (%.1fs) with ball detection in progress..."),
+                    defaults.duration);
+                m_staticStatus->SetWindowText(status);
+            }
+
+            // 디버그 정보 출력
+            TRACE(_T("Continuous capture started successfully\n"));
         }
         else {
             AfxMessageBox(_T("Failed to start continuous capture!"));
+            TRACE(_T("Failed to start continuous capture\n"));
         }
     }
     else {
@@ -580,7 +591,7 @@ void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
     EnterCriticalSection(&m_frameCriticalSection);
 
     int requiredSize = frameInfo.width * frameInfo.height;
-    if (requiredSize > 1280 * 1024) {
+    if (requiredSize > 1280 * 960) {
         delete[] m_pDisplayBuffer;
         m_pDisplayBuffer = new unsigned char[requiredSize];
     }
