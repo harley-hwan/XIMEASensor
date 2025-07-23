@@ -23,23 +23,23 @@ ContinuousCaptureManager::ContinuousCaptureManager()
     m_saveThreadRunning(false),
     m_actualDuration(0.0) {
 
-    // Initialize buffer pool with optimal size
+    // Init buffer pool
     constexpr int OPTIMAL_BUFFER_POOL_SIZE = 20;
     for (int i = 0; i < OPTIMAL_BUFFER_POOL_SIZE; i++) {
         m_bufferPool.push(std::vector<unsigned char>());
     }
 
-    // Initialize TBB with optimal thread count
+    // Init TBB
     const unsigned int optimalThreads = std::max(2u, std::thread::hardware_concurrency() - 1);
     tbb::global_control global_limit(
         tbb::global_control::max_allowed_parallelism, optimalThreads
     );
 
-    // Initialize ball detector with fixed optimal settings
+    // init ball detector
     m_ballDetector = std::make_unique<BallDetector>();
     ConfigureBallDetectorOptimal();
 
-    LOG_INFO("ContinuousCaptureManager initialized with fixed optimal settings");
+    LOG_INFO("ContinuousCaptureManager initialized with optimal ball detection settings");
     LOG_INFO("TBB threads: " + std::to_string(optimalThreads));
 }
 
@@ -56,50 +56,10 @@ ContinuousCaptureManager::~ContinuousCaptureManager() {
 void ContinuousCaptureManager::ConfigureBallDetectorOptimal() {
     if (!m_ballDetector) return;
 
-    // Apply fixed optimal settings based on extensive testing
-    // These settings provide the best balance between speed and accuracy
-    auto params = m_ballDetector->GetParameters();
-
-    // Core detection parameters
-    params.dp = 2.0;
-    params.minDist = 40.0;
-    params.param1 = 130.0;  // Slightly higher for better edge detection
-    params.param2 = 0.87;   // Balanced threshold
-    params.minRadius = 20;
-    params.maxRadius = 30;
-    params.brightnessThreshold = 120;
-    params.minCircularity = 0.70f;
-    params.contrastThreshold = 20.0f;
-
-    // Feature toggles - optimized for speed
-    params.useColorFilter = true;
-    params.useCircularityCheck = false;  // Skip for speed
-    params.useHoughGradientAlt = false;
-    params.detectMultiple = false;
-    params.useMorphology = false;
-    params.useAdaptiveThreshold = false;
-    params.correctPerspective = false;
-    params.enhanceShadows = false;
-    params.saveIntermediateImages = false;
-
-    // Performance optimization settings - fixed optimal values
-    params.fastMode = true;
-    params.useROI = true;
-    params.roiScale = 0.75f;  // Process 75% of image area
-    params.downscaleFactor = 2;  // 2x downscale for 4x speed improvement
-    params.useParallel = true;
-    params.maxCandidates = 15;  // Reasonable limit
-    params.skipPreprocessing = false;  // Keep minimal preprocessing
-    params.edgeThreshold = 100;
-    params.useCache = false;  // Caching overhead not worth it
-    params.processingThreads = std::max(2u, std::thread::hardware_concurrency() / 2);
-
-    m_ballDetector->SetParameters(params);
-
-    // Disable performance profiling for production
     m_ballDetector->EnablePerformanceProfiling(false);
 
-    LOG_INFO("Ball detector configured with fixed optimal settings:");
+    auto params = m_ballDetector->GetParameters();
+    LOG_INFO("Ball detector using optimal settings:");
     LOG_INFO("  ROI Scale: " + std::to_string(params.roiScale));
     LOG_INFO("  Downscale Factor: " + std::to_string(params.downscaleFactor));
     LOG_INFO("  Max Candidates: " + std::to_string(params.maxCandidates));
@@ -117,6 +77,7 @@ void ContinuousCaptureManager::SetConfig(const ContinuousCaptureConfig& config) 
     LOG_INFO("  Ball Detection: " + std::string(m_config.enableBallDetection ? "ENABLED" : "DISABLED"));
     LOG_INFO("  Save Original: " + std::string(m_config.saveOriginalImages ? "YES" : "NO"));
     LOG_INFO("  Save Detection: " + std::string(m_config.saveDetectionImages ? "YES" : "NO"));
+    LOG_INFO("  Save Debug Images: " + std::string(m_config.saveBallDetectorDebugImages ? "YES" : "NO"));
 
     m_config = config;
 
@@ -128,6 +89,10 @@ void ContinuousCaptureManager::SetConfig(const ContinuousCaptureConfig& config) 
     LOG_INFO("  Ball Detection: " + std::string(config.enableBallDetection ? "ENABLED" : "DISABLED"));
     LOG_INFO("  Save Original: " + std::string(config.saveOriginalImages ? "YES" : "NO"));
     LOG_INFO("  Save Detection: " + std::string(config.saveDetectionImages ? "YES" : "NO"));
+    LOG_INFO("  Save Debug Images: " + std::string(config.saveBallDetectorDebugImages ? "YES" : "NO"));
+    if (!config.debugImagePath.empty()) {
+        LOG_INFO("  Debug Image Path: " + config.debugImagePath);
+    }
     LOG_INFO("==============================================");
 }
 
@@ -151,9 +116,9 @@ bool ContinuousCaptureManager::StartCapture() {
     LOG_INFO("Ball Detection: " + std::string(m_config.enableBallDetection ? "ENABLED" : "DISABLED"));
     LOG_INFO("Save Original Images: " + std::string(m_config.saveOriginalImages ? "YES" : "NO"));
     LOG_INFO("Save Detection Images: " + std::string(m_config.saveDetectionImages ? "YES" : "NO"));
+    LOG_INFO("Save Debug Images: " + std::string(m_config.saveBallDetectorDebugImages ? "YES" : "NO"));
     LOG_INFO("===============================================");
 
-    // Reset counters
     m_frameCount = 0;
     m_savedCount = 0;
     m_droppedCount = 0;
@@ -173,6 +138,14 @@ bool ContinuousCaptureManager::StartCapture() {
         m_isCapturing = false;
         LOG_ERROR("Failed to create capture folder");
         return false;
+    }
+
+    if (m_config.enableBallDetection && m_ballDetector) {
+        std::string debugPath = m_config.debugImagePath.empty() ? "" : m_config.debugImagePath;
+        SetBallDetectorDebugOutput(m_config.saveBallDetectorDebugImages, debugPath);
+
+        LOG_INFO("Ball detector debug output configured: " +
+            std::string(m_config.saveBallDetectorDebugImages ? "ENABLED" : "DISABLED"));
     }
 
     if (m_config.useAsyncSave && !m_saveThreadRunning) {
@@ -331,9 +304,9 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
 
     SessionPerformanceData::FrameTimingData frameTiming;
     frameTiming.frameIndex = item.frameIndex;
-    frameTiming.imageLoadTime_ms = 0.01; // Already in memory
+    frameTiming.imageLoadTime_ms = 0.01;
 
-    // Perform ball detection with fixed optimal settings
+    // Perform ball detection
     auto detectionStart = std::chrono::high_resolution_clock::now();
     auto result = m_ballDetector->DetectBall(
         item.data.data(), item.width, item.height, item.frameIndex);
@@ -342,12 +315,10 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
     double ballDetectorTotalTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
         detectionEnd - detectionStart).count() / 1000.0;
 
-    // Get performance metrics if available
     auto metrics = m_ballDetector->GetLastPerformanceMetrics();
     frameTiming.preprocessingTime_ms = metrics.preprocessingTime_ms;
     frameTiming.detectionTime_ms = metrics.totalDetectionTime_ms;
 
-    // Save detection image if needed
     auto saveImageStart = std::chrono::high_resolution_clock::now();
     if (m_config.saveDetectionImages && result.found) {
         std::stringstream detectionPath;
@@ -363,20 +334,14 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
 
         detectionPath << ".jpg";
 
-        // Create visualization
-        std::vector<unsigned char> detectionBuffer(item.data);
-        m_ballDetector->DrawDetectionResult(
-            detectionBuffer.data(), item.width, item.height, result);
-
-        ImageSaver::SaveGrayscaleImage(
-            detectionBuffer.data(), item.width, item.height,
-            detectionPath.str(), ImageFormat::JPG, 85);
+        m_ballDetector->SaveDetectionImage(
+            item.data.data(), item.width, item.height,
+            result, detectionPath.str(), true);  // true for color
     }
     auto saveImageEnd = std::chrono::high_resolution_clock::now();
     frameTiming.saveDetectionImageTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
         saveImageEnd - saveImageStart).count() / 1000.0;
 
-    // Complete frame processing
     auto frameProcessingEnd = std::chrono::high_resolution_clock::now();
     frameTiming.totalFrameProcessingTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
         frameProcessingEnd - frameProcessingStart).count() / 1000.0;
@@ -486,7 +451,6 @@ void ContinuousCaptureManager::SaveSessionPerformanceReport() {
         report << "  99th percentile: " << getPercentile(0.99) << " ms\n\n";
     }
 
-    // Fixed settings report
     report << "Fixed Optimal Settings Used:\n";
     auto params = m_ballDetector->GetParameters();
     report << "  ROI Scale: " << params.roiScale << "\n";
@@ -503,29 +467,28 @@ void ContinuousCaptureManager::SaveSessionPerformanceReport() {
 
     report << "Performance Analysis:\n";
     if (m_sessionPerformance.avgFrameTime_ms < targetFrameTime) {
-        report << "  ✓ Excellent: Processing faster than capture rate (" << targetFPS << " FPS)\n";
+        report << "  > Excellent: Processing faster than capture rate (" << targetFPS << " FPS)\n";
     }
     else if (m_sessionPerformance.avgFrameTime_ms < targetFrameTime * 1.5) {
-        report << "  ⚠ Warning: Processing speed marginal for " << targetFPS << " FPS capture\n";
+        report << "  > Warning: Processing speed marginal for " << targetFPS << " FPS capture\n";
     }
     else {
-        report << "  ✗ Poor: Cannot keep up with " << targetFPS << " FPS capture rate\n";
+        report << "  > Poor: Cannot keep up with " << targetFPS << " FPS capture rate\n";
     }
 
     double frameDropPercentage = (m_droppedCount.load() * 100.0) / m_frameCount.load();
     if (frameDropPercentage > 5.0) {
-        report << "  ✗ High frame drop rate: " << frameDropPercentage << "%\n";
+        report << "  > High frame drop rate: " << frameDropPercentage << "%\n";
     }
     else if (frameDropPercentage > 1.0) {
-        report << "  ⚠ Moderate frame drop rate: " << frameDropPercentage << "%\n";
+        report << "  > Moderate frame drop rate: " << frameDropPercentage << "%\n";
     }
     else {
-        report << "  ✓ Low frame drop rate: " << frameDropPercentage << "%\n";
+        report << "  > Low frame drop rate: " << frameDropPercentage << "%\n";
     }
 
     report << "=========================================================\n";
 
-    // Save report to file
     std::stringstream filename;
     filename << m_captureFolder << "/performance_report_" << std::put_time(&localTime, "%Y%m%d_%H%M%S") << ".txt";
 
@@ -585,6 +548,12 @@ bool ContinuousCaptureManager::CreateCaptureFolder() {
             LOG_INFO("Created detection images folder: " + m_detectionFolder);
 
             m_detectionResult.detectionFolder = m_detectionFolder;
+
+            // Set capture folder in BallDetector (for automatic debug path)
+            if (m_ballDetector) {
+                m_ballDetector->SetCurrentCaptureFolder(m_captureFolder);
+                LOG_INFO("Set ball detector capture folder: " + m_captureFolder);
+            }
         }
 
         return true;
@@ -740,6 +709,43 @@ void ContinuousCaptureManager::SaveMetadata() {
     LOG_INFO("Metadata saved to: " + metaFile);
 }
 
+
+void ContinuousCaptureManager::SetBallDetectorDebugOutput(bool enable, const std::string& customPath) {
+    if (!m_ballDetector) {
+        LOG_ERROR("Ball detector not initialized");
+        return;
+    }
+
+    auto params = m_ballDetector->GetParameters();
+    params.saveIntermediateImages = enable;
+
+    if (!customPath.empty()) {
+        params.debugOutputDir = customPath;
+
+        try {
+            if (enable && !std::filesystem::exists(customPath)) {
+                std::filesystem::create_directories(customPath);
+                LOG_INFO("Created custom debug directory: " + customPath);
+            }
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("Failed to create custom debug directory: " + std::string(e.what()));
+        }
+    }
+    else if (!m_captureFolder.empty()) {
+        params.debugOutputDir = m_captureFolder + "/debug_images";
+    }
+    else {
+        params.debugOutputDir = "./debug_images";
+    }
+
+    m_ballDetector->SetParameters(params);
+
+    LOG_INFO("Ball detector debug output " + std::string(enable ? "enabled" : "disabled") +
+        " with path: " + params.debugOutputDir);
+}
+
+
 void ContinuousCaptureManager::SaveDetectionMetadata() {
     std::string metaFile = m_captureFolder + "/detection_results.txt";
     std::ofstream file(metaFile);
@@ -779,7 +785,8 @@ void ContinuousCaptureManager::SaveDetectionMetadata() {
     file << "  Min Circularity: " << params.minCircularity << "\n";
     file << "  ROI Scale: " << params.roiScale << "\n";
     file << "  Downscale Factor: " << params.downscaleFactor << "\n";
-    file << "  Max Candidates: " << params.maxCandidates << "\n\n";
+    file << "  Max Candidates: " << params.maxCandidates << "\n";
+    file << "  Debug Images Saved: " << (params.saveIntermediateImages ? "Yes" : "No") << "\n\n";
 
     file << "Folders:\n";
     file << "  Capture Folder: " << m_captureFolder << "\n";
@@ -788,6 +795,9 @@ void ContinuousCaptureManager::SaveDetectionMetadata() {
     }
     if (!m_detectionFolder.empty()) {
         file << "  Detection Images: " << m_detectionFolder << "\n";
+    }
+    if (params.saveIntermediateImages && !params.debugOutputDir.empty()) {
+        file << "  Debug Images: " << params.debugOutputDir << "\n";
     }
 
     file.close();
@@ -944,8 +954,10 @@ void ContinuousCaptureManager::Reset() {
     m_detectionResult = ContinuousCaptureDetectionResult();
     m_sessionPerformance.Reset();
 
-    // Reset ball detector to fixed optimal settings
     ConfigureBallDetectorOptimal();
+    if (m_ballDetector) {
+        m_ballDetector->SetCurrentCaptureFolder("");
+    }
 
     LOG_INFO("ContinuousCaptureManager reset completed");
 }

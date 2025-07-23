@@ -29,6 +29,9 @@ struct ContinuousCaptureConfig {
     bool enableBallDetection = false;
     bool saveOriginalImages = true;
     bool saveDetectionImages = true;
+
+    bool saveBallDetectorDebugImages = false;
+    std::string debugImagePath = "";
 };
 
 struct ContinuousCaptureResult {
@@ -43,7 +46,6 @@ struct ContinuousCaptureResult {
 
 typedef std::function<void(int currentFrame, double elapsedSeconds, ContinuousCaptureState state)> ContinuousCaptureProgressCallback;
 
-// Forward declaration
 class BallDetector;
 struct BallDetectionResult;
 
@@ -56,7 +58,7 @@ struct ContinuousCaptureDetectionResult {
 
 class ContinuousCaptureManager {
 private:
-    // Performance report structure
+    // Performance report struct
     struct SessionPerformanceData {
         struct FrameTimingData {
             int frameIndex = 0;
@@ -116,7 +118,6 @@ private:
     std::unique_ptr<BallDetector> m_ballDetector;
     ContinuousCaptureDetectionResult m_detectionResult;
 
-    // Performance statistics (simplified)
     struct PerformanceStats {
         std::atomic<int> totalProcessedFrames{ 0 };
         std::atomic<int> framesWithBallDetected{ 0 };
@@ -167,7 +168,6 @@ private:
     void ProcessBallDetection(const SaveItem& item);
     void SaveDetectionMetadata();
 
-    // Configure ball detector with fixed optimal settings
     void ConfigureBallDetectorOptimal();
 
 public:
@@ -180,6 +180,7 @@ public:
     void StopCapture();
     bool IsCapturing() const { return m_isCapturing.load(); }
 
+    ContinuousCaptureConfig GetConfig() const { return m_config; }
     BallDetector* GetBallDetector() { return m_ballDetector.get(); }
     ContinuousCaptureState GetState() const { return m_state.load(); }
 
@@ -191,5 +192,8 @@ public:
     ContinuousCaptureDetectionResult GetDetectionResult() const;
 
     void SetProgressCallback(ContinuousCaptureProgressCallback callback);
+    
+    void SetBallDetectorDebugOutput(bool enable, const std::string& customPath = "");   // 2025-07-24 : debug output
+
     void Reset();
 };

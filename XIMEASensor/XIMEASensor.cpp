@@ -6,6 +6,7 @@
 #include <string>
 #include <cstring>
 #include <iostream>
+#include "BallDetector.h"
 
 static void(*g_continuousProgressCallback)(int, double, int) = nullptr; // 2025-07-15: continuous capture
 
@@ -39,9 +40,10 @@ static ContinuousCaptureDefaults g_continuousCaptureDefaults = {
     CameraDefaults::CONTINUOUS_CAPTURE_FORMAT,
     CameraDefaults::CONTINUOUS_CAPTURE_QUALITY,
     CameraDefaults::CONTINUOUS_CAPTURE_ASYNC_SAVE,
-    false,  // enableBallDetection
-    true,   // saveOriginalImages
-    true    // saveDetectionImages
+    false,   // enableBallDetection
+    true,    // saveOriginalImages
+    true,    // saveDetectionImages
+    false    // saveBallDetectorDebugImages - default OFF for production
 };
 
 static SnapshotDefaults g_snapshotDefaults = {
@@ -436,7 +438,7 @@ bool Camera_SetContinuousCaptureConfig(double duration, int format, int quality,
         config.jpgQuality = quality;
         config.useAsyncSave = asyncSave;
         config.createMetadata = true;
-        config.baseFolder = ".";  // 현재 위치
+        config.baseFolder = ".";
 
         captureManager->SetConfig(config);
         LOG_INFO("Continuous capture config set: duration=" + std::to_string(duration) +
@@ -462,7 +464,6 @@ bool Camera_StartContinuousCapture() {
             return false;
         }
 
-        // Reset if completed or failed
         ContinuousCaptureState currentState = captureManager->GetState();
         if (currentState == ContinuousCaptureState::COMPLETED || 
             currentState == ContinuousCaptureState::kERROR) {
@@ -604,28 +605,32 @@ void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureDefaults* defaul
         return;
     }
 
-    // Validate parameters
-    if (defaults->duration < 0.1 || defaults->duration > 60.0) {
-        LOG_ERROR("Invalid duration: must be between 0.1 and 60 seconds");
+    if (defaults->duration <= 0 || defaults->duration > 3600) {
+        LOG_ERROR("Invalid duration: " + std::to_string(defaults->duration));
         return;
     }
 
     if (defaults->format < 0 || defaults->format > 1) {
-        LOG_ERROR("Invalid format: must be 0 (PNG) or 1 (JPG)");
+        LOG_ERROR("Invalid format: " + std::to_string(defaults->format));
         return;
     }
 
     if (defaults->quality < 1 || defaults->quality > 100) {
-        LOG_ERROR("Invalid quality: must be between 1 and 100");
+        LOG_ERROR("Invalid quality: " + std::to_string(defaults->quality));
         return;
     }
 
     g_continuousCaptureDefaults = *defaults;
-    LOG_INFO("Updated continuous capture defaults: duration=" +
-        std::to_string(defaults->duration) + "s, format=" +
-        std::to_string(defaults->format) + ", quality=" +
-        std::to_string(defaults->quality) + ", enableBallDetection=" +
-        std::to_string(defaults->enableBallDetection));
+
+    LOG_INFO("Updated continuous capture defaults:");
+    LOG_INFO("  Duration: " + std::to_string(g_continuousCaptureDefaults.duration) + " seconds");
+    LOG_INFO("  Format: " + std::to_string(g_continuousCaptureDefaults.format) + " (0=PNG, 1=JPG)");
+    LOG_INFO("  Quality: " + std::to_string(g_continuousCaptureDefaults.quality));
+    LOG_INFO("  Async Save: " + std::string(g_continuousCaptureDefaults.asyncSave ? "Yes" : "No"));
+    LOG_INFO("  Ball Detection: " + std::string(g_continuousCaptureDefaults.enableBallDetection ? "Yes" : "No"));
+    LOG_INFO("  Save Original: " + std::string(g_continuousCaptureDefaults.saveOriginalImages ? "Yes" : "No"));
+    LOG_INFO("  Save Detection: " + std::string(g_continuousCaptureDefaults.saveDetectionImages ? "Yes" : "No"));
+    LOG_INFO("  Save Debug Images: " + std::string(g_continuousCaptureDefaults.saveBallDetectorDebugImages ? "Yes" : "No"));
 }
 
 void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults) {
@@ -646,7 +651,6 @@ void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults) {
         return;
     }
 
-    // Validate parameters
     if (defaults->format < 0 || defaults->format > 1) {
         LOG_ERROR("Invalid format: must be 0 (PNG) or 1 (JPG)");
         return;
@@ -671,19 +675,16 @@ bool Camera_StartContinuousCaptureWithDefaults() {
             return false;
         }
 
-        // 현재 캡처 상태 확인
         ContinuousCaptureState currentState = captureManager->GetState();
         LOG_INFO("Current capture state before start: " +
             std::to_string(static_cast<int>(currentState)));
 
-        // 이전 세션이 남아있다면 리셋
         if (currentState == ContinuousCaptureState::COMPLETED ||
             currentState == ContinuousCaptureState::kERROR) {
             LOG_INFO("Resetting previous capture session");
             captureManager->Reset();
         }
 
-        // 기본 설정 적용
         if (!Camera_SetContinuousCaptureConfigEx(
             g_continuousCaptureDefaults.duration,
             g_continuousCaptureDefaults.format,
@@ -696,7 +697,6 @@ bool Camera_StartContinuousCaptureWithDefaults() {
             return false;
         }
 
-        // 캡처 시작
         bool result = captureManager->StartCapture();
 
         if (result) {
@@ -736,9 +736,15 @@ bool Camera_SaveSnapshotWithDefaults(const char* filename) {
 
 
 
-bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int quality,
-    bool asyncSave, bool enableBallDetection,
-    bool saveOriginalImages, bool saveDetectionImages) {
+bool Camera_SetContinuousCaptureConfigEx(
+    double durationSeconds,
+    int imageFormat,
+    int jpgQuality,
+    bool useAsyncSave,
+    bool enableBallDetection,
+    bool saveOriginalImages,
+    bool saveDetectionImages) {
+
     try {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
         if (!captureManager) {
@@ -747,25 +753,19 @@ bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int qualit
         }
 
         ContinuousCaptureConfig config;
-        config.durationSeconds = duration;
-        config.imageFormat = format;
-        config.jpgQuality = quality;
-        config.useAsyncSave = asyncSave;
-        config.createMetadata = true;
-        config.baseFolder = ".";
-
-        // Ball detection settings
+        config.durationSeconds = durationSeconds;
+        config.imageFormat = imageFormat;
+        config.jpgQuality = jpgQuality;
+        config.useAsyncSave = useAsyncSave;
         config.enableBallDetection = enableBallDetection;
         config.saveOriginalImages = saveOriginalImages;
         config.saveDetectionImages = saveDetectionImages;
 
-        LOG_INFO("Setting continuous capture config with ball detection: " +
-            std::string(enableBallDetection ? "ENABLED" : "DISABLED") +
-            ", saveOriginal: " + std::string(saveOriginalImages ? "YES" : "NO") +
-            ", saveDetection: " + std::string(saveDetectionImages ? "YES" : "NO"));
+        config.saveBallDetectorDebugImages = g_continuousCaptureDefaults.saveBallDetectorDebugImages;
+
+        config.baseFolder = "./debug_img";// g_defaultCaptureFolder;
 
         captureManager->SetConfig(config);
-
         return true;
     }
     catch (const std::exception& e) {
@@ -797,6 +797,53 @@ bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* total
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_GetContinuousCaptureDetectionResult: " + std::string(e.what()));
+        return false;
+    }
+}
+
+
+bool Camera_SetBallDetectorDebugImages(bool enable) {
+    try {
+        g_continuousCaptureDefaults.saveBallDetectorDebugImages = enable;
+
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (captureManager) {
+            if (!captureManager->IsCapturing()) {
+                auto config = captureManager->GetConfig();
+                config.saveBallDetectorDebugImages = enable;
+                captureManager->SetConfig(config);
+            }
+
+            auto* ballDetector = captureManager->GetBallDetector();
+            if (ballDetector) {
+                auto params = ballDetector->GetParameters();
+                if (params.saveIntermediateImages != enable) {
+                    captureManager->SetBallDetectorDebugOutput(enable);
+                }
+            }
+        }
+
+        LOG_INFO("Ball detector debug images " + std::string(enable ? "enabled" : "disabled"));
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetBallDetectorDebugImages: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_GetBallDetectorDebugImages() {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (captureManager) {
+            auto config = captureManager->GetConfig();
+            return config.saveBallDetectorDebugImages;
+        }
+
+        return g_continuousCaptureDefaults.saveBallDetectorDebugImages;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetBallDetectorDebugImages: " + std::string(e.what()));
         return false;
     }
 }

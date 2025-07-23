@@ -33,16 +33,15 @@ namespace CameraDefaults {
     XIMEASENSOR_API extern const int SNAPSHOT_QUALITY;
 }
 
-// Exported structures for external use
 struct ContinuousCaptureDefaults {
     double duration;
     int format;
     int quality;
     bool asyncSave;
-
     bool enableBallDetection;
     bool saveOriginalImages;
     bool saveDetectionImages;
+    bool saveBallDetectorDebugImages;
 };
 
 struct SnapshotDefaults {
@@ -50,7 +49,6 @@ struct SnapshotDefaults {
     int quality;
 };
 
-// Forward declare the internal config struct
 struct ContinuousCaptureConfig;
 
 extern "C" {
@@ -102,7 +100,6 @@ extern "C" {
     XIMEASENSOR_API bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames, int* droppedFrames, double* duration, char* folderPath, int pathSize);
     XIMEASENSOR_API void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFrame, double elapsedSeconds, int state));
 
-    // Get default values functions
     XIMEASENSOR_API void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps);
 
     XIMEASENSOR_API void Camera_GetContinuousCaptureDefaults(ContinuousCaptureDefaults* defaults);
@@ -110,10 +107,17 @@ extern "C" {
     XIMEASENSOR_API void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults);
     XIMEASENSOR_API void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults);
 
-    // Simplified API
+
     XIMEASENSOR_API bool Camera_StartContinuousCaptureWithDefaults();
     XIMEASENSOR_API bool Camera_SaveSnapshotWithDefaults(const char* filename);
 
-    XIMEASENSOR_API bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int quality, bool asyncSave, bool enableBallDetection, bool saveOriginalImages, bool saveDetectionImages);
-    XIMEASENSOR_API bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* totalBallsDetected, float* averageConfidence, char* detectionFolder, int folderSize);
+    XIMEASENSOR_API bool Camera_SetContinuousCaptureConfigEx(double duration, int format, int quality,
+        bool asyncSave, bool enableBallDetection, bool saveOriginalImages, bool saveDetectionImages);
+
+    XIMEASENSOR_API bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls,
+        int* totalBallsDetected, float* averageConfidence, char* detectionFolder, int folderSize);
+
+    // 2025-07-24: debug images for ball detection
+    XIMEASENSOR_API bool Camera_SetBallDetectorDebugImages(bool enable);
+    XIMEASENSOR_API bool Camera_GetBallDetectorDebugImages();
 }
