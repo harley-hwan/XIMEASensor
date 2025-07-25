@@ -56,7 +56,6 @@ void Logger::Initialize(const std::string& filePath, LogLevel level, size_t maxS
         throw std::runtime_error("Failed to open log file: " + filePath);
     }
 
-    // ready to logging thread start
     isRunning = true;
     lock.unlock();      // collision occurs if not unlock
 
@@ -107,7 +106,7 @@ void Logger::ProcessLogs() {
                 logFile << logEntry << std::endl;
                 logFile.flush();
 
-                // check the file size นื rotate
+                // check the file size and rotate
                 if (logFile.tellp() >= static_cast<std::streampos>(maxFileSize)) {
                     RotateLogFile();
                 }
@@ -121,7 +120,6 @@ void Logger::ProcessLogs() {
 void Logger::RotateLogFile() {
     logFile.close();
 
-    // rename original log file
     for (int i = maxBackupFiles - 1; i > 0; --i) {
         std::string oldName = logFilePath + "." + std::to_string(i);
         std::string newName = logFilePath + "." + std::to_string(i + 1);

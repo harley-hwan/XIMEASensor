@@ -35,15 +35,16 @@ namespace CameraDefaults {
     const int SNAPSHOT_QUALITY = 90;                   // 90% quality
 }
 
+// 여기서 ContinuousCaptureConfig 구조체 변수 값 설정함.  #define ENABLE_DEBUG_IMAGE_SAVING  지워야됨.  여기 변수 false로 바꾸면 original, detection 이미지 저장 안됨. (debug image는 적용 안됨... 수정해야됨.)
 static ContinuousCaptureDefaults g_continuousCaptureDefaults = {
     CameraDefaults::CONTINUOUS_CAPTURE_DURATION,
     CameraDefaults::CONTINUOUS_CAPTURE_FORMAT,
     CameraDefaults::CONTINUOUS_CAPTURE_QUALITY,
     CameraDefaults::CONTINUOUS_CAPTURE_ASYNC_SAVE,
-    false,   // enableBallDetection
+    true,   // enableBallDetection
     true,    // saveOriginalImages
     true,    // saveDetectionImages
-    false    // saveBallDetectorDebugImages - default OFF for production
+    true     // saveBallDetectorDebugImages - default OFF for production
 };
 
 static SnapshotDefaults g_snapshotDefaults = {
@@ -692,7 +693,8 @@ bool Camera_StartContinuousCaptureWithDefaults() {
             g_continuousCaptureDefaults.asyncSave,
             g_continuousCaptureDefaults.enableBallDetection,
             g_continuousCaptureDefaults.saveOriginalImages,
-            g_continuousCaptureDefaults.saveDetectionImages)) {
+            g_continuousCaptureDefaults.saveDetectionImages,
+            g_continuousCaptureDefaults.saveBallDetectorDebugImages)) {
             LOG_ERROR("Failed to set continuous capture config with defaults");
             return false;
         }
@@ -735,15 +737,7 @@ bool Camera_SaveSnapshotWithDefaults(const char* filename) {
 }
 
 
-
-bool Camera_SetContinuousCaptureConfigEx(
-    double durationSeconds,
-    int imageFormat,
-    int jpgQuality,
-    bool useAsyncSave,
-    bool enableBallDetection,
-    bool saveOriginalImages,
-    bool saveDetectionImages) {
+bool Camera_SetContinuousCaptureConfigEx(double durationSeconds, int imageFormat, int jpgQuality, bool useAsyncSave, bool enableBallDetection, bool saveOriginalImages, bool saveDetectionImages, bool saveBallDetectorDebugImages) {
 
     try {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
@@ -760,12 +754,15 @@ bool Camera_SetContinuousCaptureConfigEx(
         config.enableBallDetection = enableBallDetection;
         config.saveOriginalImages = saveOriginalImages;
         config.saveDetectionImages = saveDetectionImages;
-
-        config.saveBallDetectorDebugImages = g_continuousCaptureDefaults.saveBallDetectorDebugImages;
-
-        config.baseFolder = "./debug_img";// g_defaultCaptureFolder;
+        config.saveBallDetectorDebugImages = saveBallDetectorDebugImages;
+        
+        config.baseFolder = ".";
+        config.createMetadata = true;
 
         captureManager->SetConfig(config);
+        
+        LOG_INFO("Continuous capture config set: duration=" + std::to_string(durationSeconds) + "s, format=" + std::to_string(imageFormat) +  ", baseFolder=" + config.baseFolder);
+        
         return true;
     }
     catch (const std::exception& e) {
@@ -804,6 +801,7 @@ bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* total
 
 bool Camera_SetBallDetectorDebugImages(bool enable) {
     try {
+#ifdef ENABLE_DEBUG_IMAGE_SAVING
         g_continuousCaptureDefaults.saveBallDetectorDebugImages = enable;
 
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
@@ -817,14 +815,36 @@ bool Camera_SetBallDetectorDebugImages(bool enable) {
             auto* ballDetector = captureManager->GetBallDetector();
             if (ballDetector) {
                 auto params = ballDetector->GetParameters();
-                if (params.saveIntermediateImages != enable) {
-                    captureManager->SetBallDetectorDebugOutput(enable);
-                }
+                params.saveIntermediateImages = enable;
+                ballDetector->SetParameters(params);
+
+                LOG_INFO("Ball detector debug images globally " +
+                    std::string(enable ? "enabled" : "disabled"));
             }
         }
 
-        LOG_INFO("Ball detector debug images " + std::string(enable ? "enabled" : "disabled"));
+        LOG_INFO("Ball detector debug images default set to: " +
+            std::string(enable ? "enabled" : "disabled"));
         return true;
+#else
+        // Debug image saving is disabled at compile time
+        if (enable) {
+            LOG_WARNING("Ball detector debug images requested but ENABLE_DEBUG_IMAGE_SAVING is not defined");
+            LOG_INFO("To enable debug image saving, define ENABLE_DEBUG_IMAGE_SAVING in BallDetector.h and recompile");
+        }
+        else {
+            LOG_INFO("Ball detector debug images disabled (compile-time disabled)");
+        }
+
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (captureManager && !captureManager->IsCapturing()) {
+            auto config = captureManager->GetConfig();
+            config.saveBallDetectorDebugImages = true;
+            captureManager->SetConfig(config);
+        }
+
+        return true;
+#endif
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_SetBallDetectorDebugImages: " + std::string(e.what()));

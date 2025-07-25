@@ -470,8 +470,7 @@ bool CameraController::GetFrame(unsigned char* buffer, int bufferSize, int& outW
     }
 
     if (bufferSize < currentFrameSize) {
-        LOG_ERROR("Buffer size too small: " + std::to_string(bufferSize) +
-            " < " + std::to_string(currentFrameSize));
+        LOG_ERROR("Buffer size too small: " + std::to_string(bufferSize) + " < " + std::to_string(currentFrameSize));
         return false;
     }
 
@@ -645,9 +644,7 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
     frameBuffer = newFrameBuffer;
     workingBuffer = newWorkingBuffer;
 
-    std::string roiStr = "offset(" + std::to_string(offsetX) + "," +
-        std::to_string(offsetY) + "), size(" +
-        std::to_string(w) + "x" + std::to_string(h) + ")";
+    std::string roiStr = "offset(" + std::to_string(offsetX) + "," + std::to_string(offsetY) + "), size(" + std::to_string(w) + "x" + std::to_string(h) + ")";
     NotifyPropertyChanged("ROI", roiStr);
 
     if (wasCapturing) {
@@ -747,7 +744,6 @@ void CameraController::UpdateStatistics(bool frameReceived) {
             stats.averageFPS = static_cast<double>(stats.totalFrames) / elapsed;
         }
 
-        // Update min/max FPS based on actual measured frame rate
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
             now - lastFrameTime).count();
         if (duration > 0) {

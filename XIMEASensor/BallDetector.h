@@ -4,6 +4,10 @@
 #include <opencv2/core/types.hpp>
 #include <memory>
 
+#define ENABLE_DEBUG_IMAGE_SAVING       // save_debug_images or not     // 이거 지우는 방법으로 구현해야됨. 이거 주석하면 디버그 이미지 저장 안됨
+//#define ENABLE_DETECTION_IMAGE_SAVING
+#define ENABLE_PERFORMANCE_PROFILING    // performance_report log or not
+
 namespace cv {
     class Mat;
 }
@@ -42,7 +46,6 @@ public:
         int minRadius;         // pixels
         int maxRadius;         // pixels
 
-        // Filtering and validation parameters
         int brightnessThreshold;
         float minCircularity;      // 0.0 ~ 1.0
         float contrastThreshold;
@@ -79,7 +82,7 @@ public:
         DetectionParams();
     };
 
-    // Performance metrics structure
+    // Performance metrics struct
     struct PerformanceMetrics {
         double totalDetectionTime_ms;
         double preprocessingTime_ms;
@@ -88,6 +91,7 @@ public:
         double contourDetectionTime_ms;
         double candidateEvaluationTime_ms;
         double imagesSavingTime_ms;
+
         int candidatesFound;
         int candidatesEvaluated;
         bool ballDetected;
@@ -135,17 +139,9 @@ public:
 
     void SetCurrentCaptureFolder(const std::string& folder);
 
-    BallDetectionResult DetectBall(const unsigned char* imageData,
-        int width,
-        int height,
-        int frameIndex = 0);
+    BallDetectionResult DetectBall(const unsigned char* imageData, int width, int height, int frameIndex = 0);
 
-    bool SaveDetectionImage(const unsigned char* originalImage,
-        int width,
-        int height,
-        const BallDetectionResult& result,
-        const std::string& outputPath,
-        bool saveAsColor = false);
+    bool SaveDetectionImage(const unsigned char* originalImage, int width, int height, const BallDetectionResult& result, const std::string& outputPath, bool saveAsColor = false);
 
     PerformanceMetrics GetLastPerformanceMetrics() const { return m_lastMetrics; }
 

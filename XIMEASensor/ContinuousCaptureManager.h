@@ -27,8 +27,8 @@ struct ContinuousCaptureConfig {
 
     // Ball detection options
     bool enableBallDetection = false;
-    bool saveOriginalImages = true;
-    bool saveDetectionImages = true;
+    bool saveOriginalImages = false;
+    bool saveDetectionImages = false;
 
     bool saveBallDetectorDebugImages = false;
     std::string debugImagePath = "";
@@ -62,12 +62,23 @@ private:
     struct SessionPerformanceData {
         struct FrameTimingData {
             int frameIndex = 0;
-            double totalFrameProcessingTime_ms = 0;
-            double imageLoadTime_ms = 0;
+
+            double totalFrameProcessingTime_ms = 0;     // ProcessBallDetection 전체 시간
+            double imageLoadTime_ms = 0;                // 이미지 로드 시간
+            double ballDetectionTime_ms = 0;            // BallDetector::DetectBall 전체 시간
+            double saveDetectionImageTime_ms = 0;       // 검출 결과 이미지 저장 시간
+            double otherOperationsTime_ms = 0;          // 기타 오버헤드
+
             double preprocessingTime_ms = 0;
-            double detectionTime_ms = 0;
-            double saveDetectionImageTime_ms = 0;
-            double otherOperationsTime_ms = 0;
+            double houghDetectionTime_ms = 0;
+            double adaptiveThresholdTime_ms = 0;
+            double contourDetectionTime_ms = 0;
+            double candidateEvaluationTime_ms = 0;
+            double debugImagesSavingTime_ms = 0;
+
+            int candidatesFound = 0;
+            int candidatesEvaluated = 0;
+            bool ballDetected = false;
         };
 
         std::vector<FrameTimingData> frameTimings;
@@ -79,6 +90,17 @@ private:
         double maxFrameTime_ms = 0.0;
         double avgFrameTime_ms = 0.0;
 
+        // 알고리즘별 누적 시간
+        double totalPreprocessingTime_ms = 0.0;
+        double totalHoughDetectionTime_ms = 0.0;
+        double totalContourDetectionTime_ms = 0.0;
+        double totalCandidateEvaluationTime_ms = 0.0;
+        double totalDebugImagesSavingTime_ms = 0.0;
+
+        // I/O 누적 시간 추가
+        double totalDetectionImageSavingTime_ms = 0.0;
+        double totalOtherOperationsTime_ms = 0.0;
+
         void Reset() {
             frameTimings.clear();
             totalFramesProcessed = 0;
@@ -87,6 +109,13 @@ private:
             minFrameTime_ms = std::numeric_limits<double>::max();
             maxFrameTime_ms = 0.0;
             avgFrameTime_ms = 0.0;
+            totalPreprocessingTime_ms = 0.0;
+            totalHoughDetectionTime_ms = 0.0;
+            totalContourDetectionTime_ms = 0.0;
+            totalCandidateEvaluationTime_ms = 0.0;
+            totalDebugImagesSavingTime_ms = 0.0;
+            totalDetectionImageSavingTime_ms = 0.0;
+            totalOtherOperationsTime_ms = 0.0;
         }
     };
 

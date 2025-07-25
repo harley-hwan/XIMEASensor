@@ -366,25 +366,13 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 
         defaults.format = (result == IDYES) ? 0 : 1;
 
-        // Ball detection 설정 추가
-        defaults.enableBallDetection = true;
-        defaults.saveOriginalImages = true;
-        defaults.saveDetectionImages = true;
 
         Camera_SetContinuousCaptureDefaults(&defaults);
 
-        //if (defaults.enableBallDetection) {
-        //    MessageBox(_T("Ball detection will be performed on captured frames.\n\n"
-        //        "Results will be saved in:\n"
-        //        "- original/ : Original captured frames\n"
-        //        "- detection/ : Frames with detection results\n\n"
-        //        "Detection results will be included in metadata."),
-        //        _T("Ball Detection Enabled"), MB_OK | MB_ICONINFORMATION);
-        //}
-
+        // progress callback
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 
-        TRACE(_T("Starting continuous capture for %.1f seconds\n"), defaults.duration);
+        TRACE(_T("Starting continuous capture for %.1f seconds with ball detection\n"), defaults.duration);
 
         if (Camera_StartContinuousCaptureWithDefaults()) {
             if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);

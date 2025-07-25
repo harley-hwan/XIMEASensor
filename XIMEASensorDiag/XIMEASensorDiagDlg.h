@@ -44,7 +44,6 @@ private:
     CSliderCtrl* m_sliderFramerate = nullptr;
     CComboBox* m_comboDevices = nullptr;
 
-    // Edit Controls for camera parameters
     CEdit* m_editExposure = nullptr;
     CEdit* m_editGain = nullptr;
     CEdit* m_editFramerate = nullptr;
@@ -103,7 +102,6 @@ public:
     afx_msg void OnDestroy();
     afx_msg void OnTimer(UINT_PTR nIDEvent);
 
-    // Edit Control change handlers
     afx_msg void OnEnChangeEditExposure();
     afx_msg void OnEnChangeEditGain();
     afx_msg void OnEnChangeEditFramerate();
