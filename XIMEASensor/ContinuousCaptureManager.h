@@ -17,20 +17,17 @@ enum class ContinuousCaptureState {
     kERROR
 };
 
-struct ContinuousCaptureConfig {
+struct ContinuousCaptureConfigInternal {
     double durationSeconds = 1.0;
     int imageFormat = 0;            // 0: PNG, 1: JPG
     int jpgQuality = 90;
-    bool createMetadata = true;
     bool useAsyncSave = true;
+    bool enableBallDetection = true;
+    bool saveOriginalImages = true;
+    bool saveDetectionImages = true;
+    bool saveBallDetectorDebugImages = true;
+    bool createMetadata = true;
     std::string baseFolder = ".";
-
-    // Ball detection options
-    bool enableBallDetection = false;
-    bool saveOriginalImages = false;
-    bool saveDetectionImages = false;
-
-    bool saveBallDetectorDebugImages = false;
     std::string debugImagePath = "";
 };
 
@@ -44,10 +41,12 @@ struct ContinuousCaptureResult {
     std::string errorMessage;
 };
 
-typedef std::function<void(int currentFrame, double elapsedSeconds, ContinuousCaptureState state)> ContinuousCaptureProgressCallback;
+typedef std::function<void(int currentFrame, double elapsedSeconds, ContinuousCaptureState state)>
+ContinuousCaptureProgressCallback;
 
 class BallDetector;
 struct BallDetectionResult;
+
 
 struct ContinuousCaptureDetectionResult {
     int framesWithBall = 0;
@@ -119,6 +118,7 @@ private:
         }
     };
 
+    ContinuousCaptureConfigInternal m_config;
     SessionPerformanceData m_sessionPerformance;
 
     static constexpr int DEFAULT_WAIT_TIMEOUT_SECONDS = 300;
@@ -126,7 +126,7 @@ private:
     static constexpr int MAX_QUEUE_SIZE = 100;
     static constexpr int PROGRESS_UPDATE_INTERVAL = 10;
 
-    ContinuousCaptureConfig m_config;
+
     std::atomic<ContinuousCaptureState> m_state;
     std::atomic<bool> m_isCapturing;
     std::atomic<int> m_frameCount;
@@ -199,17 +199,18 @@ private:
 
     void ConfigureBallDetectorOptimal();
 
+
 public:
     ContinuousCaptureManager();
     ~ContinuousCaptureManager();
 
-    void SetConfig(const ContinuousCaptureConfig& config);
+    void SetConfig(const ContinuousCaptureConfigInternal& config);
+    ContinuousCaptureConfigInternal GetConfig() const { return m_config; }
+
     bool StartCapture();
-    void SaveSessionPerformanceReport();
     void StopCapture();
     bool IsCapturing() const { return m_isCapturing.load(); }
 
-    ContinuousCaptureConfig GetConfig() const { return m_config; }
     BallDetector* GetBallDetector() { return m_ballDetector.get(); }
     ContinuousCaptureState GetState() const { return m_state.load(); }
 
@@ -221,8 +222,9 @@ public:
     ContinuousCaptureDetectionResult GetDetectionResult() const;
 
     void SetProgressCallback(ContinuousCaptureProgressCallback callback);
-    
-    void SetBallDetectorDebugOutput(bool enable, const std::string& customPath = "");   // 2025-07-24 : debug output
+
+    void SetBallDetectorDebugOutput(bool enable, const std::string& customPath = "");
 
     void Reset();
+    void SaveSessionPerformanceReport();
 };

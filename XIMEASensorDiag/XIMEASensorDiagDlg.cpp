@@ -67,12 +67,10 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_EN_CHANGE(IDC_EDIT_FRAMERATE, &CXIMEASensorDiagDlg::OnEnChangeEditFramerate)
 END_MESSAGE_MAP()
 
-
 void CXIMEASensorDiagDlg::LoadDefaultSettings()
 {
     Camera_GetDefaultSettings(&m_defaultExposureUs, &m_defaultGainDb, &m_defaultFps);
 }
-
 
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
 {
@@ -279,7 +277,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
     m_lastFPSUpdate = std::chrono::steady_clock::now();
 }
 
-
 void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
 {
     int currentExposure = Camera_GetExposure();
@@ -313,7 +310,6 @@ void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
         }
     }
 }
-
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
 {
@@ -354,9 +350,14 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
 
     if (isContinuous) {
         // Continuous capture mode
-        ContinuousCaptureDefaults defaults;
-        Camera_GetContinuousCaptureDefaults(&defaults);
+        ContinuousCaptureConfig config;
 
+        // Get current configuration or default
+        if (!Camera_GetContinuousCaptureConfig(&config)) {
+            Camera_GetDefaultContinuousCaptureConfig(&config);
+        }
+
+        // Show format selection dialog
         int result = MessageBox(_T("Select image format:\n\nPNG (Yes) - Lossless, larger files\nJPG (No) - Compressed, smaller files"),
             _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
 
@@ -364,23 +365,31 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
             return;
         }
 
-        defaults.format = (result == IDYES) ? 0 : 1;
+        config.imageFormat = (result == IDYES) ? 0 : 1;
 
+        // Optional: Show advanced settings dialog
+        // ContinuousCaptureSettingsDlg dlg(&config);
+        // if (dlg.DoModal() != IDOK) return;
 
-        Camera_SetContinuousCaptureDefaults(&defaults);
+        // Apply the configuration
+        if (!Camera_SetContinuousCaptureConfig(&config)) {
+            AfxMessageBox(_T("Failed to set continuous capture configuration!"));
+            return;
+        }
 
-        // progress callback
+        // Set progress callback
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 
-        TRACE(_T("Starting continuous capture for %.1f seconds with ball detection\n"), defaults.duration);
+        TRACE(_T("Starting continuous capture for %.1f seconds with ball detection\n"),
+            config.durationSeconds);
 
-        if (Camera_StartContinuousCaptureWithDefaults()) {
+        if (Camera_StartContinuousCapture()) {
             if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
             if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
             if (m_staticStatus) {
                 CString status;
                 status.Format(_T("Continuous capture (%.1fs) with ball detection in progress..."),
-                    defaults.duration);
+                    config.durationSeconds);
                 m_staticStatus->SetWindowText(status);
             }
 
@@ -392,6 +401,7 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         }
     }
     else {
+        // Single snapshot mode
         SnapshotDefaults defaults;
         Camera_GetSnapshotDefaults(&defaults);
 
@@ -435,10 +445,28 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
     }
 }
 
-
 void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
 {
-    AfxMessageBox(_T("Settings dialog not implemented yet."));
+    // Advanced settings dialog for continuous capture
+    if (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED) {
+        ContinuousCaptureConfig config;
+
+        // Get current configuration
+        if (!Camera_GetContinuousCaptureConfig(&config)) {
+            Camera_GetDefaultContinuousCaptureConfig(&config);
+        }
+
+        // TODO: Create and show a dialog to edit the configuration
+        // ContinuousCaptureSettingsDlg dlg(&config, this);
+        // if (dlg.DoModal() == IDOK) {
+        //     Camera_SetContinuousCaptureConfig(&config);
+        // }
+
+        AfxMessageBox(_T("Advanced continuous capture settings dialog not implemented yet."));
+    }
+    else {
+        AfxMessageBox(_T("Settings dialog not implemented yet."));
+    }
 }
 
 void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
@@ -739,7 +767,6 @@ void CXIMEASensorDiagDlg::DrawFrame()
     LeaveCriticalSection(&m_frameCriticalSection);
 }
 
-
 void CXIMEASensorDiagDlg::ShowError(const CString& message)
 {
     MessageBox(message, _T("Camera Error"), MB_OK | MB_ICONERROR);
@@ -764,7 +791,6 @@ HCURSOR CXIMEASensorDiagDlg::OnQueryDragIcon()
 {
     return static_cast<HCURSOR>(AfxGetApp()->LoadStandardIcon(IDI_APPLICATION));
 }
-
 
 void CXIMEASensorDiagDlg::ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state)
 {
@@ -816,8 +842,11 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
             duration, totalFrames / duration,
             CString(folderPath).GetString());
 
-        BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
-        if (isContinuous) {
+        // Get current configuration to check if ball detection was enabled
+        ContinuousCaptureConfig config;
+        Camera_GetContinuousCaptureConfig(&config);
+
+        if (config.enableBallDetection) {
             int framesWithBalls = 0;
             int totalBallsDetected = 0;
             float averageConfidence = 0.0f;
@@ -850,7 +879,6 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
 
     return 0;
 }
-
 
 void CXIMEASensorDiagDlg::OnEnChangeEditExposure()
 {
