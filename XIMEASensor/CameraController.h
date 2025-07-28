@@ -7,11 +7,13 @@
 #include <memory>
 #include <vector>
 #include <cmath>
+#include <queue>
 #include <condition_variable>  // std::condition_variable
 #include "XIMEASensor.h" 
 #include "IXIMEACallback.h"
 #include "Logger.h"
 #include "ContinuousCaptureManager.h"
+
 
 #define PYTHON1300_WIDTH    1280
 #define PYTHON1300_HEIGHT   960
@@ -83,6 +85,31 @@ private:
     void UpdateStatistics(bool frameReceived);
     std::string GetXiApiErrorString(XI_RETURN error);
 
+
+
+    // 2025-07-28: realTime ballDetect
+    std::atomic<bool> m_realtimeDetectionEnabled;
+    std::unique_ptr<BallDetector> m_realtimeBallDetector;
+    RealtimeDetectionCallback m_realtimeCallback;
+    void* m_realtimeCallbackContext;
+
+    std::mutex m_detectionQueueMutex;
+    std::queue<std::pair<std::vector<unsigned char>, FrameInfo>> m_detectionQueue;
+    std::thread m_detectionThread;
+    std::atomic<bool> m_detectionThreadRunning;
+    std::condition_variable m_detectionCV;
+
+    // 실시간 검출 통계
+    std::atomic<int> m_realtimeProcessedFrames;
+    double m_realtimeTotalProcessingTime;  // atomic 제거
+    std::mutex m_realtimeStatsMutex;       // 통계용 mutex 추가
+    std::chrono::steady_clock::time_point m_realtimeStartTime;
+    RealtimeDetectionResult m_lastDetectionResult;
+    std::mutex m_lastResultMutex;
+
+    void RealtimeDetectionWorker();
+    void ProcessRealtimeDetection(const unsigned char* data, int width, int height, int frameIndex);
+
 public:
     ~CameraController();
 
@@ -124,4 +151,15 @@ public:
 
     int GetConnectedDeviceCount();
     bool GetDeviceInfo(int index, std::string& name, std::string& serial);
+
+    // 2025-07-28: realTime ballDetect
+    bool EnableRealtimeDetection(bool enable);
+    bool IsRealtimeDetectionEnabled() const { return m_realtimeDetectionEnabled.load(); }
+    void SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* context);
+    bool GetLastDetectionResult(RealtimeDetectionResult* result);
+
+    bool SetRealtimeDetectionROI(float roiScale);
+    bool SetRealtimeDetectionDownscale(int factor);
+    bool SetRealtimeDetectionMaxCandidates(int maxCandidates);
+    void GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS);
 };

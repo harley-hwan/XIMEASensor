@@ -9,6 +9,9 @@
 #include "BallDetector.h"
 
 static void(*g_continuousProgressCallback)(int, double, int) = nullptr;
+// 2025-07-28: realTime ballDetect
+static RealtimeDetectionCallback g_realtimeDetectionCallback = nullptr;
+static void* g_realtimeDetectionContext = nullptr;
 
 namespace CameraDefaults {
     const int EXPOSURE_US = 4000;        // 4ms default exposure
@@ -856,5 +859,108 @@ bool Camera_GetBallDetectorDebugImages() {
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_GetBallDetectorDebugImages: " + std::string(e.what()));
         return false;
+    }
+}
+
+
+// 2025-07-28: realTime ballDetect
+
+bool Camera_EnableRealtimeDetection(bool enable) {
+    try {
+        return CameraController::GetInstance().EnableRealtimeDetection(enable);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_EnableRealtimeDetection: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_IsRealtimeDetectionEnabled() {
+    try {
+        return CameraController::GetInstance().IsRealtimeDetectionEnabled();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_IsRealtimeDetectionEnabled: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* userContext) {
+    try {
+        g_realtimeDetectionCallback = callback;
+        g_realtimeDetectionContext = userContext;
+        CameraController::GetInstance().SetRealtimeDetectionCallback(callback, userContext);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetRealtimeDetectionCallback: " + std::string(e.what()));
+    }
+}
+
+bool Camera_GetLastDetectionResult(RealtimeDetectionResult* result) {
+    try {
+        if (!result) {
+            LOG_ERROR("Invalid parameter: result is nullptr");
+            return false;
+        }
+
+        return CameraController::GetInstance().GetLastDetectionResult(result);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetLastDetectionResult: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_SetRealtimeDetectionROI(float roiScale) {
+    try {
+        if (roiScale <= 0.0f || roiScale > 1.0f) {
+            LOG_ERROR("Invalid ROI scale: " + std::to_string(roiScale));
+            return false;
+        }
+
+        return CameraController::GetInstance().SetRealtimeDetectionROI(roiScale);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetRealtimeDetectionROI: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_SetRealtimeDetectionDownscale(int factor) {
+    try {
+        if (factor < 1 || factor > 4) {
+            LOG_ERROR("Invalid downscale factor: " + std::to_string(factor));
+            return false;
+        }
+
+        return CameraController::GetInstance().SetRealtimeDetectionDownscale(factor);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetRealtimeDetectionDownscale: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_SetRealtimeDetectionMaxCandidates(int maxCandidates) {
+    try {
+        if (maxCandidates < 1 || maxCandidates > 50) {
+            LOG_ERROR("Invalid max candidates: " + std::to_string(maxCandidates));
+            return false;
+        }
+
+        return CameraController::GetInstance().SetRealtimeDetectionMaxCandidates(maxCandidates);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetRealtimeDetectionMaxCandidates: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS) {
+    try {
+        CameraController::GetInstance().GetRealtimeDetectionStats(processedFrames, avgProcessingTimeMs, detectionFPS);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetRealtimeDetectionStats: " + std::string(e.what()));
     }
 }

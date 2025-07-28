@@ -83,6 +83,25 @@ struct SnapshotDefaults {
     int quality;
 };
 
+
+// 2025-07-28: realtime ball detect result
+struct XIMEASENSOR_API RealtimeBallInfo {
+    float centerX;
+    float centerY;
+    float radius;
+    float confidence;
+    int frameIndex;
+};
+
+struct XIMEASENSOR_API RealtimeDetectionResult {
+    bool ballFound;
+    int ballCount;
+    RealtimeBallInfo balls[5];  // 최대 5개까지
+    double detectionTimeMs;
+};
+
+typedef void(*RealtimeDetectionCallback)(const RealtimeDetectionResult* result, void* userContext);
+
 extern "C" {
     XIMEASENSOR_API bool Camera_Initialize(const char* logPath = nullptr, int logLevel = 1);
     XIMEASENSOR_API void Camera_Shutdown();
@@ -150,4 +169,17 @@ extern "C" {
     // Debug settings
     XIMEASENSOR_API bool Camera_SetBallDetectorDebugImages(bool enable);
     XIMEASENSOR_API bool Camera_GetBallDetectorDebugImages();
+
+
+    // 실시간 볼 검출 API 추가
+    XIMEASENSOR_API bool Camera_EnableRealtimeDetection(bool enable);
+    XIMEASENSOR_API bool Camera_IsRealtimeDetectionEnabled();
+    XIMEASENSOR_API void Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* userContext);
+    XIMEASENSOR_API bool Camera_GetLastDetectionResult(RealtimeDetectionResult* result);
+
+    // 실시간 검출 파라미터 설정
+    XIMEASENSOR_API bool Camera_SetRealtimeDetectionROI(float roiScale);
+    XIMEASENSOR_API bool Camera_SetRealtimeDetectionDownscale(int factor);
+    XIMEASENSOR_API bool Camera_SetRealtimeDetectionMaxCandidates(int maxCandidates);
+    XIMEASENSOR_API void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS);
 }

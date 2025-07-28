@@ -23,12 +23,14 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
     m_hasNewFrame(false),
     m_frameCount(0),
     m_currentFPS(0.0),
-    m_defaultExposureUs(4000),  // Fallback values
+    m_defaultExposureUs(4000),
     m_defaultGainDb(0.0f),
     m_defaultFps(60.0f)
 {
     InitializeCriticalSection(&m_frameCriticalSection);
+    InitializeCriticalSection(&m_detectionCriticalSection);
     m_cameraCallback = std::make_unique<CameraCallback>();
+    memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
     s_pThis = this;
 }
 
@@ -38,6 +40,7 @@ CXIMEASensorDiagDlg::~CXIMEASensorDiagDlg()
         delete[] m_pDisplayBuffer;
     }
     DeleteCriticalSection(&m_frameCriticalSection);
+    DeleteCriticalSection(&m_detectionCriticalSection);
 }
 
 void CXIMEASensorDiagDlg::DoDataExchange(CDataExchange* pDX)
@@ -56,12 +59,14 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_BN_CLICKED(IDC_BUTTON_REFRESH, &CXIMEASensorDiagDlg::OnBnClickedButtonRefresh)
     ON_BN_CLICKED(IDC_BUTTON_SNAPSHOT, &CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot)
     ON_BN_CLICKED(IDC_BUTTON_SETTINGS, &CXIMEASensorDiagDlg::OnBnClickedButtonSettings)
+    ON_BN_CLICKED(IDC_CHECK_REALTIME_DETECTION, &CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection)    // 2025-07-28
     ON_CBN_SELCHANGE(IDC_COMBO_DEVICES, &CXIMEASensorDiagDlg::OnCbnSelchangeComboDevices)
     ON_MESSAGE(WM_UPDATE_FRAME, &CXIMEASensorDiagDlg::OnUpdateFrame)
     ON_MESSAGE(WM_UPDATE_STATUS, &CXIMEASensorDiagDlg::OnUpdateStatus)
     ON_MESSAGE(WM_UPDATE_ERROR, &CXIMEASensorDiagDlg::OnUpdateError)
     ON_MESSAGE(WM_UPDATE_FPS, &CXIMEASensorDiagDlg::OnUpdateFPS)
     ON_MESSAGE(WM_CONTINUOUS_CAPTURE_COMPLETE, &CXIMEASensorDiagDlg::OnContinuousCaptureComplete)
+    ON_MESSAGE(WM_UPDATE_BALL_DETECTION, &CXIMEASensorDiagDlg::OnUpdateBallDetection)   // 2025-07-28
     ON_EN_CHANGE(IDC_EDIT_EXPOSURE, &CXIMEASensorDiagDlg::OnEnChangeEditExposure)
     ON_EN_CHANGE(IDC_EDIT_GAIN, &CXIMEASensorDiagDlg::OnEnChangeEditGain)
     ON_EN_CHANGE(IDC_EDIT_FRAMERATE, &CXIMEASensorDiagDlg::OnEnChangeEditFramerate)
@@ -105,6 +110,16 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     m_editExposure = (CEdit*)GetDlgItem(IDC_EDIT_EXPOSURE);
     m_editGain = (CEdit*)GetDlgItem(IDC_EDIT_GAIN);
     m_editFramerate = (CEdit*)GetDlgItem(IDC_EDIT_FRAMERATE);
+
+    // 2025-07-28: realTime ballDetect
+    m_checkRealtimeDetection = (CButton*)GetDlgItem(IDC_CHECK_REALTIME_DETECTION);
+    if (m_checkRealtimeDetection) {
+        m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
+    }
+
+    m_staticBallPosition = (CStatic*)GetDlgItem(IDC_STATIC_BALL_POSITION);
+    m_staticBallInfo = (CStatic*)GetDlgItem(IDC_STATIC_BALL_INFO);
+    m_staticDetectionFPS = (CStatic*)GetDlgItem(IDC_STATIC_DETECTION_FPS);
 
     if (!Camera_Initialize("./logs/XIMEASensor.log", 1)) {
         AfxMessageBox(_T("Failed to initialize camera system!"));
@@ -185,6 +200,13 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
 void CXIMEASensorDiagDlg::OnDestroy()
 {
     CDialogEx::OnDestroy();
+
+    // 2025-07-28: realTime ballDetect
+    if (Camera_IsRealtimeDetectionEnabled()) {
+        Camera_EnableRealtimeDetection(false);
+    }
+    Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
+    //
 
     Camera_SetContinuousCaptureProgressCallback(nullptr);
     s_pThis = nullptr;
@@ -317,6 +339,17 @@ void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
 {
+    // 2025-07-28: realTime ballDetect 
+    if (Camera_IsRealtimeDetectionEnabled()) {
+        Camera_EnableRealtimeDetection(false);
+        Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
+
+        if (m_checkRealtimeDetection) {
+            m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
+        }
+    }
+    //
+
     if (Camera_IsContinuousCapturing()) {
         Camera_StopContinuousCapture();
 
@@ -737,6 +770,11 @@ void CXIMEASensorDiagDlg::DrawFrame()
     }
 
     LeaveCriticalSection(&m_frameCriticalSection);
+
+    // 검출 결과 오버레이 그리기
+    if (Camera_IsRealtimeDetectionEnabled()) {
+        DrawDetectionOverlay(dc, rect);
+    }
 }
 
 
@@ -915,5 +953,189 @@ void CXIMEASensorDiagDlg::OnEnChangeEditFramerate()
                 m_editFramerate->SetWindowText(strFPS);
             }
         }
+    }
+}
+
+
+void CXIMEASensorDiagDlg::RealtimeDetectionCallback(const RealtimeDetectionResult* result, void* userContext)
+{
+    CXIMEASensorDiagDlg* pDlg = static_cast<CXIMEASensorDiagDlg*>(userContext);
+    if (pDlg && result) {
+        pDlg->OnRealtimeDetectionResult(result);
+    }
+}
+
+// 검출 결과 처리
+void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResult* result)
+{
+    EnterCriticalSection(&m_detectionCriticalSection);
+    m_lastDetectionResult = *result;
+    LeaveCriticalSection(&m_detectionCriticalSection);
+
+    PostMessage(WM_UPDATE_BALL_DETECTION);
+}
+
+// 실시간 검출 체크박스 핸들러
+void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
+{
+    if (!m_checkRealtimeDetection || !m_isStreaming) return;
+
+    BOOL isChecked = (m_checkRealtimeDetection->GetCheck() == BST_CHECKED);
+
+    if (isChecked) {
+        // 실시간 검출 콜백 설정
+        Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback, this);
+
+        // 실시간 검출 시작
+        if (Camera_EnableRealtimeDetection(true)) {
+            m_lastDetectionStatsUpdate = std::chrono::steady_clock::now();
+
+            if (m_staticBallPosition) {
+                m_staticBallPosition->SetWindowText(_T("Detecting..."));
+            }
+
+            TRACE(_T("Real-time ball detection enabled\n"));
+        }
+        else {
+            AfxMessageBox(_T("Failed to enable real-time detection!"));
+            m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
+        }
+    }
+    else {
+        // 실시간 검출 중지
+        Camera_EnableRealtimeDetection(false);
+        Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
+
+        if (m_staticBallPosition) {
+            m_staticBallPosition->SetWindowText(_T("Not detected"));
+        }
+        if (m_staticBallInfo) {
+            m_staticBallInfo->SetWindowText(_T("-"));
+        }
+        if (m_staticDetectionFPS) {
+            m_staticDetectionFPS->SetWindowText(_T("0.0"));
+        }
+
+        TRACE(_T("Real-time ball detection disabled\n"));
+    }
+}
+
+// 볼 검출 결과 업데이트
+LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
+{
+    RealtimeDetectionResult result;
+    EnterCriticalSection(&m_detectionCriticalSection);
+    result = m_lastDetectionResult;
+    LeaveCriticalSection(&m_detectionCriticalSection);
+
+    if (result.ballFound && result.ballCount > 0) {
+        // 첫 번째 볼의 좌표 표시
+        CString posStr;
+        posStr.Format(_T("X: %d, Y: %d"),
+            static_cast<int>(result.balls[0].centerX),
+            static_cast<int>(result.balls[0].centerY));
+
+        if (m_staticBallPosition) {
+            m_staticBallPosition->SetWindowText(posStr);
+        }
+
+        // 추가 정보 표시
+        CString infoStr;
+        infoStr.Format(_T("Radius: %d px, Confidence: %.1f%%, Time: %.1f ms"),
+            static_cast<int>(result.balls[0].radius),
+            result.balls[0].confidence * 100.0f,
+            result.detectionTimeMs);
+
+        if (m_staticBallInfo) {
+            m_staticBallInfo->SetWindowText(infoStr);
+        }
+    }
+    else {
+        if (m_staticBallPosition) {
+            m_staticBallPosition->SetWindowText(_T("Not detected"));
+        }
+        if (m_staticBallInfo) {
+            m_staticBallInfo->SetWindowText(_T("-"));
+        }
+    }
+
+    // Detection FPS 업데이트 (1초마다)
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_lastDetectionStatsUpdate).count();
+
+    if (elapsed >= 1000) {
+        int processedFrames = 0;
+        double avgProcessingTime = 0.0;
+        double detectionFPS = 0.0;
+
+        Camera_GetRealtimeDetectionStats(&processedFrames, &avgProcessingTime, &detectionFPS);
+
+        if (m_staticDetectionFPS) {
+            CString fpsStr;
+            fpsStr.Format(_T("%.1f"), detectionFPS);
+            m_staticDetectionFPS->SetWindowText(fpsStr);
+        }
+
+        m_lastDetectionStatsUpdate = now;
+    }
+
+    // 화면 다시 그리기 (오버레이 표시용)
+    if (m_pictureCtrl) {
+        CRect rect;
+        m_pictureCtrl->GetClientRect(&rect);
+        m_pictureCtrl->InvalidateRect(&rect, FALSE);
+    }
+
+    return 0;
+}
+
+
+// 검출 결과 오버레이 그리기
+void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
+{
+    RealtimeDetectionResult result;
+    EnterCriticalSection(&m_detectionCriticalSection);
+    result = m_lastDetectionResult;
+    LeaveCriticalSection(&m_detectionCriticalSection);
+
+    if (result.ballFound && result.ballCount > 0) {
+        // 화면 크기에 맞게 좌표 변환
+        float scaleX = (float)rect.Width() / m_displayWidth;
+        float scaleY = (float)rect.Height() / m_displayHeight;
+
+        CPen redPen(PS_SOLID, 3, RGB(255, 0, 0));
+        CPen* pOldPen = dc.SelectObject(&redPen);
+        CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
+
+        for (int i = 0; i < result.ballCount; i++) {
+            int x = (int)(result.balls[i].centerX * scaleX);
+            int y = (int)(result.balls[i].centerY * scaleY);
+            int radius = (int)(result.balls[i].radius * scaleX);
+
+            // 원 그리기
+            dc.Ellipse(x - radius, y - radius, x + radius, y + radius);
+
+            // 중심점 표시
+            CPen yellowPen(PS_SOLID, 2, RGB(255, 255, 0));
+            dc.SelectObject(&yellowPen);
+            dc.MoveTo(x - 5, y);
+            dc.LineTo(x + 5, y);
+            dc.MoveTo(x, y - 5);
+            dc.LineTo(x, y + 5);
+            dc.SelectObject(&redPen);
+
+            // 신뢰도 표시
+            if (result.balls[i].confidence > 0.8f) {
+                CString confStr;
+                confStr.Format(_T("%.0f%%"), result.balls[i].confidence * 100);
+                dc.SetBkMode(TRANSPARENT);
+                dc.SetTextColor(RGB(0, 255, 0));
+                dc.TextOut(x + radius + 5, y - 10, confStr);
+            }
+        }
+
+        dc.SelectObject(pOldPen);
+        dc.SelectObject(pOldBrush);
     }
 }

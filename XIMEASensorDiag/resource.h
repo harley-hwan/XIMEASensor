@@ -27,6 +27,11 @@
 #define IDC_EDIT_GAIN                   1023
 #define IDC_EDIT_FRAMERATE              1024
 
+#define IDC_CHECK_REALTIME_DETECTION    1025
+#define IDC_STATIC_BALL_POSITION        1026
+#define IDC_STATIC_BALL_INFO            1027
+#define IDC_STATIC_DETECTION_FPS        1028
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
