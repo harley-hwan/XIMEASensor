@@ -335,8 +335,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
             }
             else {
                 // top candidates
-                tbb::parallel_sort(validBalls.begin(), validBalls.end(),
-                    [](const BallInfo& a, const BallInfo& b) { return a.confidence > b.confidence; });
+                tbb::parallel_sort(validBalls.begin(), validBalls.end(),[](const BallInfo& a, const BallInfo& b) { return a.confidence > b.confidence; });
 
                 int maxBalls = std::min(MAX_DISPLAY_BALLS, static_cast<int>(validBalls.size()));
                 result.balls.assign(validBalls.begin(), validBalls.begin() + maxBalls);
@@ -395,12 +394,10 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
     }
 
     auto totalEndTime = std::chrono::high_resolution_clock::now();
-    m_lastMetrics.totalDetectionTime_ms =
-        std::chrono::duration_cast<std::chrono::microseconds>(totalEndTime - totalStartTime).count() / 1000.0;
+    m_lastMetrics.totalDetectionTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(totalEndTime - totalStartTime).count() / 1000.0;
 
     if (m_performanceProfilingEnabled && (frameIndex % PERFORMANCE_LOG_INTERVAL == 0)) {
-        LOG_INFO("Frame " + std::to_string(frameIndex) + " - Total detection time: " +
-            std::to_string(m_lastMetrics.totalDetectionTime_ms) + " ms");
+        LOG_INFO("Frame " + std::to_string(frameIndex) + " - Total detection time: " + std::to_string(m_lastMetrics.totalDetectionTime_ms) + " ms");
     }
 
     return result;
@@ -535,8 +532,7 @@ bool BallDetector::Impl::quickValidateCircle(const cv::Mat& image, const cv::Vec
     int radius = cvRound(circle[2]);
 
     const int margin = 2;
-    if (cx - radius - margin < 0 || cy - radius - margin < 0 ||
-        cx + radius + margin >= image.cols || cy + radius + margin >= image.rows) {
+    if (cx - radius - margin < 0 || cy - radius - margin < 0 || cx + radius + margin >= image.cols || cy + radius + margin >= image.rows) {
         return false;
     }
 
@@ -619,8 +615,7 @@ float BallDetector::Impl::calculateCircularity(const cv::Mat& image, const cv::V
     int radius = cvRound(circle[2]);
 
     const int margin = 5;
-    cv::Rect roi(cx - radius - margin, cy - radius - margin,
-        (radius + margin) * 2, (radius + margin) * 2);
+    cv::Rect roi(cx - radius - margin, cy - radius - margin, (radius + margin) * 2, (radius + margin) * 2);
     roi &= cv::Rect(0, 0, image.cols, image.rows);
 
     if (roi.area() == 0) return 0.0f;
@@ -737,10 +732,7 @@ cv::Mat BallDetector::Impl::extractROI(const cv::Mat& image, float scale) {
     return image(roiRect);
 }
 
-cv::Point2f BallDetector::Impl::transformToOriginalCoords(const cv::Point2f& roiPoint,
-    const cv::Size& roiSize,
-    const cv::Size& origSize,
-    float scale) {
+cv::Point2f BallDetector::Impl::transformToOriginalCoords(const cv::Point2f& roiPoint, const cv::Size& roiSize, const cv::Size& origSize, float scale) {
     cv::Point2f originalPoint;
     originalPoint.x = roiPoint.x + (origSize.width - roiSize.width) / 2.0f;
     originalPoint.y = roiPoint.y + (origSize.height - roiSize.height) / 2.0f;
@@ -848,10 +840,7 @@ double BallDetector::EstimateProcessingTime(int width, int height) const {
     return baseTime;
 }
 
-bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int width, int height,
-    const BallDetectionResult& result,
-    const std::string& outputPath,
-    bool saveAsColor) {
+bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int width, int height, const BallDetectionResult& result, const std::string& outputPath, bool saveAsColor) {
     if (!originalImage || width <= 0 || height <= 0) {
         LOG_ERROR("Invalid parameters for SaveDetectionImage");
         return false;
