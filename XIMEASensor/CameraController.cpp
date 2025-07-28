@@ -424,7 +424,7 @@ void CameraController::CaptureLoop() {
             frameInfo.gain_db = image.gain_db;
             frameInfo.format = image.frm;
 
-            // 프레임 버퍼 복사
+            // copy frame buffer
             {
                 std::lock_guard<std::mutex> lock(frameMutex);
 
@@ -442,16 +442,16 @@ void CameraController::CaptureLoop() {
                 memcpy(frameBuffer, image.bp, imageSize);
             }
 
-            // Continuous capture 처리
+            // Continuous capture
             if (m_continuousCapture && m_continuousCapture->IsCapturing()) {
                 m_continuousCapture->ProcessFrame(frameBuffer, width, height);
             }
 
-            // 실시간 검출이 활성화되어 있으면 검출 큐에 추가
+            // add to detection queue
             if (m_realtimeDetectionEnabled.load()) {
                 std::unique_lock<std::mutex> queueLock(m_detectionQueueMutex);
 
-                // 큐 크기 제한 (최대 5프레임)
+                // queue size limit 5
                 if (m_detectionQueue.size() < 5) {
                     std::vector<unsigned char> frameData(imageSize);
                     memcpy(frameData.data(), image.bp, imageSize);
@@ -459,7 +459,7 @@ void CameraController::CaptureLoop() {
                     m_detectionCV.notify_one();
                 }
                 else {
-                    // 큐가 가득 찬 경우 로그 (너무 자주 출력되지 않도록 주의)
+                    // queue is full
                     static auto lastQueueFullLog = std::chrono::steady_clock::now();
                     auto now = std::chrono::steady_clock::now();
                     if (std::chrono::duration_cast<std::chrono::seconds>(now - lastQueueFullLog).count() >= 1) {
@@ -1036,7 +1036,7 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
     }
 
     if (enable) {
-        // 검출 시작
+        // start detect
         if (currentState != CameraState::CAPTURING) {
             LOG_ERROR("Camera must be capturing to enable realtime detection");
             return false;
@@ -1045,7 +1045,7 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
         m_realtimeDetectionEnabled = true;
         m_detectionThreadRunning = true;
 
-        // 통계 초기화
+        // init statistics
         m_realtimeProcessedFrames = 0;
         {
             std::lock_guard<std::mutex> lock(m_realtimeStatsMutex);
@@ -1053,13 +1053,12 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
         }
         m_realtimeStartTime = std::chrono::steady_clock::now();
 
-        // 검출 스레드 시작
+        // start detection thread
         m_detectionThread = std::thread(&CameraController::RealtimeDetectionWorker, this);
 
         LOG_INFO("Realtime ball detection enabled");
     }
     else {
-        // 검출 중지
         m_realtimeDetectionEnabled = false;
 
         if (m_detectionThreadRunning) {
@@ -1071,7 +1070,7 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
             }
         }
 
-        // 큐 비우기
+        // clear queue
         {
             std::lock_guard<std::mutex> lock(m_detectionQueueMutex);
             std::queue<std::pair<std::vector<unsigned char>, FrameInfo>> empty;
@@ -1084,7 +1083,7 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
     return true;
 }
 
-// 실시간 검출 워커 스레드
+// worker thread
 void CameraController::RealtimeDetectionWorker() {
     LOG_INFO("Realtime detection thread started");
     
@@ -1100,7 +1099,6 @@ void CameraController::RealtimeDetectionWorker() {
             m_detectionQueue.pop();
             lock.unlock();
             
-            // 검출 수행
             auto startTime = std::chrono::high_resolution_clock::now();
             
             ProcessRealtimeDetection(
@@ -1113,7 +1111,7 @@ void CameraController::RealtimeDetectionWorker() {
             auto endTime = std::chrono::high_resolution_clock::now();
             double processingTime = std::chrono::duration<double, std::milli>(endTime - startTime).count();
             
-            // 통계 업데이트 - thread-safe 방식
+            // statistics update - thread-safe
             m_realtimeProcessedFrames.fetch_add(1);
             
             {
@@ -1128,14 +1126,11 @@ void CameraController::RealtimeDetectionWorker() {
     LOG_INFO("Realtime detection thread ended");
 }
 
-// 실시간 검출 처리
 void CameraController::ProcessRealtimeDetection(const unsigned char* data, int width, int height, int frameIndex) {
     if (!m_realtimeBallDetector) return;
 
-    // 볼 검출 수행
     auto result = m_realtimeBallDetector->DetectBall(data, width, height, frameIndex);
 
-    // DLL 인터페이스용 결과 변환
     RealtimeDetectionResult detectionResult;
     memset(&detectionResult, 0, sizeof(detectionResult));
 
@@ -1151,25 +1146,21 @@ void CameraController::ProcessRealtimeDetection(const unsigned char* data, int w
         detectionResult.balls[i].frameIndex = result.balls[i].frameIndex;
     }
 
-    // 마지막 결과 저장
     {
         std::lock_guard<std::mutex> lock(m_lastResultMutex);
         m_lastDetectionResult = detectionResult;
     }
 
-    // 콜백 호출
     if (m_realtimeCallback) {
         m_realtimeCallback(&detectionResult, m_realtimeCallbackContext);
     }
 }
 
-// 콜백 설정
 void CameraController::SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* context) {
     m_realtimeCallback = callback;
     m_realtimeCallbackContext = context;
 }
 
-// 마지막 검출 결과 가져오기
 bool CameraController::GetLastDetectionResult(RealtimeDetectionResult* result) {
     if (!result) return false;
 
@@ -1178,7 +1169,6 @@ bool CameraController::GetLastDetectionResult(RealtimeDetectionResult* result) {
     return true;
 }
 
-// 파라미터 설정 함수들
 bool CameraController::SetRealtimeDetectionROI(float roiScale) {
     if (!m_realtimeBallDetector) return false;
 
@@ -1212,7 +1202,6 @@ bool CameraController::SetRealtimeDetectionMaxCandidates(int maxCandidates) {
     return true;
 }
 
-// 통계 가져오기
 void CameraController::GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS) {
     int frames = m_realtimeProcessedFrames.load();
 

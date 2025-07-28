@@ -99,12 +99,12 @@ private:
     std::atomic<bool> m_detectionThreadRunning;
     std::condition_variable m_detectionCV;
 
-    // 실시간 검출 통계
+    // realTime detect statistics
     std::atomic<int> m_realtimeProcessedFrames;
-    double m_realtimeTotalProcessingTime;  // atomic 제거
-    std::mutex m_realtimeStatsMutex;       // 통계용 mutex 추가
+    double m_realtimeTotalProcessingTime;
     std::chrono::steady_clock::time_point m_realtimeStartTime;
     RealtimeDetectionResult m_lastDetectionResult;
+    std::mutex m_realtimeStatsMutex;       // mutex for statistic
     std::mutex m_lastResultMutex;
 
     void RealtimeDetectionWorker();

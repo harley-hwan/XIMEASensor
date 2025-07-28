@@ -965,7 +965,7 @@ void CXIMEASensorDiagDlg::RealtimeDetectionCallback(const RealtimeDetectionResul
     }
 }
 
-// 검출 결과 처리
+
 void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResult* result)
 {
     EnterCriticalSection(&m_detectionCriticalSection);
@@ -975,7 +975,7 @@ void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResul
     PostMessage(WM_UPDATE_BALL_DETECTION);
 }
 
-// 실시간 검출 체크박스 핸들러
+// checkBox handler for realTiem detect
 void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
 {
     if (!m_checkRealtimeDetection || !m_isStreaming) return;
@@ -983,10 +983,10 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
     BOOL isChecked = (m_checkRealtimeDetection->GetCheck() == BST_CHECKED);
 
     if (isChecked) {
-        // 실시간 검출 콜백 설정
+        // set realTime detect callback
         Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback, this);
 
-        // 실시간 검출 시작
+        // start realTime detect
         if (Camera_EnableRealtimeDetection(true)) {
             m_lastDetectionStatsUpdate = std::chrono::steady_clock::now();
 
@@ -1002,7 +1002,7 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
         }
     }
     else {
-        // 실시간 검출 중지
+        // stop realTime detect
         Camera_EnableRealtimeDetection(false);
         Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
 
@@ -1020,7 +1020,6 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
     }
 }
 
-// 볼 검출 결과 업데이트
 LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
 {
     RealtimeDetectionResult result;
@@ -1029,7 +1028,6 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
     LeaveCriticalSection(&m_detectionCriticalSection);
 
     if (result.ballFound && result.ballCount > 0) {
-        // 첫 번째 볼의 좌표 표시
         CString posStr;
         posStr.Format(_T("X: %d, Y: %d"),
             static_cast<int>(result.balls[0].centerX),
@@ -1039,7 +1037,6 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
             m_staticBallPosition->SetWindowText(posStr);
         }
 
-        // 추가 정보 표시
         CString infoStr;
         infoStr.Format(_T("Radius: %d px, Confidence: %.1f%%, Time: %.1f ms"),
             static_cast<int>(result.balls[0].radius),
@@ -1059,7 +1056,7 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
         }
     }
 
-    // Detection FPS 업데이트 (1초마다)
+    // Detection FPS update (every 1 sec)
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_lastDetectionStatsUpdate).count();
@@ -1080,7 +1077,7 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
         m_lastDetectionStatsUpdate = now;
     }
 
-    // 화면 다시 그리기 (오버레이 표시용)
+    // invalidate for Overlay
     if (m_pictureCtrl) {
         CRect rect;
         m_pictureCtrl->GetClientRect(&rect);
@@ -1091,7 +1088,6 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
 }
 
 
-// 검출 결과 오버레이 그리기
 void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
 {
     RealtimeDetectionResult result;
@@ -1100,7 +1096,6 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
     LeaveCriticalSection(&m_detectionCriticalSection);
 
     if (result.ballFound && result.ballCount > 0) {
-        // 화면 크기에 맞게 좌표 변환
         float scaleX = (float)rect.Width() / m_displayWidth;
         float scaleY = (float)rect.Height() / m_displayHeight;
 
@@ -1113,10 +1108,10 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
             int y = (int)(result.balls[i].centerY * scaleY);
             int radius = (int)(result.balls[i].radius * scaleX);
 
-            // 원 그리기
+            // draw circle
             dc.Ellipse(x - radius, y - radius, x + radius, y + radius);
 
-            // 중심점 표시
+            // centor point
             CPen yellowPen(PS_SOLID, 2, RGB(255, 255, 0));
             dc.SelectObject(&yellowPen);
             dc.MoveTo(x - 5, y);
@@ -1125,7 +1120,7 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
             dc.LineTo(x, y + 5);
             dc.SelectObject(&redPen);
 
-            // 신뢰도 표시
+            // print confidence
             if (result.balls[i].confidence > 0.8f) {
                 CString confStr;
                 confStr.Format(_T("%.0f%%"), result.balls[i].confidence * 100);
