@@ -5,7 +5,7 @@
 #include <cstring>
 #include <iomanip>
 #include <algorithm>
-
+#include "XIMEASensor.h"
 
 std::unique_ptr<CameraController> CameraController::instance = nullptr;
 std::mutex CameraController::instanceMutex;

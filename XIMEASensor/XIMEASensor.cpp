@@ -10,13 +10,12 @@
 
 static void(*g_continuousProgressCallback)(int, double, int) = nullptr;
 
-// default settings
 namespace CameraDefaults {
     const int EXPOSURE_US = 4000;        // 4ms default exposure
     const float GAIN_DB = 0.0f;          // 0dB default gain
     const float FRAMERATE_FPS = 60.0f;   // 60 FPS default
 
-    // Camera limits
+
     const int MIN_EXPOSURE_US = 10;
     const int MAX_EXPOSURE_US = 1000000; // 1 second
     const float MIN_GAIN_DB = 0.0f;
@@ -24,80 +23,29 @@ namespace CameraDefaults {
     const float MIN_FPS = 1.0f;
     const float MAX_FPS = 210.0f;       // PYTHON1300 max FPS
 
-    // Continuous capture defaults
-    const double CONTINUOUS_CAPTURE_DURATION = 1.0;    // 1 second
-    const int CONTINUOUS_CAPTURE_FORMAT = 0;           // PNG
-    const int CONTINUOUS_CAPTURE_QUALITY = 90;         // 90% quality
-    const bool CONTINUOUS_CAPTURE_ASYNC_SAVE = true;   // Async save
 
-    // Single snapshot defaults
+    static ContinuousCaptureConfig CreateDefaultConfig() {
+        return ContinuousCaptureConfig(
+            1.0,    // durationSeconds
+            0,      // imageFormat (PNG)
+            90,     // jpgQuality
+            true,   // createMetadata
+            true,   // useAsyncSave
+            ".",    // baseFolder
+            true,   // enableBallDetection
+            true,   // saveOriginalImages
+            true,   // saveDetectionImages
+            true,   // saveBallDetectorDebugImages
+            ""      // debugImagePath
+        );
+    }
+
     const int SNAPSHOT_FORMAT = 0;                     // PNG
     const int SNAPSHOT_QUALITY = 90;                   // 90% quality
 }
 
-// Implementation of ContinuousCaptureConfig methods
-ContinuousCaptureConfig::ContinuousCaptureConfig() {
-    version = 1;  // Current version
-    durationSeconds = CameraDefaults::CONTINUOUS_CAPTURE_DURATION;
-    imageFormat = CameraDefaults::CONTINUOUS_CAPTURE_FORMAT;
-    jpgQuality = CameraDefaults::CONTINUOUS_CAPTURE_QUALITY;
-    useAsyncSave = CameraDefaults::CONTINUOUS_CAPTURE_ASYNC_SAVE;
-    enableBallDetection = true;
-    saveOriginalImages = true;
-    saveDetectionImages = true;
-    saveBallDetectorDebugImages = false;  // Default OFF for production
-    createMetadata = true;
+static ContinuousCaptureConfig g_continuousCaptureConfig = CameraDefaults::CreateDefaultConfig();
 
-    // Safe string initialization
-    strncpy_s(baseFolder, sizeof(baseFolder), ".", _TRUNCATE);
-    debugImagePath[0] = '\0';
-    memset(reserved, 0, sizeof(reserved));
-}
-
-ContinuousCaptureConfig ContinuousCaptureConfig::GetDefault() {
-    return ContinuousCaptureConfig();
-}
-
-bool ContinuousCaptureConfig::Validate() const {
-    if (version != 1) {
-        return false;  // Unsupported version
-    }
-
-    if (durationSeconds <= 0 || durationSeconds > 3600) {
-        return false;
-    }
-
-    if (imageFormat < 0 || imageFormat > 1) {
-        return false;
-    }
-
-    if (jpgQuality < 1 || jpgQuality > 100) {
-        return false;
-    }
-
-    return true;
-}
-
-void ContinuousCaptureConfig::SetBaseFolder(const char* folder) {
-    if (folder) {
-        strncpy_s(baseFolder, sizeof(baseFolder), folder, _TRUNCATE);
-    }
-    else {
-        strncpy_s(baseFolder, sizeof(baseFolder), ".", _TRUNCATE);
-    }
-}
-
-void ContinuousCaptureConfig::SetDebugImagePath(const char* path) {
-    if (path) {
-        strncpy_s(debugImagePath, sizeof(debugImagePath), path, _TRUNCATE);
-    }
-    else {
-        debugImagePath[0] = '\0';
-    }
-}
-
-// Static configuration instances
-static ContinuousCaptureConfig g_continuousCaptureConfig;
 static SnapshotDefaults g_snapshotDefaults = {
     CameraDefaults::SNAPSHOT_FORMAT,
     CameraDefaults::SNAPSHOT_QUALITY
@@ -410,7 +358,7 @@ void Camera_SetLogLevel(int level) {
         Logger::GetInstance().SetLogLevel(static_cast<LogLevel>(level));
     }
     catch (const std::exception& e) {
-        // 
+        // Silent fail
     }
 }
 
@@ -419,7 +367,7 @@ void Camera_FlushLog() {
         Logger::GetInstance().Flush();
     }
     catch (const std::exception& e) {
-        //
+        // Silent fail
     }
 }
 
@@ -437,16 +385,15 @@ bool Camera_SaveSnapshot(const char* filename, int format, int quality) {
         }
 
         size_t bufferSize = width * height;
-        unsigned char* buffer = new unsigned char[bufferSize];
+        std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufferSize]);
 
-        bool result = controller.GetFrame(buffer, bufferSize, width, height);
+        bool result = controller.GetFrame(buffer.get(), bufferSize, width, height);
 
         if (result) {
-            result = ImageSaver::SaveGrayscaleImage(buffer, width, height, filename,
+            result = ImageSaver::SaveGrayscaleImage(buffer.get(), width, height, filename,
                 static_cast<ImageFormat>(format), quality);
         }
 
-        delete[] buffer;
         return result;
     }
     catch (const std::exception& e) {
@@ -473,53 +420,41 @@ bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize,
     }
 }
 
-// New unified continuous capture API implementations
 bool Camera_SetContinuousCaptureConfig(const ContinuousCaptureConfig* config) {
-    if (!config) {
-        LOG_ERROR("Invalid parameter: config is nullptr");
-        return false;
-    }
-
-    if (!config->Validate()) {
-        LOG_ERROR("Invalid configuration parameters");
-        return false;
-    }
-
     try {
+        if (!config) {
+            LOG_ERROR("Invalid parameter: config is nullptr");
+            return false;
+        }
+
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
         if (!captureManager) {
             LOG_ERROR("Continuous capture manager not available");
             return false;
         }
 
-        // Convert to internal format
-        ContinuousCaptureConfigInternal internalConfig;
-        internalConfig.durationSeconds = config->durationSeconds;
-        internalConfig.imageFormat = config->imageFormat;
-        internalConfig.jpgQuality = config->jpgQuality;
-        internalConfig.useAsyncSave = config->useAsyncSave;
-        internalConfig.enableBallDetection = config->enableBallDetection;
-        internalConfig.saveOriginalImages = config->saveOriginalImages;
-        internalConfig.saveDetectionImages = config->saveDetectionImages;
-        internalConfig.saveBallDetectorDebugImages = config->saveBallDetectorDebugImages;
-        internalConfig.createMetadata = config->createMetadata;
-        internalConfig.baseFolder = config->baseFolder;
-        internalConfig.debugImagePath = config->debugImagePath;
+        // Validate configuration
+        if (config->durationSeconds <= 0 || config->durationSeconds > 3600) {
+            LOG_ERROR("Invalid duration: " + std::to_string(config->durationSeconds));
+            return false;
+        }
 
-        captureManager->SetConfig(internalConfig);
+        if (config->imageFormat < 0 || config->imageFormat > 1) {
+            LOG_ERROR("Invalid format: " + std::to_string(config->imageFormat));
+            return false;
+        }
 
-        // Store in global config
-        g_continuousCaptureConfig = *config;
+        if (config->jpgQuality < 1 || config->jpgQuality > 100) {
+            LOG_ERROR("Invalid quality: " + std::to_string(config->jpgQuality));
+            return false;
+        }
 
-        LOG_INFO("Continuous capture config set:");
+        captureManager->SetConfig(*config);
+
+        LOG_INFO("Continuous capture config set successfully");
         LOG_INFO("  Duration: " + std::to_string(config->durationSeconds) + "s");
         LOG_INFO("  Format: " + std::to_string(config->imageFormat) + " (0=PNG, 1=JPG)");
-        LOG_INFO("  Quality: " + std::to_string(config->jpgQuality));
-        LOG_INFO("  Async Save: " + std::string(config->useAsyncSave ? "Yes" : "No"));
-        LOG_INFO("  Ball Detection: " + std::string(config->enableBallDetection ? "Yes" : "No"));
-        LOG_INFO("  Save Original: " + std::string(config->saveOriginalImages ? "Yes" : "No"));
-        LOG_INFO("  Save Detection: " + std::string(config->saveDetectionImages ? "Yes" : "No"));
-        LOG_INFO("  Save Debug: " + std::string(config->saveBallDetectorDebugImages ? "Yes" : "No"));
+        LOG_INFO("  Ball Detection: " + std::string(config->enableBallDetection ? "Enabled" : "Disabled"));
 
         return true;
     }
@@ -529,52 +464,26 @@ bool Camera_SetContinuousCaptureConfig(const ContinuousCaptureConfig* config) {
     }
 }
 
-static bool Camera_GetContinuousCaptureConfig(ContinuousCaptureConfig* config) {
-    if (!config) {
-        LOG_ERROR("Invalid parameter: config is nullptr");
-        return false;
-    }
-
+bool Camera_GetContinuousCaptureConfig(ContinuousCaptureConfig* config) {
     try {
+        if (!config) {
+            LOG_ERROR("Invalid parameter: config is nullptr");
+            return false;
+        }
+
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
-        if (captureManager) {
-            auto internalConfig = captureManager->GetConfig();
-
-            config->version = 1;
-            config->durationSeconds = internalConfig.durationSeconds;
-            config->imageFormat = internalConfig.imageFormat;
-            config->jpgQuality = internalConfig.jpgQuality;
-            config->useAsyncSave = internalConfig.useAsyncSave;
-            config->enableBallDetection = internalConfig.enableBallDetection;
-            config->saveOriginalImages = internalConfig.saveOriginalImages;
-            config->saveDetectionImages = internalConfig.saveDetectionImages;
-            config->saveBallDetectorDebugImages = internalConfig.saveBallDetectorDebugImages;
-            config->createMetadata = internalConfig.createMetadata;
-            config->SetBaseFolder(internalConfig.baseFolder.c_str());
-            config->SetDebugImagePath(internalConfig.debugImagePath.c_str());
-        }
-        else {
-            // Return stored global config
-            *config = g_continuousCaptureConfig;
+        if (!captureManager) {
+            LOG_ERROR("Continuous capture manager not available");
+            return false;
         }
 
+        *config = captureManager->GetConfig();
         return true;
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_GetContinuousCaptureConfig: " + std::string(e.what()));
         return false;
     }
-}
-
-bool Camera_GetDefaultContinuousCaptureConfig(ContinuousCaptureConfig* config) {
-    if (!config) {
-        LOG_ERROR("Invalid parameter: config is nullptr");
-        return false;
-    }
-
-    *config = ContinuousCaptureConfig::GetDefault();
-    LOG_DEBUG("Retrieved default continuous capture config");
-    return true;
 }
 
 bool Camera_StartContinuousCapture() {
@@ -711,6 +620,54 @@ void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps) {
     }
 }
 
+void Camera_GetContinuousCaptureDefaults(ContinuousCaptureConfig* config) {
+    if (!config) {
+        LOG_ERROR("Invalid parameter: config is nullptr");
+        return;
+    }
+
+    *config = g_continuousCaptureConfig;
+    LOG_DEBUG("Retrieved continuous capture defaults: duration=" +
+        std::to_string(config->durationSeconds) + "s, format=" +
+        std::to_string(config->imageFormat) + ", enableBallDetection=" +
+        std::to_string(config->enableBallDetection));
+}
+
+void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureConfig* config) {
+    if (!config) {
+        LOG_ERROR("Invalid parameter: config is nullptr");
+        return;
+    }
+
+    // Validate configuration
+    if (config->durationSeconds <= 0 || config->durationSeconds > 3600) {
+        LOG_ERROR("Invalid duration: " + std::to_string(config->durationSeconds));
+        return;
+    }
+
+    if (config->imageFormat < 0 || config->imageFormat > 1) {
+        LOG_ERROR("Invalid format: " + std::to_string(config->imageFormat));
+        return;
+    }
+
+    if (config->jpgQuality < 1 || config->jpgQuality > 100) {
+        LOG_ERROR("Invalid quality: " + std::to_string(config->jpgQuality));
+        return;
+    }
+
+    g_continuousCaptureConfig = *config;
+
+    LOG_INFO("Updated continuous capture defaults:");
+    LOG_INFO("  Duration: " + std::to_string(g_continuousCaptureConfig.durationSeconds) + " seconds");
+    LOG_INFO("  Format: " + std::to_string(g_continuousCaptureConfig.imageFormat) + " (0=PNG, 1=JPG)");
+    LOG_INFO("  Quality: " + std::to_string(g_continuousCaptureConfig.jpgQuality));
+    LOG_INFO("  Async Save: " + std::string(g_continuousCaptureConfig.useAsyncSave ? "Yes" : "No"));
+    LOG_INFO("  Ball Detection: " + std::string(g_continuousCaptureConfig.enableBallDetection ? "Yes" : "No"));
+    LOG_INFO("  Save Original: " + std::string(g_continuousCaptureConfig.saveOriginalImages ? "Yes" : "No"));
+    LOG_INFO("  Save Detection: " + std::string(g_continuousCaptureConfig.saveDetectionImages ? "Yes" : "No"));
+    LOG_INFO("  Save Debug Images: " + std::string(g_continuousCaptureConfig.saveBallDetectorDebugImages ? "Yes" : "No"));
+}
+
 void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults) {
     if (!defaults) {
         LOG_ERROR("Invalid parameter: defaults is nullptr");
@@ -743,6 +700,49 @@ void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults) {
     LOG_INFO("Updated snapshot defaults: format=" +
         std::to_string(defaults->format) + ", quality=" +
         std::to_string(defaults->quality));
+}
+
+bool Camera_StartContinuousCaptureWithDefaults() {
+    try {
+        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
+        if (!captureManager) {
+            LOG_ERROR("Continuous capture manager not available");
+            return false;
+        }
+
+        ContinuousCaptureState currentState = captureManager->GetState();
+        LOG_INFO("Current capture state before start: " +
+            std::to_string(static_cast<int>(currentState)));
+
+        if (currentState == ContinuousCaptureState::COMPLETED ||
+            currentState == ContinuousCaptureState::kERROR) {
+            LOG_INFO("Resetting previous capture session");
+            captureManager->Reset();
+        }
+
+        // Set the default configuration
+        if (!Camera_SetContinuousCaptureConfig(&g_continuousCaptureConfig)) {
+            LOG_ERROR("Failed to set continuous capture config with defaults");
+            return false;
+        }
+
+        bool result = captureManager->StartCapture();
+
+        if (result) {
+            LOG_INFO("Continuous capture started with defaults - Duration: " +
+                std::to_string(g_continuousCaptureConfig.durationSeconds) + "s");
+        }
+        else {
+            LOG_ERROR("Failed to start continuous capture");
+        }
+
+        return result;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_StartContinuousCaptureWithDefaults: " +
+            std::string(e.what()));
+        return false;
+    }
 }
 
 bool Camera_SaveSnapshotWithDefaults(const char* filename) {
@@ -830,7 +830,7 @@ bool Camera_SetBallDetectorDebugImages(bool enable) {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
         if (captureManager && !captureManager->IsCapturing()) {
             auto config = captureManager->GetConfig();
-            config.saveBallDetectorDebugImages = true;
+            config.saveBallDetectorDebugImages = enable;
             captureManager->SetConfig(config);
         }
 
