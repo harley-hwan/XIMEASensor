@@ -13,6 +13,16 @@
 #define WM_UPDATE_FPS       (WM_USER + 103)
 #define WM_CONTINUOUS_CAPTURE_COMPLETE (WM_USER + 104)
 #define WM_UPDATE_BALL_DETECTION (WM_USER + 105)
+#define WM_UPDATE_BALL_STATE (WM_USER + 106)  // 추가
+
+// 볼 상태 열거형 추가
+enum class BallState {
+    NOT_DETECTED,   // 볼이 감지되지 않음
+    MOVING,         // 볼이 움직이는 중
+    STABILIZING,    // 볼이 멈추려고 하는 중 (위치가 안정화되는 중)
+    READY,          // 볼이 3초 이상 같은 위치에 있음 (준비 상태)
+    STOPPED         // 볼이 멈춤 (READY 이후 상태)
+};
 
 class CXIMEASensorDiagDlg : public CDialogEx
 {

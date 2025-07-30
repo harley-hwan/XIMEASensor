@@ -379,6 +379,7 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         return;
     }
 
+#ifdef ENABLE_CONTINUOUS_CAPTURE
     if (Camera_IsContinuousCapturing()) {
         AfxMessageBox(_T("Already in continuous capture mode!"));
         return;
@@ -422,7 +423,9 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
             TRACE(_T("Failed to start continuous capture\n"));
         }
     }
-    else {
+    else
+#endif
+    {
         SnapshotDefaults defaults;
         Camera_GetSnapshotDefaults(&defaults);
 

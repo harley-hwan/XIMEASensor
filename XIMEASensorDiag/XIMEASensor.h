@@ -9,20 +9,27 @@
 #include "IXIMEACallback.h"
 #include <string>
 
+// Enable/Disable continuous capture functionality
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+
+ // Configuration structure for continuous capture operations
 struct XIMEASENSOR_API ContinuousCaptureConfig {
-    double durationSeconds;
-    int imageFormat;            // 0: PNG, 1: JPG
-    int jpgQuality;
-    bool createMetadata;
-    bool useAsyncSave;
-    std::string baseFolder;
+    double durationSeconds;           // Capture duration in seconds
+    int imageFormat;                  // Image format: 0=PNG, 1=JPG
+    int jpgQuality;                   // JPEG compression quality (1-100)
+    bool createMetadata;              // Create metadata file after capture
+    bool useAsyncSave;                // Use asynchronous image saving
+    std::string baseFolder;           // Base folder for captured images
 
-    bool enableBallDetection;
-    bool saveOriginalImages;
-    bool saveDetectionImages;
-    bool saveBallDetectorDebugImages;
-    std::string debugImagePath;
+    // Ball detection specific settings
+    bool enableBallDetection;         // Enable ball detection during capture
+    bool saveOriginalImages;          // Save original captured images
+    bool saveDetectionImages;         // Save images with detection overlays
+    bool saveBallDetectorDebugImages; // Save intermediate processing images
+    std::string debugImagePath;       // Custom path for debug images
 
+    // Default constructor with standard values
     ContinuousCaptureConfig()
         : durationSeconds(1.0)
         , imageFormat(0)
@@ -37,6 +44,7 @@ struct XIMEASENSOR_API ContinuousCaptureConfig {
         , debugImagePath("") {
     }
 
+    // Parameterized constructor for custom configuration
     ContinuousCaptureConfig(double duration, int format, int quality, bool metadata,
         bool asyncSave, const std::string& folder,
         bool ballDetection, bool saveOriginal,
@@ -55,131 +63,320 @@ struct XIMEASENSOR_API ContinuousCaptureConfig {
         , debugImagePath(debugPath) {
     }
 
+    // Factory method to create default configuration
     static ContinuousCaptureConfig CreateDefault() {
-        return ContinuousCaptureConfig(1.0, 0, 90, true, true, ".",
-            true, true, true, true, "");
+        return ContinuousCaptureConfig(1.0, 0, 90, true, true, ".", true, true, true, true, "");
     }
 };
+#endif // ENABLE_CONTINUOUS_CAPTURE
 
+// ============================================================================
+// CAMERA DEFAULT SETTINGS
+// ============================================================================
 
+// Namespace containing default camera parameters and limits
 namespace CameraDefaults {
-    XIMEASENSOR_API extern const int EXPOSURE_US;      // microseconds
-    XIMEASENSOR_API extern const float GAIN_DB;        // dB
-    XIMEASENSOR_API extern const float FRAMERATE_FPS;  // FPS
+    // Default operational values
+    XIMEASENSOR_API extern const int EXPOSURE_US;        // Default exposure time in microseconds
+    XIMEASENSOR_API extern const float GAIN_DB;          // Default gain in decibels
+    XIMEASENSOR_API extern const float FRAMERATE_FPS;    // Default frame rate in FPS
 
-    XIMEASENSOR_API extern const int MIN_EXPOSURE_US;
-    XIMEASENSOR_API extern const int MAX_EXPOSURE_US;
-    XIMEASENSOR_API extern const float MIN_GAIN_DB;
-    XIMEASENSOR_API extern const float MAX_GAIN_DB;
-    XIMEASENSOR_API extern const float MIN_FPS;
-    XIMEASENSOR_API extern const float MAX_FPS;
+    // Hardware limits
+    XIMEASENSOR_API extern const int MIN_EXPOSURE_US;    // Minimum exposure time
+    XIMEASENSOR_API extern const int MAX_EXPOSURE_US;    // Maximum exposure time
+    XIMEASENSOR_API extern const float MIN_GAIN_DB;      // Minimum gain value
+    XIMEASENSOR_API extern const float MAX_GAIN_DB;      // Maximum gain value
+    XIMEASENSOR_API extern const float MIN_FPS;          // Minimum frame rate
+    XIMEASENSOR_API extern const float MAX_FPS;          // Maximum frame rate (PYTHON1300 limit)
 
-    XIMEASENSOR_API extern const int SNAPSHOT_FORMAT;
-    XIMEASENSOR_API extern const int SNAPSHOT_QUALITY;
+    // Snapshot defaults
+    XIMEASENSOR_API extern const int SNAPSHOT_FORMAT;    // Default snapshot format (0=PNG)
+    XIMEASENSOR_API extern const int SNAPSHOT_QUALITY;   // Default JPEG quality (90%)
 }
 
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+// Configuration for single snapshot operations
 struct SnapshotDefaults {
-    int format;
-    int quality;
+    int format;     // Image format: 0=PNG, 1=JPG
+    int quality;    // JPEG quality: 1-100
 };
 
-
-// 2025-07-28: realtime ball detect result
+// Information about a single detected ball
 struct XIMEASENSOR_API RealtimeBallInfo {
-    float centerX;
-    float centerY;
-    float radius;
-    float confidence;
-    int frameIndex;
+    float centerX;      // Ball center X coordinate in pixels
+    float centerY;      // Ball center Y coordinate in pixels
+    float radius;       // Ball radius in pixels
+    float confidence;   // Detection confidence (0.0-1.0)
+    int frameIndex;     // Frame number where ball was detected
 };
 
+
+// Real-time ball detection result containing multiple detections
 struct XIMEASENSOR_API RealtimeDetectionResult {
-    bool ballFound;
-    int ballCount;
-    RealtimeBallInfo balls[5];  // 최대 5개까지
-    double detectionTimeMs;
+    bool ballFound;                 // True if at least one ball was found
+    int ballCount;                  // Number of balls detected (max 5)
+    RealtimeBallInfo balls[5];      // Array of detected balls
+    double detectionTimeMs;         // Processing time in milliseconds
 };
 
+
+// Callback function type for real-time detection notifications
 typedef void(*RealtimeDetectionCallback)(const RealtimeDetectionResult* result, void* userContext);
 
+
+// ============================================================================
+// C API FUNCTIONS
+// ============================================================================
+
 extern "C" {
+    // ------------------------------------------------------------------------
+    // System Initialization
+    // ------------------------------------------------------------------------
+
+    // Initialize the camera system and logging
     XIMEASENSOR_API bool Camera_Initialize(const char* logPath = nullptr, int logLevel = 1);
+
+    // Shutdown camera system and clean up resources
     XIMEASENSOR_API void Camera_Shutdown();
 
+
+    // ------------------------------------------------------------------------
+    // Device Management
+    // ------------------------------------------------------------------------
+
+    // Get number of connected XIMEA cameras
     XIMEASENSOR_API int Camera_GetDeviceCount();
+
+
+    // Get information about a specific camera device
+
     XIMEASENSOR_API bool Camera_GetDeviceInfo(int index, char* name, int nameSize, char* serial, int serialSize);
 
+
+    // ------------------------------------------------------------------------
+    // Camera Control
+    // ------------------------------------------------------------------------
+
+    // Open camera device
     XIMEASENSOR_API bool Camera_Open(int deviceIndex);
+
+    // Close the currently open camera
     XIMEASENSOR_API void Camera_Close();
+
+    // Start image acquisition
     XIMEASENSOR_API bool Camera_Start();
+
+    // Stop image acquisition
     XIMEASENSOR_API void Camera_Stop();
+
+    // Pause/resume image acquisition
     XIMEASENSOR_API bool Camera_Pause(bool pause);
 
+
+    // ------------------------------------------------------------------------
+    // Image Acquisition
+    // ------------------------------------------------------------------------
+
+    // Get the latest captured frame
     XIMEASENSOR_API bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* height);
 
+
+    // ------------------------------------------------------------------------
+    // Camera Parameters
+    // ------------------------------------------------------------------------
+
+    // Set exposure time
     XIMEASENSOR_API bool Camera_SetExposure(int microsec);
+
+    // Set camera gain
     XIMEASENSOR_API bool Camera_SetGain(float gain);
+
+    // Set region of interest (ROI)
     XIMEASENSOR_API bool Camera_SetROI(int offsetX, int offsetY, int width, int height);
+
+    // Set frame rate
     XIMEASENSOR_API bool Camera_SetFrameRate(float fps);
+
+    // Enable/disable trigger mode
     XIMEASENSOR_API bool Camera_SetTriggerMode(bool enabled);
 
+    // Get current exposure time
     XIMEASENSOR_API int Camera_GetExposure();
+
+    // Get current gain value
     XIMEASENSOR_API float Camera_GetGain();
+
+    // Get current ROI settings
     XIMEASENSOR_API bool Camera_GetROI(int* offsetX, int* offsetY, int* width, int* height);
+
+    // Get current frame rate
     XIMEASENSOR_API float Camera_GetFrameRate();
+
+    // Get current camera state
     XIMEASENSOR_API int Camera_GetState();
 
-    XIMEASENSOR_API bool Camera_GetStatistics(unsigned long* totalFrames, unsigned long* droppedFrames, double* averageFPS, double* minFPS, double* maxFPS);
+
+    // ------------------------------------------------------------------------
+    // Statistics and Monitoring
+    // ------------------------------------------------------------------------
+
+    // Get capture statistics
+    XIMEASENSOR_API bool Camera_GetStatistics(unsigned long* totalFrames, unsigned long* droppedFrames, double* averageFPS, double* minFPS,
+        double* maxFPS);
+
+    // Reset capture statistics
     XIMEASENSOR_API void Camera_ResetStatistics();
 
+
+    // ------------------------------------------------------------------------
+    // Callback Management
+    // ------------------------------------------------------------------------
+
+    // Register a callback for camera events
     XIMEASENSOR_API bool Camera_RegisterCallback(IXIMEACallback* callback);
+
+    // Unregister a callback
     XIMEASENSOR_API bool Camera_UnregisterCallback(IXIMEACallback* callback);
+
+    // Clear all registered callbacks
     XIMEASENSOR_API void Camera_ClearCallbacks();
 
+
+    // ------------------------------------------------------------------------
+    // Logging Control
+    // ------------------------------------------------------------------------
+
+    // Set logging level
     XIMEASENSOR_API void Camera_SetLogLevel(int level);
+
+    // Flush log buffer to file
     XIMEASENSOR_API void Camera_FlushLog();
 
+
+    // ------------------------------------------------------------------------
+    // Image Saving
+    // ------------------------------------------------------------------------
+
+    // Save a snapshot from current frame
     XIMEASENSOR_API bool Camera_SaveSnapshot(const char* filename, int format = 0, int quality = 90);
+
+    // Save provided frame data to file
     XIMEASENSOR_API bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize, int* width, int* height, const char* filename, int format = 0, int quality = 90);
 
-    // Continuous capture API - simplified with ContinuousCaptureConfig
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+    // ------------------------------------------------------------------------
+    // Continuous Capture Functions (Conditional Compilation)
+    // ------------------------------------------------------------------------
+
+    // Configure continuous capture parameters
     XIMEASENSOR_API bool Camera_SetContinuousCaptureConfig(const ContinuousCaptureConfig* config);
+
+    // Get current continuous capture configuration
     XIMEASENSOR_API bool Camera_GetContinuousCaptureConfig(ContinuousCaptureConfig* config);
+
+    // Start continuous capture session
     XIMEASENSOR_API bool Camera_StartContinuousCapture();
+
+    // Stop ongoing continuous capture
     XIMEASENSOR_API void Camera_StopContinuousCapture();
+
+    // Check if continuous capture is active
     XIMEASENSOR_API bool Camera_IsContinuousCapturing();
+
+    // Get continuous capture state
     XIMEASENSOR_API int Camera_GetContinuousCaptureState();
+
+    // Get results from last continuous capture session
     XIMEASENSOR_API bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames, int* droppedFrames, double* duration, char* folderPath, int pathSize);
+
+    // Set callback for continuous capture progress updates
     XIMEASENSOR_API void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFrame, double elapsedSeconds, int state));
 
-    // Default settings API
-    XIMEASENSOR_API void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps);
+    // Get default continuous capture configuration
     XIMEASENSOR_API void Camera_GetContinuousCaptureDefaults(ContinuousCaptureConfig* config);
+
+    // Set default continuous capture configuration
     XIMEASENSOR_API void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureConfig* config);
+
+    // Start continuous capture with default settings
+    XIMEASENSOR_API bool Camera_StartContinuousCaptureWithDefaults();
+
+    // Get ball detection results from continuous capture
+    XIMEASENSOR_API bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* totalBallsDetected, float* averageConfidence, char* detectionFolder,
+        int folderSize);
+#else
+    // Stub functions when continuous capture is disabled
+    inline bool Camera_SetContinuousCaptureConfig(const void*) { return false; }
+    inline bool Camera_GetContinuousCaptureConfig(void*) { return false; }
+    inline bool Camera_StartContinuousCapture() { return false; }
+    inline void Camera_StopContinuousCapture() {}
+    inline bool Camera_IsContinuousCapturing() { return false; }
+    inline int Camera_GetContinuousCaptureState() { return 0; }
+    inline bool Camera_GetContinuousCaptureResult(int*, int*, int*, double*, char*, int) { return false; }
+    inline void Camera_SetContinuousCaptureProgressCallback(void(*)(int, double, int)) {}
+    inline void Camera_GetContinuousCaptureDefaults(void*) {}
+    inline void Camera_SetContinuousCaptureDefaults(const void*) {}
+    inline bool Camera_StartContinuousCaptureWithDefaults() { return false; }
+    inline bool Camera_GetContinuousCaptureDetectionResult(int*, int*, float*, char*, int) { return false; }
+#endif
+
+    // ------------------------------------------------------------------------
+    // Default Settings Management
+    // ------------------------------------------------------------------------
+
+    /// Get default camera settings
+    XIMEASENSOR_API void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps);
+
+    // Get default snapshot settings
     XIMEASENSOR_API void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults);
+
+    // Set default snapshot settings
     XIMEASENSOR_API void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults);
 
-    // Simplified API using defaults
-    XIMEASENSOR_API bool Camera_StartContinuousCaptureWithDefaults();
+    // Save snapshot using default settings
     XIMEASENSOR_API bool Camera_SaveSnapshotWithDefaults(const char* filename);
 
-    // Ball detection results
-    XIMEASENSOR_API bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* totalBallsDetected, float* averageConfidence, char* detectionFolder, int folderSize);
+    // ------------------------------------------------------------------------
+    // Debug Functions
+    // ------------------------------------------------------------------------
 
-    // Debug settings
+    // Enable/disable ball detector debug image saving
     XIMEASENSOR_API bool Camera_SetBallDetectorDebugImages(bool enable);
+
+    // Check if debug image saving is enabled
     XIMEASENSOR_API bool Camera_GetBallDetectorDebugImages();
 
 
-    // 실시간 볼 검출 API 추가
+    // ------------------------------------------------------------------------
+    // Real-time Ball Detection
+    // ------------------------------------------------------------------------
+
+    // Enable/disable real-time ball detection
     XIMEASENSOR_API bool Camera_EnableRealtimeDetection(bool enable);
+
+    // Check if real-time detection is enabled
     XIMEASENSOR_API bool Camera_IsRealtimeDetectionEnabled();
+
+    // Set callback for real-time detection results
     XIMEASENSOR_API void Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* userContext);
+
+    // Get the most recent detection result
     XIMEASENSOR_API bool Camera_GetLastDetectionResult(RealtimeDetectionResult* result);
 
-    // 실시간 검출 파라미터 설정
+    // Set ROI scale for real-time detection
     XIMEASENSOR_API bool Camera_SetRealtimeDetectionROI(float roiScale);
+
+    // Set downscale factor for real-time detection
     XIMEASENSOR_API bool Camera_SetRealtimeDetectionDownscale(int factor);
+
+    // Set maximum candidates for real-time detection
     XIMEASENSOR_API bool Camera_SetRealtimeDetectionMaxCandidates(int maxCandidates);
+
+    /// Get real-time detection statistics
     XIMEASENSOR_API void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS);
 }

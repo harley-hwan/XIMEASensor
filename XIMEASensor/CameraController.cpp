@@ -23,7 +23,7 @@ CameraController::CameraController()
     currentGain(CameraDefaults::GAIN_DB),
     currentState(CameraState::DISCONNECTED),
 
-    // 2025-07-28: realTime ballDetect
+	// realTime detection
     m_realtimeDetectionEnabled(false),
     m_realtimeCallback(nullptr),
     m_realtimeCallbackContext(nullptr),
@@ -37,7 +37,9 @@ CameraController::CameraController()
 
     stats.Reset();
 
+#ifdef ENABLE_CONTINUOUS_CAPTURE
     m_continuousCapture = std::make_unique<ContinuousCaptureManager>();
+#endif
 
     // 실시간 검출용 BallDetector 생성
     m_realtimeBallDetector = std::make_unique<BallDetector>();
@@ -449,10 +451,12 @@ void CameraController::CaptureLoop() {
                 memcpy(frameBuffer, image.bp, imageSize);
             }
 
+#ifdef ENABLE_CONTINUOUS_CAPTURE
             // Continuous capture
             if (m_continuousCapture && m_continuousCapture->IsCapturing()) {
                 m_continuousCapture->ProcessFrame(frameBuffer, width, height);
             }
+#endif
 
             // Add to detection queue with non-blocking approach
             if (m_realtimeDetectionEnabled.load()) {

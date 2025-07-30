@@ -12,4 +12,6 @@
 #define NOMINMAX
 #include "framework.h"
 
+#define ENABLE_CONTINUOUS_CAPTURE
+
 #endif //PCH_H

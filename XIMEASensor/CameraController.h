@@ -12,8 +12,10 @@
 #include "XIMEASensor.h" 
 #include "IXIMEACallback.h"
 #include "Logger.h"
+#include "BallDetector.h"
+#ifdef ENABLE_CONTINUOUS_CAPTURE
 #include "ContinuousCaptureManager.h"
-
+#endif
 
 #define PYTHON1300_WIDTH    1280
 #define PYTHON1300_HEIGHT   960
@@ -68,7 +70,10 @@ private:
     std::atomic<CameraState> currentState;
     CameraStatistics stats;
     std::chrono::steady_clock::time_point lastFrameTime;
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
     std::unique_ptr<ContinuousCaptureManager> m_continuousCapture;
+#endif
 
     std::atomic<int> deviceNotReadyCount;
     static const int MAX_DEVICE_NOT_READY_ERRORS = 5;
@@ -84,7 +89,6 @@ private:
 
     void UpdateStatistics(bool frameReceived);
     std::string GetXiApiErrorString(XI_RETURN error);
-
 
 
     // 2025-07-28: realTime ballDetect
@@ -142,7 +146,14 @@ public:
     CameraState GetState() const { return currentState.load(); }
     CameraStatistics GetStatistics() const { return stats; }
     void ResetStatistics() { stats.Reset(); }
-    ContinuousCaptureManager* GetContinuousCaptureManager() { return m_continuousCapture.get(); }
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+    ContinuousCaptureManager* GetContinuousCaptureManager() {
+        return m_continuousCapture.get();
+    }
+#else
+    void* GetContinuousCaptureManager() { return nullptr; }
+#endif
 
     // callback
     void RegisterCallback(IXIMEACallback* callback);

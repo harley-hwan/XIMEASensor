@@ -1,4 +1,7 @@
 #pragma once
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+
 #include "XIMEASensor.h"  // For ContinuousCaptureConfig
 #include <string>
 #include <atomic>
@@ -210,3 +213,5 @@ public:
 
     void Reset();
 };
+
+#endif

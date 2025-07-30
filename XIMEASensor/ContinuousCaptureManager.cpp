@@ -1,4 +1,7 @@
 ﻿#include "pch.h"
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+
 #include "ContinuousCaptureManager.h"
 #include "ImageSaver.h"
 #include "Logger.h"
@@ -996,3 +999,6 @@ ContinuousCaptureDetectionResult ContinuousCaptureManager::GetDetectionResult() 
     std::lock_guard<std::mutex> lock(m_detectionMutex);
     return m_detectionResult;
 }
+
+
+#endif

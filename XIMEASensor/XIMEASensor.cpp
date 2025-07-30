@@ -8,67 +8,103 @@
 #include <iostream>
 #include "BallDetector.h"
 
+// ============================================================================
+// GLOBAL VARIABLES
+// ============================================================================
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+// Global callback for continuous capture progress updates
 static void(*g_continuousProgressCallback)(int, double, int) = nullptr;
-// 2025-07-28: realTime ballDetect
+#endif
+
+// Global callback for real-time ball detection
 static RealtimeDetectionCallback g_realtimeDetectionCallback = nullptr;
 static void* g_realtimeDetectionContext = nullptr;
 
+// ============================================================================
+// NAMESPACE: Camera Default Settings
+// ============================================================================
+
 namespace CameraDefaults {
-    const int EXPOSURE_US = 4000;        // 4ms default exposure
-    const float GAIN_DB = 0.0f;          // 0dB default gain
-    const float FRAMERATE_FPS = 60.0f;   // 60 FPS default
+    // Default operational parameters
+    const int EXPOSURE_US = 4000;        // 4ms default exposure time
+    const float GAIN_DB = 0.0f;          // 0dB default gain (no amplification)
+    const float FRAMERATE_FPS = 60.0f;   // 60 FPS default frame rate
 
+    // Hardware limits for PYTHON1300 sensor
+    const int MIN_EXPOSURE_US = 10;      // 10 microseconds minimum
+    const int MAX_EXPOSURE_US = 1000000; // 1 second maximum
+    const float MIN_GAIN_DB = 0.0f;      // No negative gain
+    const float MAX_GAIN_DB = 24.0f;     // Maximum 24dB gain
+    const float MIN_FPS = 1.0f;          // 1 FPS minimum
+    const float MAX_FPS = 210.0f;        // PYTHON1300 maximum frame rate
 
-    const int MIN_EXPOSURE_US = 10;
-    const int MAX_EXPOSURE_US = 1000000; // 1 second
-    const float MIN_GAIN_DB = 0.0f;
-    const float MAX_GAIN_DB = 24.0f;
-    const float MIN_FPS = 1.0f;
-    const float MAX_FPS = 210.0f;       // PYTHON1300 max FPS
-
-
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+    // Create default continuous capture configuration
     static ContinuousCaptureConfig CreateDefaultConfig() {
         return ContinuousCaptureConfig(
-            1.0,    // durationSeconds
-            0,      // imageFormat (PNG)
-            90,     // jpgQuality
-            true,   // createMetadata
-            true,   // useAsyncSave
-            ".",    // baseFolder
-            true,   // enableBallDetection
-            true,   // saveOriginalImages
-            true,   // saveDetectionImages
-            true,   // saveBallDetectorDebugImages
-            ""      // debugImagePath
+            1.0,    // 1 second capture duration
+            0,      // PNG format
+            90,     // 90% JPEG quality
+            true,   // Create metadata file
+            true,   // Use async saving for performance
+            ".",    // Current directory as base
+            true,   // Enable ball detection
+            true,   // Save original images
+            true,   // Save detection overlay images
+            true,   // Save debug images
+            ""      // No custom debug path
         );
     }
+#endif
 
-    const int SNAPSHOT_FORMAT = 0;                     // PNG
-    const int SNAPSHOT_QUALITY = 90;                   // 90% quality
+    // Snapshot default settings
+    const int SNAPSHOT_FORMAT = 0;      // PNG format
+    const int SNAPSHOT_QUALITY = 90;    // 90% quality for JPEG
 }
 
-static ContinuousCaptureConfig g_continuousCaptureConfig = CameraDefaults::CreateDefaultConfig();
+// ============================================================================
+// STATIC VARIABLES
+// ============================================================================
 
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+// Global default configuration for continuous capture
+static ContinuousCaptureConfig g_continuousCaptureConfig = CameraDefaults::CreateDefaultConfig();
+#endif
+
+// Global default settings for snapshots
 static SnapshotDefaults g_snapshotDefaults = {
     CameraDefaults::SNAPSHOT_FORMAT,
     CameraDefaults::SNAPSHOT_QUALITY
 };
 
+// ============================================================================
+// SYSTEM INITIALIZATION FUNCTIONS
+// ============================================================================
+
+// Initialize camera system and logging
 bool Camera_Initialize(const char* logPath, int logLevel) {
     try {
+        // Use default log path if none provided
         std::string path = logPath ? logPath : "XIMEASensor.log";
+
+        // Init logger
         Logger::GetInstance().Initialize(path, static_cast<LogLevel>(logLevel));
         LOG_INFO("XIMEASensor DLL initialized");
+
         return true;
     }
     catch (const std::exception& e) {
+        // Silent failure - can't log if logger failed to initialize
         return false;
     }
 }
 
+// Shutdown camera system
 void Camera_Shutdown() {
     LOG_INFO("XIMEASensor DLL shutting down");
 
+    // Destroy camera controller first
     try {
         CameraController::Destroy();
     }
@@ -79,6 +115,7 @@ void Camera_Shutdown() {
         LOG_ERROR("Unknown exception during CameraController::Destroy");
     }
 
+    // Then destroy logger
     try {
         Logger::Destroy();
     }
@@ -90,6 +127,11 @@ void Camera_Shutdown() {
     }
 }
 
+// ============================================================================
+// DEVICE MANAGEMENT FUNCTIONS
+// ============================================================================
+
+// Get number of connected XIMEA cameras
 int Camera_GetDeviceCount() {
     try {
         return CameraController::GetInstance().GetConnectedDeviceCount();
@@ -100,17 +142,22 @@ int Camera_GetDeviceCount() {
     }
 }
 
+// Get device information
 bool Camera_GetDeviceInfo(int index, char* name, int nameSize, char* serial, int serialSize) {
     try {
         std::string deviceName, deviceSerial;
+
+        // Get device info from controller
         if (!CameraController::GetInstance().GetDeviceInfo(index, deviceName, deviceSerial)) {
             return false;
         }
 
+        // Copy name if buffer provided
         if (name && nameSize > 0) {
             strncpy_s(name, nameSize, deviceName.c_str(), _TRUNCATE);
         }
 
+        // Copy serial if buffer provided
         if (serial && serialSize > 0) {
             strncpy_s(serial, serialSize, deviceSerial.c_str(), _TRUNCATE);
         }
@@ -123,6 +170,11 @@ bool Camera_GetDeviceInfo(int index, char* name, int nameSize, char* serial, int
     }
 }
 
+// ============================================================================
+// CAMERA CONTROL FUNCTIONS
+// ============================================================================
+
+// Open a camera device by index
 bool Camera_Open(int deviceIndex) {
     try {
         return CameraController::GetInstance().OpenCamera(deviceIndex);
@@ -133,6 +185,7 @@ bool Camera_Open(int deviceIndex) {
     }
 }
 
+// Close the currently open camera
 void Camera_Close() {
     try {
         CameraController::GetInstance().CloseCamera();
@@ -142,6 +195,7 @@ void Camera_Close() {
     }
 }
 
+// Start image acquisition
 bool Camera_Start() {
     try {
         return CameraController::GetInstance().StartCapture();
@@ -152,6 +206,7 @@ bool Camera_Start() {
     }
 }
 
+// Stop image acquisition
 void Camera_Stop() {
     try {
         CameraController::GetInstance().StopCapture();
@@ -161,6 +216,7 @@ void Camera_Stop() {
     }
 }
 
+// Pause or resume image acquisition
 bool Camera_Pause(bool pause) {
     try {
         CameraController::GetInstance().PauseCapture(pause);
@@ -172,6 +228,11 @@ bool Camera_Pause(bool pause) {
     }
 }
 
+// ============================================================================
+// IMAGE ACQUISITION FUNCTIONS
+// ============================================================================
+
+// Get the latest captured frame
 bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* height) {
     try {
         int w, h;
@@ -190,6 +251,11 @@ bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* hei
     }
 }
 
+// ============================================================================
+// CAMERA PARAMETER SETTERS
+// ============================================================================
+
+// Set camera exposure time
 bool Camera_SetExposure(int microsec) {
     try {
         return CameraController::GetInstance().SetExposure(microsec);
@@ -200,6 +266,7 @@ bool Camera_SetExposure(int microsec) {
     }
 }
 
+// Set camera gain
 bool Camera_SetGain(float gain) {
     try {
         return CameraController::GetInstance().SetGain(gain);
@@ -210,6 +277,7 @@ bool Camera_SetGain(float gain) {
     }
 }
 
+// Set region of interest (ROI)
 bool Camera_SetROI(int offsetX, int offsetY, int width, int height) {
     try {
         return CameraController::GetInstance().SetROI(offsetX, offsetY, width, height);
@@ -220,6 +288,7 @@ bool Camera_SetROI(int offsetX, int offsetY, int width, int height) {
     }
 }
 
+// Set camera frame rate
 bool Camera_SetFrameRate(float fps) {
     try {
         return CameraController::GetInstance().SetFrameRate(fps);
@@ -230,6 +299,7 @@ bool Camera_SetFrameRate(float fps) {
     }
 }
 
+// Enable or disable trigger mode
 bool Camera_SetTriggerMode(bool enabled) {
     try {
         return CameraController::GetInstance().SetTriggerMode(enabled);
@@ -240,6 +310,11 @@ bool Camera_SetTriggerMode(bool enabled) {
     }
 }
 
+// ============================================================================
+// CAMERA PARAMETER GETTERS
+// ============================================================================
+
+// Get current exposure time
 int Camera_GetExposure() {
     try {
         return CameraController::GetInstance().GetExposure();
@@ -250,6 +325,7 @@ int Camera_GetExposure() {
     }
 }
 
+// Get current gain value
 float Camera_GetGain() {
     try {
         return CameraController::GetInstance().GetGain();
@@ -260,10 +336,12 @@ float Camera_GetGain() {
     }
 }
 
+// Get current ROI settings
 bool Camera_GetROI(int* offsetX, int* offsetY, int* width, int* height) {
     try {
         auto& controller = CameraController::GetInstance();
 
+        // Return full frame dimensions (offsets always 0 in current implementation)
         if (offsetX) *offsetX = 0;
         if (offsetY) *offsetY = 0;
         if (width) *width = controller.GetWidth();
@@ -277,6 +355,7 @@ bool Camera_GetROI(int* offsetX, int* offsetY, int* width, int* height) {
     }
 }
 
+// Get current frame rate
 float Camera_GetFrameRate() {
     try {
         return CameraController::GetInstance().GetFrameRate();
@@ -287,6 +366,7 @@ float Camera_GetFrameRate() {
     }
 }
 
+// Get current camera state
 int Camera_GetState() {
     try {
         return static_cast<int>(CameraController::GetInstance().GetState());
@@ -297,11 +377,17 @@ int Camera_GetState() {
     }
 }
 
+// ============================================================================
+// STATISTICS AND MONITORING
+// ============================================================================
+
+// Get capture statistics
 bool Camera_GetStatistics(unsigned long* totalFrames, unsigned long* droppedFrames,
     double* averageFPS, double* minFPS, double* maxFPS) {
     try {
         auto stats = CameraController::GetInstance().GetStatistics();
 
+        // Copy statistics to output parameters
         if (totalFrames) *totalFrames = stats.totalFrames;
         if (droppedFrames) *droppedFrames = stats.droppedFrames;
         if (averageFPS) *averageFPS = stats.averageFPS;
@@ -316,6 +402,7 @@ bool Camera_GetStatistics(unsigned long* totalFrames, unsigned long* droppedFram
     }
 }
 
+// Reset capture statistics
 void Camera_ResetStatistics() {
     try {
         CameraController::GetInstance().ResetStatistics();
@@ -325,6 +412,11 @@ void Camera_ResetStatistics() {
     }
 }
 
+// ============================================================================
+// CALLBACK MANAGEMENT
+// ============================================================================
+
+// Register a callback for camera events
 bool Camera_RegisterCallback(IXIMEACallback* callback) {
     try {
         CameraController::GetInstance().RegisterCallback(callback);
@@ -336,6 +428,7 @@ bool Camera_RegisterCallback(IXIMEACallback* callback) {
     }
 }
 
+// Unregister a previously registered callback
 bool Camera_UnregisterCallback(IXIMEACallback* callback) {
     try {
         CameraController::GetInstance().UnregisterCallback(callback);
@@ -347,6 +440,7 @@ bool Camera_UnregisterCallback(IXIMEACallback* callback) {
     }
 }
 
+// Clear all registered callbacks
 void Camera_ClearCallbacks() {
     try {
         CameraController::GetInstance().ClearCallbacks();
@@ -356,28 +450,40 @@ void Camera_ClearCallbacks() {
     }
 }
 
+// ============================================================================
+// LOGGING CONTROL
+// ============================================================================
+
+// Set the logging level
 void Camera_SetLogLevel(int level) {
     try {
         Logger::GetInstance().SetLogLevel(static_cast<LogLevel>(level));
     }
     catch (const std::exception& e) {
-        // Silent fail
+        // Silent fail - can't log if logger is broken
     }
 }
 
+// Flush log buffer to file
 void Camera_FlushLog() {
     try {
         Logger::GetInstance().Flush();
     }
     catch (const std::exception& e) {
-        // Silent fail
+        // Silent fail - can't log if logger is broken
     }
 }
 
+// ============================================================================
+// IMAGE SAVING FUNCTIONS
+// ============================================================================
+
+// Save a snapshot of the current frame
 bool Camera_SaveSnapshot(const char* filename, int format, int quality) {
     try {
         auto& controller = CameraController::GetInstance();
 
+        // Get current frame dimensions
         int width, height;
         width = controller.GetWidth();
         height = controller.GetHeight();
@@ -387,11 +493,14 @@ bool Camera_SaveSnapshot(const char* filename, int format, int quality) {
             return false;
         }
 
+        // Allocate buffer for frame data
         size_t bufferSize = width * height;
         std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufferSize]);
 
+        // Get current frame
         bool result = controller.GetFrame(buffer.get(), bufferSize, width, height);
 
+        // Save to file if frame was retrieved successfully
         if (result) {
             result = ImageSaver::SaveGrayscaleImage(buffer.get(), width, height, filename,
                 static_cast<ImageFormat>(format), quality);
@@ -405,15 +514,18 @@ bool Camera_SaveSnapshot(const char* filename, int format, int quality) {
     }
 }
 
+// Save provided frame data to file
 bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize,
     int* width, int* height, const char* filename,
     int format, int quality) {
     try {
+        // Validate parameters
         if (!buffer || !width || !height || !filename) {
             LOG_ERROR("Invalid parameters");
             return false;
         }
 
+        // Save image using ImageSaver utility
         return ImageSaver::SaveGrayscaleImage(buffer, *width, *height, filename,
             static_cast<ImageFormat>(format), quality);
     }
@@ -423,6 +535,211 @@ bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize,
     }
 }
 
+// ============================================================================
+// DEFAULT SETTINGS MANAGEMENT
+// ============================================================================
+
+// Get default camera settings
+void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps) {
+    try {
+        if (exposureUs) *exposureUs = CameraDefaults::EXPOSURE_US;
+        if (gainDb) *gainDb = CameraDefaults::GAIN_DB;
+        if (fps) *fps = CameraDefaults::FRAMERATE_FPS;
+
+        LOG_DEBUG("Default settings requested: Exposure=" +
+            std::to_string(CameraDefaults::EXPOSURE_US) + "us, Gain=" +
+            std::to_string(CameraDefaults::GAIN_DB) + "dB, FPS=" +
+            std::to_string(CameraDefaults::FRAMERATE_FPS));
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetDefaultSettings: " + std::string(e.what()));
+    }
+}
+
+// Get default snapshot settings
+void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults) {
+    if (!defaults) {
+        LOG_ERROR("Invalid parameter: defaults is nullptr");
+        return;
+    }
+
+    *defaults = g_snapshotDefaults;
+    LOG_DEBUG("Retrieved snapshot defaults: format=" +
+        std::to_string(defaults->format) + ", quality=" +
+        std::to_string(defaults->quality));
+}
+
+// Set default snapshot settings
+void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults) {
+    if (!defaults) {
+        LOG_ERROR("Invalid parameter: defaults is nullptr");
+        return;
+    }
+
+    // Validate format
+    if (defaults->format < 0 || defaults->format > 1) {
+        LOG_ERROR("Invalid format: must be 0 (PNG) or 1 (JPG)");
+        return;
+    }
+
+    // Validate quality
+    if (defaults->quality < 1 || defaults->quality > 100) {
+        LOG_ERROR("Invalid quality: must be between 1 and 100");
+        return;
+    }
+
+    g_snapshotDefaults = *defaults;
+    LOG_INFO("Updated snapshot defaults: format=" +
+        std::to_string(defaults->format) + ", quality=" +
+        std::to_string(defaults->quality));
+}
+
+// Save snapshot using default settings
+bool Camera_SaveSnapshotWithDefaults(const char* filename) {
+    try {
+        if (!filename) {
+            LOG_ERROR("Invalid parameter: filename is nullptr");
+            return false;
+        }
+
+        return Camera_SaveSnapshot(filename,
+            g_snapshotDefaults.format,
+            g_snapshotDefaults.quality);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SaveSnapshotWithDefaults: " +
+            std::string(e.what()));
+        return false;
+    }
+}
+
+// ============================================================================
+// REAL-TIME BALL DETECTION FUNCTIONS
+// ============================================================================
+
+// Enable/disable real-time ball detection
+bool Camera_EnableRealtimeDetection(bool enable) {
+    try {
+        return CameraController::GetInstance().EnableRealtimeDetection(enable);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_EnableRealtimeDetection: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Check if real-time detection is enabled
+bool Camera_IsRealtimeDetectionEnabled() {
+    try {
+        return CameraController::GetInstance().IsRealtimeDetectionEnabled();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_IsRealtimeDetectionEnabled: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Set callback for real-time detection results
+void Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* userContext) {
+    try {
+        // Store callback globally
+        g_realtimeDetectionCallback = callback;
+        g_realtimeDetectionContext = userContext;
+
+        // Pass to controller
+        CameraController::GetInstance().SetRealtimeDetectionCallback(callback, userContext);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetRealtimeDetectionCallback: " + std::string(e.what()));
+    }
+}
+
+// Get the most recent detection result
+bool Camera_GetLastDetectionResult(RealtimeDetectionResult* result) {
+    try {
+        if (!result) {
+            LOG_ERROR("Invalid parameter: result is nullptr");
+            return false;
+        }
+
+        return CameraController::GetInstance().GetLastDetectionResult(result);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetLastDetectionResult: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Set ROI scale for real-time detection
+bool Camera_SetRealtimeDetectionROI(float roiScale) {
+    try {
+        // Validate ROI scale
+        if (roiScale <= 0.0f || roiScale > 1.0f) {
+            LOG_ERROR("Invalid ROI scale: " + std::to_string(roiScale));
+            return false;
+        }
+
+        return CameraController::GetInstance().SetRealtimeDetectionROI(roiScale);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetRealtimeDetectionROI: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Set downscale factor for real-time detection
+bool Camera_SetRealtimeDetectionDownscale(int factor) {
+    try {
+        // Validate downscale factor
+        if (factor < 1 || factor > 4) {
+            LOG_ERROR("Invalid downscale factor: " + std::to_string(factor));
+            return false;
+        }
+
+        return CameraController::GetInstance().SetRealtimeDetectionDownscale(factor);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetRealtimeDetectionDownscale: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Set maximum candidates for real-time detection
+bool Camera_SetRealtimeDetectionMaxCandidates(int maxCandidates) {
+    try {
+        // Validate candidate count
+        if (maxCandidates < 1 || maxCandidates > 50) {
+            LOG_ERROR("Invalid max candidates: " + std::to_string(maxCandidates));
+            return false;
+        }
+
+        return CameraController::GetInstance().SetRealtimeDetectionMaxCandidates(maxCandidates);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetRealtimeDetectionMaxCandidates: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Get real-time detection statistics
+void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS) {
+    try {
+        CameraController::GetInstance().GetRealtimeDetectionStats(processedFrames, avgProcessingTimeMs, detectionFPS);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetRealtimeDetectionStats: " + std::string(e.what()));
+    }
+}
+
+
+
+// ============================================================================
+// CONTINUOUS CAPTURE FUNCTIONS (Conditional Compilation)
+// ============================================================================
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+
+// Set continuous capture configuration
 bool Camera_SetContinuousCaptureConfig(const ContinuousCaptureConfig* config) {
     try {
         if (!config) {
@@ -436,7 +753,7 @@ bool Camera_SetContinuousCaptureConfig(const ContinuousCaptureConfig* config) {
             return false;
         }
 
-        // Validate configuration
+        // Validate configuration parameters
         if (config->durationSeconds <= 0 || config->durationSeconds > 3600) {
             LOG_ERROR("Invalid duration: " + std::to_string(config->durationSeconds));
             return false;
@@ -452,6 +769,7 @@ bool Camera_SetContinuousCaptureConfig(const ContinuousCaptureConfig* config) {
             return false;
         }
 
+        // Apply configuration
         captureManager->SetConfig(*config);
 
         LOG_INFO("Continuous capture config set successfully");
@@ -467,6 +785,7 @@ bool Camera_SetContinuousCaptureConfig(const ContinuousCaptureConfig* config) {
     }
 }
 
+// Get current continuous capture configuration
 bool Camera_GetContinuousCaptureConfig(ContinuousCaptureConfig* config) {
     try {
         if (!config) {
@@ -489,6 +808,7 @@ bool Camera_GetContinuousCaptureConfig(ContinuousCaptureConfig* config) {
     }
 }
 
+// Start continuous capture session
 bool Camera_StartContinuousCapture() {
     try {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
@@ -497,11 +817,13 @@ bool Camera_StartContinuousCapture() {
             return false;
         }
 
+        // Camera must be actively capturing
         if (CameraController::GetInstance().GetState() != CameraState::CAPTURING) {
             LOG_ERROR("Camera must be capturing to start continuous capture");
             return false;
         }
 
+        // Reset if previous session completed or errored
         ContinuousCaptureState currentState = captureManager->GetState();
         if (currentState == ContinuousCaptureState::COMPLETED ||
             currentState == ContinuousCaptureState::kERROR) {
@@ -518,6 +840,7 @@ bool Camera_StartContinuousCapture() {
     }
 }
 
+// Stop ongoing continuous capture
 void Camera_StopContinuousCapture() {
     try {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
@@ -530,6 +853,7 @@ void Camera_StopContinuousCapture() {
     }
 }
 
+// Check if continuous capture is active
 bool Camera_IsContinuousCapturing() {
     try {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
@@ -541,11 +865,12 @@ bool Camera_IsContinuousCapturing() {
     }
 }
 
+// Get continuous capture state
 int Camera_GetContinuousCaptureState() {
     try {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
         if (!captureManager) {
-            return 0;  // IDLE
+            return 0;  // IDLE state
         }
         return static_cast<int>(captureManager->GetState());
     }
@@ -555,6 +880,7 @@ int Camera_GetContinuousCaptureState() {
     }
 }
 
+// Get results from continuous capture session
 bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames,
     int* droppedFrames, double* duration,
     char* folderPath, int pathSize) {
@@ -566,6 +892,7 @@ bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames,
 
         auto result = captureManager->GetResult();
 
+        // Copy results to output parameters
         if (totalFrames) *totalFrames = result.totalFrames;
         if (savedFrames) *savedFrames = result.savedFrames;
         if (droppedFrames) *droppedFrames = result.droppedFrames;
@@ -583,6 +910,7 @@ bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames,
     }
 }
 
+// Set callback for continuous capture progress
 void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFrame, double elapsedSeconds, int state)) {
     try {
         g_continuousProgressCallback = callback;
@@ -590,6 +918,7 @@ void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFram
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
         if (captureManager) {
             if (callback) {
+                // Wrap C callback in lambda for C++ interface
                 captureManager->SetProgressCallback(
                     [](int frame, double elapsed, ContinuousCaptureState state) {
                         if (g_continuousProgressCallback) {
@@ -607,22 +936,7 @@ void Camera_SetContinuousCaptureProgressCallback(void(*callback)(int currentFram
     }
 }
 
-void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps) {
-    try {
-        if (exposureUs) *exposureUs = CameraDefaults::EXPOSURE_US;
-        if (gainDb) *gainDb = CameraDefaults::GAIN_DB;
-        if (fps) *fps = CameraDefaults::FRAMERATE_FPS;
-
-        LOG_DEBUG("Default settings requested: Exposure=" +
-            std::to_string(CameraDefaults::EXPOSURE_US) + "us, Gain=" +
-            std::to_string(CameraDefaults::GAIN_DB) + "dB, FPS=" +
-            std::to_string(CameraDefaults::FRAMERATE_FPS));
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_GetDefaultSettings: " + std::string(e.what()));
-    }
-}
-
+// Get default continuous capture configuration
 void Camera_GetContinuousCaptureDefaults(ContinuousCaptureConfig* config) {
     if (!config) {
         LOG_ERROR("Invalid parameter: config is nullptr");
@@ -636,6 +950,7 @@ void Camera_GetContinuousCaptureDefaults(ContinuousCaptureConfig* config) {
         std::to_string(config->enableBallDetection));
 }
 
+// Set default continuous capture configuration
 void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureConfig* config) {
     if (!config) {
         LOG_ERROR("Invalid parameter: config is nullptr");
@@ -658,6 +973,7 @@ void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureConfig* config) 
         return;
     }
 
+    // Update global defaults
     g_continuousCaptureConfig = *config;
 
     LOG_INFO("Updated continuous capture defaults:");
@@ -671,40 +987,7 @@ void Camera_SetContinuousCaptureDefaults(const ContinuousCaptureConfig* config) 
     LOG_INFO("  Save Debug Images: " + std::string(g_continuousCaptureConfig.saveBallDetectorDebugImages ? "Yes" : "No"));
 }
 
-void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults) {
-    if (!defaults) {
-        LOG_ERROR("Invalid parameter: defaults is nullptr");
-        return;
-    }
-
-    *defaults = g_snapshotDefaults;
-    LOG_DEBUG("Retrieved snapshot defaults: format=" +
-        std::to_string(defaults->format) + ", quality=" +
-        std::to_string(defaults->quality));
-}
-
-void Camera_SetSnapshotDefaults(const SnapshotDefaults* defaults) {
-    if (!defaults) {
-        LOG_ERROR("Invalid parameter: defaults is nullptr");
-        return;
-    }
-
-    if (defaults->format < 0 || defaults->format > 1) {
-        LOG_ERROR("Invalid format: must be 0 (PNG) or 1 (JPG)");
-        return;
-    }
-
-    if (defaults->quality < 1 || defaults->quality > 100) {
-        LOG_ERROR("Invalid quality: must be between 1 and 100");
-        return;
-    }
-
-    g_snapshotDefaults = *defaults;
-    LOG_INFO("Updated snapshot defaults: format=" +
-        std::to_string(defaults->format) + ", quality=" +
-        std::to_string(defaults->quality));
-}
-
+// Start continuous capture with default settings
 bool Camera_StartContinuousCaptureWithDefaults() {
     try {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
@@ -713,6 +996,7 @@ bool Camera_StartContinuousCaptureWithDefaults() {
             return false;
         }
 
+        // Check and reset state if needed
         ContinuousCaptureState currentState = captureManager->GetState();
         LOG_INFO("Current capture state before start: " +
             std::to_string(static_cast<int>(currentState)));
@@ -723,12 +1007,13 @@ bool Camera_StartContinuousCaptureWithDefaults() {
             captureManager->Reset();
         }
 
-        // Set the default configuration
+        // Apply default configuration
         if (!Camera_SetContinuousCaptureConfig(&g_continuousCaptureConfig)) {
             LOG_ERROR("Failed to set continuous capture config with defaults");
             return false;
         }
 
+        // Start capture
         bool result = captureManager->StartCapture();
 
         if (result) {
@@ -748,24 +1033,7 @@ bool Camera_StartContinuousCaptureWithDefaults() {
     }
 }
 
-bool Camera_SaveSnapshotWithDefaults(const char* filename) {
-    try {
-        if (!filename) {
-            LOG_ERROR("Invalid parameter: filename is nullptr");
-            return false;
-        }
-
-        return Camera_SaveSnapshot(filename,
-            g_snapshotDefaults.format,
-            g_snapshotDefaults.quality);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_SaveSnapshotWithDefaults: " +
-            std::string(e.what()));
-        return false;
-    }
-}
-
+// Get ball detection results from continuous capture
 bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* totalBallsDetected,
     float* averageConfidence, char* detectionFolder, int folderSize) {
     try {
@@ -777,6 +1045,7 @@ bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* total
 
         auto result = captureManager->GetDetectionResult();
 
+        // Copy detection results
         if (framesWithBalls) *framesWithBalls = result.framesWithBall;
         if (totalBallsDetected) *totalBallsDetected = result.totalBallsDetected;
         if (averageConfidence) *averageConfidence = result.averageConfidence;
@@ -793,19 +1062,23 @@ bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* total
     }
 }
 
+// Enable/disable ball detector debug images
 bool Camera_SetBallDetectorDebugImages(bool enable) {
     try {
 #ifdef ENABLE_DEBUG_IMAGE_SAVING
+        // Update global default
         g_continuousCaptureConfig.saveBallDetectorDebugImages = enable;
 
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
         if (captureManager) {
+            // Update current configuration if not capturing
             if (!captureManager->IsCapturing()) {
                 auto config = captureManager->GetConfig();
                 config.saveBallDetectorDebugImages = enable;
                 captureManager->SetConfig(config);
             }
 
+            // Update ball detector directly
             auto* ballDetector = captureManager->GetBallDetector();
             if (ballDetector) {
                 auto params = ballDetector->GetParameters();
@@ -830,6 +1103,7 @@ bool Camera_SetBallDetectorDebugImages(bool enable) {
             LOG_INFO("Ball detector debug images disabled (compile-time disabled)");
         }
 
+        // Still update configuration for consistency
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
         if (captureManager && !captureManager->IsCapturing()) {
             auto config = captureManager->GetConfig();
@@ -846,6 +1120,7 @@ bool Camera_SetBallDetectorDebugImages(bool enable) {
     }
 }
 
+// Check if debug image saving is enabled
 bool Camera_GetBallDetectorDebugImages() {
     try {
         auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
@@ -862,105 +1137,4 @@ bool Camera_GetBallDetectorDebugImages() {
     }
 }
 
-
-// 2025-07-28: realTime ballDetect
-
-bool Camera_EnableRealtimeDetection(bool enable) {
-    try {
-        return CameraController::GetInstance().EnableRealtimeDetection(enable);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_EnableRealtimeDetection: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool Camera_IsRealtimeDetectionEnabled() {
-    try {
-        return CameraController::GetInstance().IsRealtimeDetectionEnabled();
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_IsRealtimeDetectionEnabled: " + std::string(e.what()));
-        return false;
-    }
-}
-
-void Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* userContext) {
-    try {
-        g_realtimeDetectionCallback = callback;
-        g_realtimeDetectionContext = userContext;
-        CameraController::GetInstance().SetRealtimeDetectionCallback(callback, userContext);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_SetRealtimeDetectionCallback: " + std::string(e.what()));
-    }
-}
-
-bool Camera_GetLastDetectionResult(RealtimeDetectionResult* result) {
-    try {
-        if (!result) {
-            LOG_ERROR("Invalid parameter: result is nullptr");
-            return false;
-        }
-
-        return CameraController::GetInstance().GetLastDetectionResult(result);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_GetLastDetectionResult: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool Camera_SetRealtimeDetectionROI(float roiScale) {
-    try {
-        if (roiScale <= 0.0f || roiScale > 1.0f) {
-            LOG_ERROR("Invalid ROI scale: " + std::to_string(roiScale));
-            return false;
-        }
-
-        return CameraController::GetInstance().SetRealtimeDetectionROI(roiScale);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_SetRealtimeDetectionROI: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool Camera_SetRealtimeDetectionDownscale(int factor) {
-    try {
-        if (factor < 1 || factor > 4) {
-            LOG_ERROR("Invalid downscale factor: " + std::to_string(factor));
-            return false;
-        }
-
-        return CameraController::GetInstance().SetRealtimeDetectionDownscale(factor);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_SetRealtimeDetectionDownscale: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool Camera_SetRealtimeDetectionMaxCandidates(int maxCandidates) {
-    try {
-        if (maxCandidates < 1 || maxCandidates > 50) {
-            LOG_ERROR("Invalid max candidates: " + std::to_string(maxCandidates));
-            return false;
-        }
-
-        return CameraController::GetInstance().SetRealtimeDetectionMaxCandidates(maxCandidates);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_SetRealtimeDetectionMaxCandidates: " + std::string(e.what()));
-        return false;
-    }
-}
-
-void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS) {
-    try {
-        CameraController::GetInstance().GetRealtimeDetectionStats(processedFrames, avgProcessingTimeMs, detectionFPS);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_GetRealtimeDetectionStats: " + std::string(e.what()));
-    }
-}
+#endif // ENABLE_CONTINUOUS_CAPTURE
