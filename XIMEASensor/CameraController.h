@@ -214,10 +214,11 @@ public:
     bool IsBallStateTrackingEnabled() const { return m_ballStateTrackingEnabled.load(); }
     BallState GetBallState() const;
     bool GetBallStateInfo(BallStateInfo* info) const;
+    void GetBallStateInfoInternal(BallStateInfo* info) const;
     bool SetBallStateConfig(const BallStateConfig& config);
     BallStateConfig GetBallStateConfig() const;
     void SetBallStateChangeCallback(BallStateChangeCallback callback, void* context);
-    //void ResetBallStateTracking();
+    void ResetBallStateTracking();
     int GetTimeInCurrentState() const;
     bool IsBallStable() const;
 };

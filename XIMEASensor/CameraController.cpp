@@ -5,6 +5,7 @@
 #include <cstring>
 #include <iomanip>
 #include <algorithm>
+#include <future>
 #include "XIMEASensor.h"
 #include "BallDetector.h"
 
@@ -69,47 +70,56 @@ CameraController::CameraController()
 CameraController::~CameraController() {
     LOG_INFO("CameraController destructor called");
 
-    // 2025-07-28: realTime ballDetect
-    if (m_detectionThreadRunning) {
-        m_detectionThreadRunning = false;
-        m_detectionCV.notify_all();
-        if (m_detectionThread.joinable()) {
-            m_detectionThread.join();
-        }
-    }
-
     try {
+        // 1. Ball state tracking 비활성화
+        if (m_ballStateTrackingEnabled.load()) {
+            m_ballStateTrackingEnabled = false;
+        }
+
+        // 2. Real-time detection 스레드 안전하게 종료
+        if (m_detectionThreadRunning.load()) {
+            m_detectionThreadRunning = false;
+            m_detectionCV.notify_all();
+
+            if (m_detectionThread.joinable()) {
+                // 최대 3초 대기
+                auto future = std::async(std::launch::async, [this] {
+                    m_detectionThread.join();
+                    });
+
+                if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout) {
+                    LOG_ERROR("Detection thread did not stop in time, forcing termination");
+                    // 강제 종료는 위험하므로 로그만 남김
+                }
+            }
+        }
+
+        // 3. 콜백 정리
         {
             std::lock_guard<std::mutex> lock(callbackMutex);
             callbacks.clear();
         }
 
+        // 4. 캡처 스레드 종료
         if (isRunning.load()) {
             isRunning = false;
 
             if (captureThread.joinable()) {
                 isPaused = false;
 
-                auto start = std::chrono::steady_clock::now();
-                while (captureThread.joinable()) {
-                    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
-                        LOG_ERROR("Capture thread did not stop in time");
-                        break;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-                    if (!captureThread.joinable()) {
-                        break;
-                    }
-
+                auto future = std::async(std::launch::async, [this] {
                     captureThread.join();
+                    });
+
+                if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout) {
+                    LOG_ERROR("Capture thread did not stop in time");
                 }
             }
         }
 
+        // 5. 카메라 하드웨어 정리
         if (xiH != nullptr) {
             XI_RETURN stat = xiStopAcquisition(xiH);
-
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             stat = xiCloseDevice(xiH);
@@ -119,18 +129,26 @@ CameraController::~CameraController() {
             xiH = nullptr;
         }
 
+        // 6. 메모리 정리
         {
             std::lock_guard<std::mutex> lock(frameMutex);
             if (frameBuffer) {
                 delete[] frameBuffer;
                 frameBuffer = nullptr;
             }
-
             if (workingBuffer) {
                 delete[] workingBuffer;
                 workingBuffer = nullptr;
             }
         }
+
+        // 7. Detection queue 정리
+        {
+            std::lock_guard<std::mutex> lock(m_detectionQueueMutex);
+            std::queue<std::pair<std::vector<unsigned char>, FrameInfo>> empty;
+            std::swap(m_detectionQueue, empty);
+        }
+
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in destructor: " + std::string(e.what()));
@@ -139,8 +157,9 @@ CameraController::~CameraController() {
         LOG_ERROR("Unknown exception in destructor");
     }
 
-    LOG_INFO("CameraController destroyed");
+    LOG_INFO("CameraController destroyed safely");
 }
+
 
 CameraController& CameraController::GetInstance() {
     std::lock_guard<std::mutex> lock(instanceMutex);
@@ -1268,132 +1287,158 @@ float CameraController::CalculateDistance(float x1, float y1, float x2, float y2
     return std::sqrt(dx * dx + dy * dy);
 }
 
+void CameraController::ResetBallStateTracking() {
+    {
+        std::lock_guard<std::mutex> lock(m_ballStateMutex);
+        ResetBallTracking();
+    }
+    LOG_INFO("Ball state tracking reset by user request");
+}
+
 void CameraController::ResetBallTracking() {
-    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    // mutex는 이미 잠겨있다고 가정
     m_ballTracking = BallTrackingData();
-    LOG_INFO("Ball tracking state reset");
 }
 
 void CameraController::NotifyBallStateChanged(BallState newState, BallState oldState) {
     if (m_ballStateCallback && m_ballStateConfig.enableStateCallback) {
         BallStateInfo info;
-        GetBallStateInfo(&info);
-        m_ballStateCallback(newState, oldState, &info, m_ballStateCallbackContext);
+        // 공개 API 사용 (적절한 락 보호)
+        if (GetBallStateInfo(&info)) {
+            try {
+                m_ballStateCallback(newState, oldState, &info, m_ballStateCallbackContext);
+            }
+            catch (const std::exception& e) {
+                LOG_ERROR("Exception in ball state change callback: " + std::string(e.what()));
+            }
+            catch (...) {
+                LOG_ERROR("Unknown exception in ball state change callback");
+            }
+        }
     }
 
-    LOG_INFO("Ball state changed: " + std::to_string(static_cast<int>(oldState)) +
-        " -> " + std::to_string(static_cast<int>(newState)));
+    LOG_INFO("Ball state changed: " + std::string(Camera_GetBallStateString(oldState)) +
+        " -> " + std::string(Camera_GetBallStateString(newState)));
 }
 
 void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
-    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    BallState previousState;
+    BallState newState;
+    bool stateChanged = false;
 
-    auto now = std::chrono::steady_clock::now();
-    BallState previousState = m_ballTracking.currentState;
+    {
+        std::lock_guard<std::mutex> lock(m_ballStateMutex);
 
-    if (!result || !result->ballFound || result->ballCount == 0) {
-        // No ball detected
-        if (m_ballTracking.isTracking) {
-            m_ballTracking.consecutiveDetections = 0;
-            m_ballTracking.isTracking = false;
-            m_ballTracking.previousState = m_ballTracking.currentState;
-            m_ballTracking.currentState = BallState::NOT_DETECTED;
-            m_ballTracking.lastStateChangeTime = now;
-        }
-    }
-    else {
-        // Ball detected
-        float currentX = result->balls[0].centerX;
-        float currentY = result->balls[0].centerY;
+        auto now = std::chrono::steady_clock::now();
+        previousState = m_ballTracking.currentState;
 
-        if (!m_ballTracking.isTracking) {
-            // Start new tracking
-            m_ballTracking.lastPositionX = currentX;
-            m_ballTracking.lastPositionY = currentY;
-            m_ballTracking.lastDetectionTime = now;
-            m_ballTracking.stableStartTime = now;
-            m_ballTracking.isTracking = true;
-            m_ballTracking.consecutiveDetections = 1;
-            m_ballTracking.previousState = m_ballTracking.currentState;
-            m_ballTracking.currentState = BallState::MOVING;
-            m_ballTracking.lastStateChangeTime = now;
+        if (!result || !result->ballFound || result->ballCount == 0) {
+            // No ball detected
+            if (m_ballTracking.isTracking) {
+                m_ballTracking.consecutiveDetections = 0;
+                m_ballTracking.isTracking = false;
+                m_ballTracking.previousState = m_ballTracking.currentState;
+                m_ballTracking.currentState = BallState::NOT_DETECTED;
+                m_ballTracking.lastStateChangeTime = now;
+            }
         }
         else {
-            // Continue tracking
-            float distance = CalculateDistance(
-                m_ballTracking.lastPositionX,
-                m_ballTracking.lastPositionY,
-                currentX,
-                currentY
-            );
+            // Ball detected
+            float currentX = result->balls[0].centerX;
+            float currentY = result->balls[0].centerY;
 
-            m_ballTracking.consecutiveDetections++;
-
-            if (distance > m_ballStateConfig.movementThreshold) {
-                // Ball is moving
-                if (m_ballTracking.currentState != BallState::MOVING) {
-                    m_ballTracking.previousState = m_ballTracking.currentState;
-                    m_ballTracking.currentState = BallState::MOVING;
-                    m_ballTracking.lastStateChangeTime = now;
-                }
+            if (!m_ballTracking.isTracking) {
+                // Start new tracking
+                m_ballTracking.lastPositionX = currentX;
+                m_ballTracking.lastPositionY = currentY;
+                m_ballTracking.lastDetectionTime = now;
                 m_ballTracking.stableStartTime = now;
-                m_ballTracking.lastPositionX = currentX;
-                m_ballTracking.lastPositionY = currentY;
-            }
-            else if (distance <= m_ballStateConfig.positionTolerance) {
-                // Ball is at same position
-                auto stableDuration = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.stableStartTime).count();
-
-                if (m_ballTracking.currentState == BallState::MOVING) {
-                    // Transition from moving to stabilizing
-                    m_ballTracking.previousState = m_ballTracking.currentState;
-                    m_ballTracking.currentState = BallState::STABILIZING;
-                    m_ballTracking.stableStartTime = now;
-                    m_ballTracking.lastStateChangeTime = now;
-                }
-                else if (m_ballTracking.currentState == BallState::STABILIZING) {
-                    // Check for READY transition
-                    if (stableDuration >= m_ballStateConfig.stableTimeMs &&
-                        m_ballTracking.consecutiveDetections >= m_ballStateConfig.minConsecutiveDetections) {
-                        m_ballTracking.previousState = m_ballTracking.currentState;
-                        m_ballTracking.currentState = BallState::READY;
-                        m_ballTracking.lastStateChangeTime = now;
-                    }
-                }
-                else if (m_ballTracking.currentState == BallState::READY) {
-                    // READY state
-                }
-
-                // Update position with small changes
-                m_ballTracking.lastPositionX = currentX;
-                m_ballTracking.lastPositionY = currentY;
+                m_ballTracking.isTracking = true;
+                m_ballTracking.consecutiveDetections = 1;
+                m_ballTracking.previousState = m_ballTracking.currentState;
+                m_ballTracking.currentState = BallState::MOVING;
+                m_ballTracking.lastStateChangeTime = now;
             }
             else {
-                // Small movement detected
-                if (m_ballTracking.currentState == BallState::READY ||
-                    m_ballTracking.currentState == BallState::STOPPED) {
-                    // Ball started moving again
-                    m_ballTracking.previousState = m_ballTracking.currentState;
-                    m_ballTracking.currentState = BallState::MOVING;
+                // Continue tracking
+                float distance = CalculateDistance(
+                    m_ballTracking.lastPositionX,
+                    m_ballTracking.lastPositionY,
+                    currentX,
+                    currentY
+                );
+
+                m_ballTracking.consecutiveDetections++;
+
+                if (distance > m_ballStateConfig.movementThreshold) {
+                    // Ball is moving
+                    if (m_ballTracking.currentState != BallState::MOVING) {
+                        m_ballTracking.previousState = m_ballTracking.currentState;
+                        m_ballTracking.currentState = BallState::MOVING;
+                        m_ballTracking.lastStateChangeTime = now;
+                    }
                     m_ballTracking.stableStartTime = now;
-                    m_ballTracking.lastStateChangeTime = now;
+                    m_ballTracking.lastPositionX = currentX;
+                    m_ballTracking.lastPositionY = currentY;
                 }
-                else if (m_ballTracking.currentState == BallState::STABILIZING) {
-                    // Restart stabilization
-                    m_ballTracking.stableStartTime = now;
+                else if (distance <= m_ballStateConfig.positionTolerance) {
+                    // Ball is at same position
+                    auto stableDuration = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.stableStartTime).count();
+
+                    if (m_ballTracking.currentState == BallState::MOVING) {
+                        // Transition from moving to stabilizing
+                        m_ballTracking.previousState = m_ballTracking.currentState;
+                        m_ballTracking.currentState = BallState::STABILIZING;
+                        m_ballTracking.stableStartTime = now;
+                        m_ballTracking.lastStateChangeTime = now;
+                    }
+                    else if (m_ballTracking.currentState == BallState::STABILIZING) {
+                        // Check for READY transition
+                        if (stableDuration >= m_ballStateConfig.stableTimeMs &&
+                            m_ballTracking.consecutiveDetections >= m_ballStateConfig.minConsecutiveDetections) {
+                            m_ballTracking.previousState = m_ballTracking.currentState;
+                            m_ballTracking.currentState = BallState::READY;
+                            m_ballTracking.lastStateChangeTime = now;
+                        }
+                    }
+                    else if (m_ballTracking.currentState == BallState::READY) {
+                        // READY state
+                    }
+
+                    // Update position with small changes
+                    m_ballTracking.lastPositionX = currentX;
+                    m_ballTracking.lastPositionY = currentY;
+                }
+                else {
+                    // Small movement detected
+                    if (m_ballTracking.currentState == BallState::READY ||
+                        m_ballTracking.currentState == BallState::STOPPED) {
+                        // Ball started moving again
+                        m_ballTracking.previousState = m_ballTracking.currentState;
+                        m_ballTracking.currentState = BallState::MOVING;
+                        m_ballTracking.stableStartTime = now;
+                        m_ballTracking.lastStateChangeTime = now;
+                    }
+                    else if (m_ballTracking.currentState == BallState::STABILIZING) {
+                        // Restart stabilization
+                        m_ballTracking.stableStartTime = now;
+                    }
+
+                    m_ballTracking.lastPositionX = currentX;
+                    m_ballTracking.lastPositionY = currentY;
                 }
 
-                m_ballTracking.lastPositionX = currentX;
-                m_ballTracking.lastPositionY = currentY;
+                m_ballTracking.lastDetectionTime = now;
             }
-
-            m_ballTracking.lastDetectionTime = now;
         }
-    }
 
-    // Notify if state changed
-    if (previousState != m_ballTracking.currentState) {
-        NotifyBallStateChanged(m_ballTracking.currentState, previousState);
+        newState = m_ballTracking.currentState;
+        stateChanged = (previousState != newState);
+    } // 여기서 mutex lock 해제됨
+
+    // 락 해제 후 콜백 호출 (데드락 방지)
+    if (stateChanged) {
+        NotifyBallStateChanged(newState, previousState);
     }
 }
 
@@ -1432,11 +1477,18 @@ BallState CameraController::GetBallState() const {
 }
 
 bool CameraController::GetBallStateInfo(BallStateInfo* info) const {
-    if (!info) return false;
-    
-    // 2025-07-30: 이거 추가하면 Abort 에러 뜸.
-    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    if (!info) {
+        return false;
+    }
 
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    GetBallStateInfoInternal(info);
+    return true;
+}
+
+// 내부용 락 없는 버전 (private 메서드)
+void CameraController::GetBallStateInfoInternal(BallStateInfo* info) const {
+    // mutex는 이미 잠겨있다고 가정
     info->currentState = m_ballTracking.currentState;
     info->previousState = m_ballTracking.previousState;
     info->lastPositionX = m_ballTracking.lastPositionX;
@@ -1449,42 +1501,52 @@ bool CameraController::GetBallStateInfo(BallStateInfo* info) const {
         m_ballTracking.currentState == BallState::READY ||
         m_ballTracking.currentState == BallState::STOPPED) {
         auto now = std::chrono::steady_clock::now();
-        info->stableDurationMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.stableStartTime).count());
+        info->stableDurationMs = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - m_ballTracking.stableStartTime).count());
     }
     else {
         info->stableDurationMs = 0;
     }
 
     // Last state change time
-    info->lastStateChangeTime = std::chrono::duration<double>(m_ballTracking.lastStateChangeTime.time_since_epoch()).count();
-
-    return true;
+    info->lastStateChangeTime = std::chrono::duration<double>(
+        m_ballTracking.lastStateChangeTime.time_since_epoch()).count();
 }
 
 bool CameraController::SetBallStateConfig(const BallStateConfig& config) {
-    std::lock_guard<std::mutex> lock(m_ballStateMutex);
-
-    // Validate configuration
+    // Validate configuration first (without lock)
     if (config.positionTolerance <= 0 || config.movementThreshold <= 0 ||
         config.stableTimeMs <= 0 || config.minConsecutiveDetections <= 0) {
         LOG_ERROR("Invalid ball state configuration");
         return false;
     }
 
-    m_ballStateConfig = config;
+    {
+        std::lock_guard<std::mutex> lock(m_ballStateMutex);
+        m_ballStateConfig = config;
+    }
+
     LOG_INFO("Ball state configuration updated");
     return true;
 }
 
 BallStateConfig CameraController::GetBallStateConfig() const {
     std::lock_guard<std::mutex> lock(m_ballStateMutex);
-    return m_ballStateConfig;
+    return m_ballStateConfig;  // 복사본 반환으로 안전
 }
 
 void CameraController::SetBallStateChangeCallback(BallStateChangeCallback callback, void* context) {
     std::lock_guard<std::mutex> lock(m_ballStateMutex);
     m_ballStateCallback = callback;
     m_ballStateCallbackContext = context;
+
+    if (callback) {
+        LOG_INFO("Ball state change callback registered");
+    }
+    else {
+        LOG_INFO("Ball state change callback cleared");
+    }
 }
 
 int CameraController::GetTimeInCurrentState() const {
