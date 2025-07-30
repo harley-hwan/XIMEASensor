@@ -54,12 +54,27 @@ private:
     std::unique_ptr<CameraCallback> m_cameraCallback;
     std::atomic<bool> m_isStreaming;
 
-    // Frame buffer
-    CRITICAL_SECTION m_frameCriticalSection;
-    unsigned char* m_pDisplayBuffer;
-    int m_displayWidth;
-    int m_displayHeight;
-    bool m_hasNewFrame;
+    // Triple buffering for smooth display
+    struct FrameBuffer {
+        unsigned char* data;
+        int width;
+        int height;
+        std::atomic<bool> ready;
+
+        FrameBuffer() : data(nullptr), width(0), height(0), ready(false) {}
+        ~FrameBuffer() { if (data) delete[] data; }
+    };
+
+    FrameBuffer m_frameBuffers[3];  // Triple buffering
+    std::atomic<int> m_writeBufferIndex;
+    std::atomic<int> m_readBufferIndex;
+    std::atomic<int> m_displayBufferIndex;
+
+    // Frame skip logic
+    std::atomic<int> m_pendingFrameUpdates;
+    std::chrono::steady_clock::time_point m_lastFrameDrawTime;
+    static constexpr int MAX_PENDING_FRAMES = 2;
+    static constexpr int MIN_FRAME_INTERVAL_MS = 16; // ~60 FPS max for UI
 
     // FPS 계산
     std::chrono::steady_clock::time_point m_lastFPSUpdate;
@@ -76,6 +91,12 @@ private:
     CRITICAL_SECTION m_detectionCriticalSection;
     std::chrono::steady_clock::time_point m_lastDetectionStatsUpdate;
 
+    // USB 상태 모니터링
+    std::atomic<int> m_usbErrorCount;
+    std::chrono::steady_clock::time_point m_lastUSBError;
+    static constexpr int MAX_USB_ERRORS = 3;
+    static constexpr int USB_ERROR_RESET_TIME_MS = 5000;
+
     // 정적 콜백 함수
     static void RealtimeDetectionCallback(const RealtimeDetectionResult* result, void* userContext);
     static void ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state);
@@ -89,6 +110,11 @@ private:
     void ShowError(const CString& message);
     void SyncSlidersWithCamera();
     void LoadDefaultSettings();
+    void InitializeFrameBuffers();
+    void SwapBuffers();
+    bool ShouldSkipFrame();
+    void HandleUSBError();
+    void ResetUSBErrorCount();
 
     // Callback handlers
     void OnFrameReceivedCallback(const FrameInfo& frameInfo);

@@ -375,9 +375,15 @@ void CameraController::CaptureLoop() {
     auto frameInterval = std::chrono::microseconds((int)(1000000.0f / currentFrameRate));
     auto nextFrameTime = std::chrono::steady_clock::now();
 
+    // Reduced timeout for better USB recovery
+    const int IMAGE_TIMEOUT_MS = 50;  // Reduced from 100ms
+    int consecutiveTimeouts = 0;
+    const int MAX_CONSECUTIVE_TIMEOUTS = 10;
+
     while (isRunning.load()) {
         if (isPaused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            consecutiveTimeouts = 0;
             continue;
         }
 
@@ -387,10 +393,11 @@ void CameraController::CaptureLoop() {
         }
         nextFrameTime += frameInterval;
 
-        XI_RETURN stat = xiGetImage(xiH, 100, &image);
+        XI_RETURN stat = xiGetImage(xiH, IMAGE_TIMEOUT_MS, &image);
 
         if (stat == XI_OK) {
             deviceNotReadyCount = 0;
+            consecutiveTimeouts = 0;
 
             auto frameTime = std::chrono::steady_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -424,7 +431,7 @@ void CameraController::CaptureLoop() {
             frameInfo.gain_db = image.gain_db;
             frameInfo.format = image.frm;
 
-            // copy frame buffer
+            // Use lock-free approach for frame buffer update
             {
                 std::lock_guard<std::mutex> lock(frameMutex);
 
@@ -447,33 +454,33 @@ void CameraController::CaptureLoop() {
                 m_continuousCapture->ProcessFrame(frameBuffer, width, height);
             }
 
-            // add to detection queue
+            // Add to detection queue with non-blocking approach
             if (m_realtimeDetectionEnabled.load()) {
-                std::unique_lock<std::mutex> queueLock(m_detectionQueueMutex);
+                std::unique_lock<std::mutex> queueLock(m_detectionQueueMutex, std::try_to_lock);
 
-                // queue size limit 5
-                if (m_detectionQueue.size() < 5) {
+                if (queueLock.owns_lock() && m_detectionQueue.size() < 5) {
                     std::vector<unsigned char> frameData(imageSize);
                     memcpy(frameData.data(), image.bp, imageSize);
                     m_detectionQueue.push({ std::move(frameData), frameInfo });
                     m_detectionCV.notify_one();
                 }
-                else {
-                    // queue is full
-                    static auto lastQueueFullLog = std::chrono::steady_clock::now();
-                    auto now = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::seconds>(now - lastQueueFullLog).count() >= 1) {
-                        LOG_WARNING("Realtime detection queue full, dropping frame");
-                        lastQueueFullLog = now;
-                    }
-                }
             }
 
-            // 콜백 호출
             NotifyFrameReceived(frameInfo);
             UpdateStatistics(true);
         }
         else if (stat == XI_TIMEOUT) {
+            consecutiveTimeouts++;
+
+            // If too many consecutive timeouts, might be USB issue
+            if (consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
+                LOG_WARNING("Multiple consecutive timeouts detected");
+                consecutiveTimeouts = 0;
+
+                // Brief pause to allow USB recovery
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+
             deviceNotReadyCount = 0;
             UpdateStatistics(false);
         }
@@ -496,6 +503,8 @@ void CameraController::CaptureLoop() {
                 break;
             }
 
+            // Brief pause to allow device recovery
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             UpdateStatistics(false);
         }
         else {
@@ -503,6 +512,9 @@ void CameraController::CaptureLoop() {
             NotifyError(static_cast<CameraError>(stat),
                 "Frame grab error: " + GetXiApiErrorString(stat));
             UpdateStatistics(false);
+
+            // Brief pause on error
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
     }
 
@@ -1086,43 +1098,43 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
 // worker thread
 void CameraController::RealtimeDetectionWorker() {
     LOG_INFO("Realtime detection thread started");
-    
+
     while (m_detectionThreadRunning.load()) {
         std::unique_lock<std::mutex> lock(m_detectionQueueMutex);
-        
+
         m_detectionCV.wait(lock, [this] {
             return !m_detectionQueue.empty() || !m_detectionThreadRunning.load();
-        });
-        
+            });
+
         while (!m_detectionQueue.empty()) {
             auto item = std::move(m_detectionQueue.front());
             m_detectionQueue.pop();
             lock.unlock();
-            
+
             auto startTime = std::chrono::high_resolution_clock::now();
-            
+
             ProcessRealtimeDetection(
                 item.first.data(),
                 item.second.width,
                 item.second.height,
                 item.second.frameNumber
             );
-            
+
             auto endTime = std::chrono::high_resolution_clock::now();
             double processingTime = std::chrono::duration<double, std::milli>(endTime - startTime).count();
-            
+
             // statistics update - thread-safe
             m_realtimeProcessedFrames.fetch_add(1);
-            
+
             {
                 std::lock_guard<std::mutex> statsLock(m_realtimeStatsMutex);
                 m_realtimeTotalProcessingTime += processingTime;
             }
-            
+
             lock.lock();
         }
     }
-    
+
     LOG_INFO("Realtime detection thread ended");
 }
 

@@ -11,23 +11,24 @@
 #endif
 
 #define TIMER_UPDATE_STATISTICS 1001
+#define TIMER_FRAME_UPDATE 1002
 
 CXIMEASensorDiagDlg* CXIMEASensorDiagDlg::s_pThis = nullptr;
 
 CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
     : CDialogEx(IDD_XIMEASENSORDIAG_DIALOG, pParent),
     m_isStreaming(false),
-    m_pDisplayBuffer(nullptr),
-    m_displayWidth(0),
-    m_displayHeight(0),
-    m_hasNewFrame(false),
     m_frameCount(0),
     m_currentFPS(0.0),
     m_defaultExposureUs(4000),
     m_defaultGainDb(0.0f),
-    m_defaultFps(60.0f)
+    m_defaultFps(60.0f),
+    m_writeBufferIndex(0),
+    m_readBufferIndex(1),
+    m_displayBufferIndex(2),
+    m_pendingFrameUpdates(0),
+    m_usbErrorCount(0)
 {
-    InitializeCriticalSection(&m_frameCriticalSection);
     InitializeCriticalSection(&m_detectionCriticalSection);
     m_cameraCallback = std::make_unique<CameraCallback>();
     memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
@@ -36,11 +37,19 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
 
 CXIMEASensorDiagDlg::~CXIMEASensorDiagDlg()
 {
-    if (m_pDisplayBuffer) {
-        delete[] m_pDisplayBuffer;
-    }
-    DeleteCriticalSection(&m_frameCriticalSection);
     DeleteCriticalSection(&m_detectionCriticalSection);
+}
+
+void CXIMEASensorDiagDlg::InitializeFrameBuffers()
+{
+    size_t maxBufferSize = 2048 * 2048;
+    for (int i = 0; i < 3; i++) {
+        if (m_frameBuffers[i].data == nullptr) {
+            m_frameBuffers[i].data = new unsigned char[maxBufferSize];
+            memset(m_frameBuffers[i].data, 0, maxBufferSize);
+        }
+        m_frameBuffers[i].ready = false;
+    }
 }
 
 void CXIMEASensorDiagDlg::DoDataExchange(CDataExchange* pDX)
@@ -59,25 +68,23 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_BN_CLICKED(IDC_BUTTON_REFRESH, &CXIMEASensorDiagDlg::OnBnClickedButtonRefresh)
     ON_BN_CLICKED(IDC_BUTTON_SNAPSHOT, &CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot)
     ON_BN_CLICKED(IDC_BUTTON_SETTINGS, &CXIMEASensorDiagDlg::OnBnClickedButtonSettings)
-    ON_BN_CLICKED(IDC_CHECK_REALTIME_DETECTION, &CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection)    // 2025-07-28
+    ON_BN_CLICKED(IDC_CHECK_REALTIME_DETECTION, &CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection)
     ON_CBN_SELCHANGE(IDC_COMBO_DEVICES, &CXIMEASensorDiagDlg::OnCbnSelchangeComboDevices)
     ON_MESSAGE(WM_UPDATE_FRAME, &CXIMEASensorDiagDlg::OnUpdateFrame)
     ON_MESSAGE(WM_UPDATE_STATUS, &CXIMEASensorDiagDlg::OnUpdateStatus)
     ON_MESSAGE(WM_UPDATE_ERROR, &CXIMEASensorDiagDlg::OnUpdateError)
     ON_MESSAGE(WM_UPDATE_FPS, &CXIMEASensorDiagDlg::OnUpdateFPS)
     ON_MESSAGE(WM_CONTINUOUS_CAPTURE_COMPLETE, &CXIMEASensorDiagDlg::OnContinuousCaptureComplete)
-    ON_MESSAGE(WM_UPDATE_BALL_DETECTION, &CXIMEASensorDiagDlg::OnUpdateBallDetection)   // 2025-07-28
+    ON_MESSAGE(WM_UPDATE_BALL_DETECTION, &CXIMEASensorDiagDlg::OnUpdateBallDetection)
     ON_EN_CHANGE(IDC_EDIT_EXPOSURE, &CXIMEASensorDiagDlg::OnEnChangeEditExposure)
     ON_EN_CHANGE(IDC_EDIT_GAIN, &CXIMEASensorDiagDlg::OnEnChangeEditGain)
     ON_EN_CHANGE(IDC_EDIT_FRAMERATE, &CXIMEASensorDiagDlg::OnEnChangeEditFramerate)
 END_MESSAGE_MAP()
 
-
 void CXIMEASensorDiagDlg::LoadDefaultSettings()
 {
     Camera_GetDefaultSettings(&m_defaultExposureUs, &m_defaultGainDb, &m_defaultFps);
 }
-
 
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
 {
@@ -106,12 +113,10 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     m_sliderFramerate = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_FRAMERATE);
     m_comboDevices = (CComboBox*)GetDlgItem(IDC_COMBO_DEVICES);
 
-    // Get Edit Control pointers
     m_editExposure = (CEdit*)GetDlgItem(IDC_EDIT_EXPOSURE);
     m_editGain = (CEdit*)GetDlgItem(IDC_EDIT_GAIN);
     m_editFramerate = (CEdit*)GetDlgItem(IDC_EDIT_FRAMERATE);
 
-    // 2025-07-28: realTime ballDetect
     m_checkRealtimeDetection = (CButton*)GetDlgItem(IDC_CHECK_REALTIME_DETECTION);
     if (m_checkRealtimeDetection) {
         m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
@@ -186,13 +191,12 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
 
     Camera_RegisterCallback(m_cameraCallback.get());
 
-    size_t maxBufferSize = 2048 * 2048;
-    m_pDisplayBuffer = new unsigned char[maxBufferSize];
-    memset(m_pDisplayBuffer, 0, maxBufferSize);
+    InitializeFrameBuffers();
 
     UpdateDeviceList();
     UpdateUI(false);
     SetTimer(TIMER_UPDATE_STATISTICS, 1000, nullptr);
+    SetTimer(TIMER_FRAME_UPDATE, 33, nullptr); // 30 FPS UI update
 
     return TRUE;
 }
@@ -201,17 +205,16 @@ void CXIMEASensorDiagDlg::OnDestroy()
 {
     CDialogEx::OnDestroy();
 
-    // 2025-07-28: realTime ballDetect
     if (Camera_IsRealtimeDetectionEnabled()) {
         Camera_EnableRealtimeDetection(false);
     }
     Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
-    //
 
     Camera_SetContinuousCaptureProgressCallback(nullptr);
     s_pThis = nullptr;
 
     KillTimer(TIMER_UPDATE_STATISTICS);
+    KillTimer(TIMER_FRAME_UPDATE);
 
     if (m_isStreaming) {
         Camera_Stop();
@@ -299,8 +302,9 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
 
     m_frameCount = 0;
     m_lastFPSUpdate = std::chrono::steady_clock::now();
+    m_lastFrameDrawTime = std::chrono::steady_clock::now();
+    ResetUSBErrorCount();
 }
-
 
 void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
 {
@@ -336,10 +340,8 @@ void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
     }
 }
 
-
 void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
 {
-    // 2025-07-28: realTime ballDetect 
     if (Camera_IsRealtimeDetectionEnabled()) {
         Camera_EnableRealtimeDetection(false);
         Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
@@ -348,7 +350,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
             m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
         }
     }
-    //
 
     if (Camera_IsContinuousCapturing()) {
         Camera_StopContinuousCapture();
@@ -386,7 +387,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
     BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
 
     if (isContinuous) {
-        // Continuous capture mode
         ContinuousCaptureConfig config;
         Camera_GetContinuousCaptureDefaults(&config);
 
@@ -400,7 +400,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         config.imageFormat = (result == IDYES) ? 0 : 1;
         Camera_SetContinuousCaptureDefaults(&config);
 
-        // Set progress callback
         Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
 
         TRACE(_T("Starting continuous capture for %.1f seconds with ball detection\n"), config.durationSeconds);
@@ -424,7 +423,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         }
     }
     else {
-        // Single snapshot mode
         SnapshotDefaults defaults;
         Camera_GetSnapshotDefaults(&defaults);
 
@@ -438,7 +436,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         defaults.format = (result == IDYES) ? 0 : 1;
         Camera_SetSnapshotDefaults(&defaults);
 
-        // Generate filename with timestamp
         SYSTEMTIME st;
         GetLocalTime(&st);
         CString filename;
@@ -466,8 +463,6 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
         }
     }
 }
-
-
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
 {
@@ -596,30 +591,83 @@ void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
             }
         }
     }
+    else if (nIDEvent == TIMER_FRAME_UPDATE) {
+        // Redraw frame if there's a pending update
+        if (m_pendingFrameUpdates > 0) {
+            DrawFrame();
+        }
+    }
 
     CDialogEx::OnTimer(nIDEvent);
 }
 
+bool CXIMEASensorDiagDlg::ShouldSkipFrame()
+{
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_lastFrameDrawTime).count();
+
+    // Skip frame if too many pending or too soon since last draw
+    if (m_pendingFrameUpdates > MAX_PENDING_FRAMES ||
+        elapsed < MIN_FRAME_INTERVAL_MS) {
+        return true;
+    }
+
+    return false;
+}
+
+void CXIMEASensorDiagDlg::SwapBuffers()
+{
+    // Rotate buffer indices for triple buffering
+    int oldWrite = m_writeBufferIndex.load();
+    int oldRead = m_readBufferIndex.load();
+    int oldDisplay = m_displayBufferIndex.load();
+
+    m_displayBufferIndex = oldRead;
+    m_readBufferIndex = oldWrite;
+    m_writeBufferIndex = oldDisplay;
+}
+
 void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
 {
-    EnterCriticalSection(&m_frameCriticalSection);
-
-    int requiredSize = frameInfo.width * frameInfo.height;
-    if (requiredSize > 1280 * 960) {
-        delete[] m_pDisplayBuffer;
-        m_pDisplayBuffer = new unsigned char[requiredSize];
+    // Skip frame if we're falling behind
+    if (ShouldSkipFrame()) {
+        return;
     }
 
-    if (frameInfo.data && requiredSize > 0) {
-        memcpy(m_pDisplayBuffer, frameInfo.data, requiredSize);
-        m_displayWidth = frameInfo.width;
-        m_displayHeight = frameInfo.height;
-        m_hasNewFrame = true;
+    // Get the write buffer
+    int writeIdx = m_writeBufferIndex.load();
+    FrameBuffer& writeBuffer = m_frameBuffers[writeIdx];
+
+    // Only update if buffer is not being read
+    if (!writeBuffer.ready.exchange(false)) {
+        int requiredSize = frameInfo.width * frameInfo.height;
+
+        // Reallocate if necessary
+        if (requiredSize > 1280 * 960) {
+            delete[] writeBuffer.data;
+            writeBuffer.data = new unsigned char[requiredSize];
+        }
+
+        if (frameInfo.data && requiredSize > 0) {
+            memcpy(writeBuffer.data, frameInfo.data, requiredSize);
+            writeBuffer.width = frameInfo.width;
+            writeBuffer.height = frameInfo.height;
+        }
+
+        writeBuffer.ready = true;
+
+        // Swap buffers
+        SwapBuffers();
+
+        // Post update message only if not too many pending
+        if (m_pendingFrameUpdates.fetch_add(1) < MAX_PENDING_FRAMES) {
+            PostMessage(WM_UPDATE_FRAME);
+        }
+        else {
+            m_pendingFrameUpdates.fetch_sub(1);
+        }
     }
-
-    LeaveCriticalSection(&m_frameCriticalSection);
-
-    PostMessage(WM_UPDATE_FRAME);
 
     // Update FPS display
     m_frameCount++;
@@ -657,8 +705,49 @@ void CXIMEASensorDiagDlg::OnStateChangedCallback(CameraState newState, CameraSta
     PostMessage(WM_UPDATE_STATUS, 0, (LPARAM)pMsg);
 }
 
+void CXIMEASensorDiagDlg::HandleUSBError()
+{
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_lastUSBError).count();
+
+    // Reset error count if enough time has passed
+    if (elapsed > USB_ERROR_RESET_TIME_MS) {
+        m_usbErrorCount = 0;
+    }
+
+    m_lastUSBError = now;
+    m_usbErrorCount++;
+
+    // If too many errors, stop and restart
+    if (m_usbErrorCount >= MAX_USB_ERRORS) {
+        TRACE(_T("Too many USB errors. Attempting to restart camera...\n"));
+
+        // Post stop and restart messages
+        PostMessage(WM_COMMAND, MAKEWPARAM(IDC_BUTTON_STOP, BN_CLICKED), 0);
+
+        // Set timer to restart after a delay
+        SetTimer(3000, 2000, nullptr); // Timer ID 3000, 2 second delay
+    }
+}
+
+void CXIMEASensorDiagDlg::ResetUSBErrorCount()
+{
+    m_usbErrorCount = 0;
+    m_lastUSBError = std::chrono::steady_clock::now();
+}
+
 void CXIMEASensorDiagDlg::OnErrorCallback(CameraError error, const std::string& errorMessage)
 {
+    // Handle USB-related errors
+    if (error == CameraError::DEVICE_NOT_READY ||
+        error == CameraError::TIMEOUT ||
+        errorMessage.find("USB") != std::string::npos ||
+        errorMessage.find("Device not ready") != std::string::npos) {
+
+        HandleUSBError();
+    }
+
     if (errorMessage.find("Camera disconnected") != std::string::npos) {
         PostMessage(WM_COMMAND, MAKEWPARAM(IDC_BUTTON_STOP, BN_CLICKED), 0);
     }
@@ -676,6 +765,14 @@ void CXIMEASensorDiagDlg::OnPropertyChangedCallback(const std::string& propertyN
 
 LRESULT CXIMEASensorDiagDlg::OnUpdateFrame(WPARAM wParam, LPARAM lParam)
 {
+    // Decrement pending count
+    m_pendingFrameUpdates.fetch_sub(1);
+
+    // Don't draw if minimized
+    if (IsIconic()) {
+        return 0;
+    }
+
     DrawFrame();
     return 0;
 }
@@ -704,7 +801,7 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateFPS(WPARAM wParam, LPARAM lParam)
 {
     double fps = lParam / 10.0;
     CString str;
-    str.Format(_T("%.1f"), fps);    // FPS: %.1f
+    str.Format(_T("%.1f"), fps);
 
     if (m_staticFPS) {
         m_staticFPS->SetWindowText(str);
@@ -720,21 +817,27 @@ void CXIMEASensorDiagDlg::DrawFrame()
     CRect rect;
     m_pictureCtrl->GetClientRect(&rect);
 
-    EnterCriticalSection(&m_frameCriticalSection);
+    // Get display buffer
+    int displayIdx = m_displayBufferIndex.load();
+    FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
 
-    if (m_pDisplayBuffer && m_displayWidth > 0 && m_displayHeight > 0) {
+    if (displayBuffer.ready && displayBuffer.data &&
+        displayBuffer.width > 0 && displayBuffer.height > 0) {
+
+        // Mark last draw time
+        m_lastFrameDrawTime = std::chrono::steady_clock::now();
 
         size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD);
         BITMAPINFO* pBmpInfo = (BITMAPINFO*)malloc(bmpInfoSize);
         memset(pBmpInfo, 0, bmpInfoSize);
 
         pBmpInfo->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        pBmpInfo->bmiHeader.biWidth = m_displayWidth;
-        pBmpInfo->bmiHeader.biHeight = -m_displayHeight;  // Top-down DIB
+        pBmpInfo->bmiHeader.biWidth = displayBuffer.width;
+        pBmpInfo->bmiHeader.biHeight = -displayBuffer.height;  // Top-down DIB
         pBmpInfo->bmiHeader.biPlanes = 1;
         pBmpInfo->bmiHeader.biBitCount = 8;
         pBmpInfo->bmiHeader.biCompression = BI_RGB;
-        pBmpInfo->bmiHeader.biSizeImage = m_displayWidth * m_displayHeight;
+        pBmpInfo->bmiHeader.biSizeImage = displayBuffer.width * displayBuffer.height;
         pBmpInfo->bmiHeader.biXPelsPerMeter = 0;
         pBmpInfo->bmiHeader.biYPelsPerMeter = 0;
         pBmpInfo->bmiHeader.biClrUsed = 256;
@@ -753,8 +856,8 @@ void CXIMEASensorDiagDlg::DrawFrame()
 
         int result = StretchDIBits(dc.GetSafeHdc(),
             0, 0, rect.Width(), rect.Height(),
-            0, 0, m_displayWidth, m_displayHeight,
-            m_pDisplayBuffer,
+            0, 0, displayBuffer.width, displayBuffer.height,
+            displayBuffer.data,
             pBmpInfo,
             DIB_RGB_COLORS,
             SRCCOPY);
@@ -767,19 +870,23 @@ void CXIMEASensorDiagDlg::DrawFrame()
         SetStretchBltMode(dc.GetSafeHdc(), oldStretchMode);
 
         free(pBmpInfo);
-    }
 
-    LeaveCriticalSection(&m_frameCriticalSection);
-
-    // 검출 결과 오버레이 그리기
-    if (Camera_IsRealtimeDetectionEnabled()) {
-        DrawDetectionOverlay(dc, rect);
+        // Draw detection overlay if enabled
+        if (Camera_IsRealtimeDetectionEnabled()) {
+            DrawDetectionOverlay(dc, rect);
+        }
     }
 }
 
-
 void CXIMEASensorDiagDlg::ShowError(const CString& message)
 {
+    // Avoid showing message box if it's a recoverable USB error
+    if (message.Find(_T("Device not ready")) != -1 ||
+        message.Find(_T("USB")) != -1) {
+        TRACE(_T("Recoverable error: %s\n"), message.GetString());
+        return;
+    }
+
     MessageBox(message, _T("Camera Error"), MB_OK | MB_ICONERROR);
 }
 
@@ -791,10 +898,7 @@ void CXIMEASensorDiagDlg::OnPaint()
     }
     else {
         CDialogEx::OnPaint();
-
-        if (m_hasNewFrame) {
-            DrawFrame();
-        }
+        DrawFrame();
     }
 }
 
@@ -802,7 +906,6 @@ HCURSOR CXIMEASensorDiagDlg::OnQueryDragIcon()
 {
     return static_cast<HCURSOR>(AfxGetApp()->LoadStandardIcon(IDI_APPLICATION));
 }
-
 
 void CXIMEASensorDiagDlg::ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state)
 {
@@ -813,8 +916,6 @@ void CXIMEASensorDiagDlg::ContinuousCaptureProgressCallback(int currentFrame, do
 
 void CXIMEASensorDiagDlg::OnContinuousCaptureProgress(int currentFrame, double elapsedSeconds, int state)
 {
-    // State: 0=IDLE, 1=CAPTURING, 2=STOPPING, 3=COMPLETED, 4=ERROR
-
     if (state == 1) {  // CAPTURING
         CString status;
         status.Format(_T("Continuous capture: %d frames (%.1f sec)"), currentFrame, elapsedSeconds);
@@ -889,7 +990,6 @@ LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM l
     return 0;
 }
 
-
 void CXIMEASensorDiagDlg::OnEnChangeEditExposure()
 {
     if (!m_editExposure || !m_sliderExposure) return;
@@ -915,7 +1015,6 @@ void CXIMEASensorDiagDlg::OnEnChangeEditGain()
     m_editGain->GetWindowText(str);
     float gain = (float)_ttof(str);
 
-    // Validate range
     if (gain >= CameraDefaults::MIN_GAIN_DB && gain <= CameraDefaults::MAX_GAIN_DB) {
         m_sliderGain->SetPos((int)(gain * 10));
 
@@ -956,7 +1055,6 @@ void CXIMEASensorDiagDlg::OnEnChangeEditFramerate()
     }
 }
 
-
 void CXIMEASensorDiagDlg::RealtimeDetectionCallback(const RealtimeDetectionResult* result, void* userContext)
 {
     CXIMEASensorDiagDlg* pDlg = static_cast<CXIMEASensorDiagDlg*>(userContext);
@@ -964,7 +1062,6 @@ void CXIMEASensorDiagDlg::RealtimeDetectionCallback(const RealtimeDetectionResul
         pDlg->OnRealtimeDetectionResult(result);
     }
 }
-
 
 void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResult* result)
 {
@@ -975,7 +1072,6 @@ void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResul
     PostMessage(WM_UPDATE_BALL_DETECTION);
 }
 
-// checkBox handler for realTiem detect
 void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
 {
     if (!m_checkRealtimeDetection || !m_isStreaming) return;
@@ -983,10 +1079,8 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
     BOOL isChecked = (m_checkRealtimeDetection->GetCheck() == BST_CHECKED);
 
     if (isChecked) {
-        // set realTime detect callback
         Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback, this);
 
-        // start realTime detect
         if (Camera_EnableRealtimeDetection(true)) {
             m_lastDetectionStatsUpdate = std::chrono::steady_clock::now();
 
@@ -1002,7 +1096,6 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
         }
     }
     else {
-        // stop realTime detect
         Camera_EnableRealtimeDetection(false);
         Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
 
@@ -1056,7 +1149,6 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
         }
     }
 
-    // Detection FPS update (every 1 sec)
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_lastDetectionStatsUpdate).count();
@@ -1077,16 +1169,8 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
         m_lastDetectionStatsUpdate = now;
     }
 
-    // invalidate for Overlay
-    if (m_pictureCtrl) {
-        CRect rect;
-        m_pictureCtrl->GetClientRect(&rect);
-        m_pictureCtrl->InvalidateRect(&rect, FALSE);
-    }
-
     return 0;
 }
-
 
 void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
 {
@@ -1096,8 +1180,16 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
     LeaveCriticalSection(&m_detectionCriticalSection);
 
     if (result.ballFound && result.ballCount > 0) {
-        float scaleX = (float)rect.Width() / m_displayWidth;
-        float scaleY = (float)rect.Height() / m_displayHeight;
+        // Get display buffer dimensions for proper scaling
+        int displayIdx = m_displayBufferIndex.load();
+        FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
+
+        if (displayBuffer.width == 0 || displayBuffer.height == 0) {
+            return;
+        }
+
+        float scaleX = (float)rect.Width() / displayBuffer.width;
+        float scaleY = (float)rect.Height() / displayBuffer.height;
 
         CPen redPen(PS_SOLID, 3, RGB(255, 0, 0));
         CPen* pOldPen = dc.SelectObject(&redPen);
@@ -1108,10 +1200,8 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
             int y = (int)(result.balls[i].centerY * scaleY);
             int radius = (int)(result.balls[i].radius * scaleX);
 
-            // draw circle
             dc.Ellipse(x - radius, y - radius, x + radius, y + radius);
 
-            // centor point
             CPen yellowPen(PS_SOLID, 2, RGB(255, 255, 0));
             dc.SelectObject(&yellowPen);
             dc.MoveTo(x - 5, y);
@@ -1120,7 +1210,6 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
             dc.LineTo(x, y + 5);
             dc.SelectObject(&redPen);
 
-            // print confidence
             if (result.balls[i].confidence > 0.8f) {
                 CString confStr;
                 confStr.Format(_T("%.0f%%"), result.balls[i].confidence * 100);
