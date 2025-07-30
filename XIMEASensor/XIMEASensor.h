@@ -9,8 +9,56 @@
 #include "IXIMEACallback.h"
 #include <string>
 
-// Enable/Disable continuous capture functionality
 
+// ============================================================================
+// BALL STATE TRACKING ENUMS AND STRUCTURES: 2025-07-30 Added
+// ============================================================================
+
+// Ball state enumeration
+enum class XIMEASENSOR_API BallState {
+    NOT_DETECTED = 0,   // No ball detected
+    MOVING = 1,         // Ball is moving
+    STABILIZING = 2,    // Ball is stabilizing (slowing down)
+    READY = 3,          // Ball has been stable for required duration
+    STOPPED = 4         // Ball is stopped (after READY state)
+};
+
+// Ball state tracking configuration
+struct XIMEASENSOR_API BallStateConfig {
+    float positionTolerance;      // Position tolerance in pixels (default: 5.0)
+    float movementThreshold;      // Movement detection threshold in pixels (default: 10.0)
+    int stableTimeMs;            // Time required for READY state in ms (default: 3000)
+    int minConsecutiveDetections; // Minimum consecutive detections required (default: 5)
+    bool enableStateCallback;     // Enable state change callbacks (default: true)
+
+    // Default constructor with standard values
+    BallStateConfig()
+        : positionTolerance(5.0f)
+        , movementThreshold(10.0f)
+        , stableTimeMs(3000)
+        , minConsecutiveDetections(5)
+        , enableStateCallback(true) {
+    }
+};
+
+// Ball state information
+struct XIMEASENSOR_API BallStateInfo {
+    BallState currentState;          // Current ball state
+    BallState previousState;         // Previous ball state
+    float lastPositionX;            // Last detected X position
+    float lastPositionY;            // Last detected Y position
+    int stableDurationMs;           // Duration in stable position (ms)
+    int consecutiveDetections;      // Number of consecutive detections
+    bool isTracking;                // Currently tracking a ball
+    double lastStateChangeTime;     // Timestamp of last state change
+};
+
+// Callback for ball state changes
+typedef void(*BallStateChangeCallback)(BallState newState, BallState oldState, const BallStateInfo* info, void* userContext);
+
+// --------------------------------------------------------
+
+// Enable/Disable continuous capture functionality
 #ifdef ENABLE_CONTINUOUS_CAPTURE
 
  // Configuration structure for continuous capture operations
@@ -69,6 +117,7 @@ struct XIMEASENSOR_API ContinuousCaptureConfig {
     }
 };
 #endif // ENABLE_CONTINUOUS_CAPTURE
+
 
 // ============================================================================
 // CAMERA DEFAULT SETTINGS
@@ -379,4 +428,43 @@ extern "C" {
 
     /// Get real-time detection statistics
     XIMEASENSOR_API void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS);
+
+
+
+    // ------------------------------------------------------------------------
+    // Ball State Tracking Functions: 2025-07-30
+    // ------------------------------------------------------------------------
+
+    // Enable/disable ball state tracking
+    XIMEASENSOR_API bool Camera_EnableBallStateTracking(bool enable);
+
+    // Check if ball state tracking is enabled
+    XIMEASENSOR_API bool Camera_IsBallStateTrackingEnabled();
+
+    // Get current ball state
+    XIMEASENSOR_API BallState Camera_GetBallState();
+
+    // Get detailed ball state information
+    XIMEASENSOR_API bool Camera_GetBallStateInfo(BallStateInfo* info);
+
+    // Set ball state tracking configuration
+    XIMEASENSOR_API bool Camera_SetBallStateConfig(const BallStateConfig* config);
+
+    // Get current ball state tracking configuration
+    XIMEASENSOR_API bool Camera_GetBallStateConfig(BallStateConfig* config);
+
+    // Set callback for ball state changes
+    XIMEASENSOR_API void Camera_SetBallStateChangeCallback(BallStateChangeCallback callback, void* userContext);
+
+    // Reset ball state tracking
+    XIMEASENSOR_API void Camera_ResetBallStateTracking();
+
+    // Get ball state as string
+    XIMEASENSOR_API const char* Camera_GetBallStateString(BallState state);
+
+    // Get time in current state (milliseconds)
+    XIMEASENSOR_API int Camera_GetTimeInCurrentState();
+
+    // Check if ball is in stable state (READY or STOPPED)
+    XIMEASENSOR_API bool Camera_IsBallStable();
 }

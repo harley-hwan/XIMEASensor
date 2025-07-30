@@ -1,4 +1,4 @@
-#include "pch.h"
+Ôªø#include "pch.h"
 #include "CameraController.h"
 #include <algorithm>
 #include <sstream>
@@ -22,14 +22,17 @@ CameraController::CameraController()
     currentExposure(CameraDefaults::EXPOSURE_US),
     currentGain(CameraDefaults::GAIN_DB),
     currentState(CameraState::DISCONNECTED),
-
-	// realTime detection
+    // realTime detection
     m_realtimeDetectionEnabled(false),
     m_realtimeCallback(nullptr),
     m_realtimeCallbackContext(nullptr),
     m_detectionThreadRunning(false),
     m_realtimeProcessedFrames(0),
-    m_realtimeTotalProcessingTime(0.0) {
+    m_realtimeTotalProcessingTime(0.0),
+    // ball state tracking
+    m_ballStateTrackingEnabled(false),
+    m_ballStateCallback(nullptr),
+    m_ballStateCallbackContext(nullptr) {
 
     size_t bufferSize = width * height;
     frameBuffer = new unsigned char[bufferSize];
@@ -41,10 +44,9 @@ CameraController::CameraController()
     m_continuousCapture = std::make_unique<ContinuousCaptureManager>();
 #endif
 
-    // Ω«Ω√∞£ ∞À√‚øÎ BallDetector ª˝º∫
     m_realtimeBallDetector = std::make_unique<BallDetector>();
 
-    // Ω«Ω√∞£ ∞À√‚øÎ √÷¿˚»≠ º≥¡§
+    // Ïã§ÏãúÍ∞Ñ Í≤ÄÏ∂úÏö© ÏµúÏ†ÅÌôî ÏÑ§Ï†ï
     BallDetector::DetectionParams params;
     params.fastMode = true;
     params.useROI = true;
@@ -57,7 +59,11 @@ CameraController::CameraController()
 
     memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
 
-    LOG_INFO("CameraController initialized");
+    // Initialize ball state tracking
+    m_ballStateConfig = BallStateConfig();
+    m_ballTracking = BallTrackingData();
+
+    LOG_INFO("CameraController initialized with ball state tracking support");
 }
 
 CameraController::~CameraController() {
@@ -1167,6 +1173,12 @@ void CameraController::ProcessRealtimeDetection(const unsigned char* data, int w
         m_lastDetectionResult = detectionResult;
     }
 
+    // Update ball state if tracking is enabled
+    if (m_ballStateTrackingEnabled.load()) {
+        UpdateBallState(&detectionResult);
+    }
+
+    // Call real-time detection callback
     if (m_realtimeCallback) {
         m_realtimeCallback(&detectionResult, m_realtimeCallbackContext);
     }
@@ -1241,4 +1253,252 @@ void CameraController::GetRealtimeDetectionStats(int* processedFrames, double* a
         if (avgProcessingTimeMs) *avgProcessingTimeMs = 0.0;
         if (detectionFPS) *detectionFPS = 0.0;
     }
+}
+
+
+
+//========================================================
+// Ball state tracking methods : 2025-07-30
+//========================================================
+
+// Ball state tracking implementation
+float CameraController::CalculateDistance(float x1, float y1, float x2, float y2) {
+    float dx = x2 - x1;
+    float dy = y2 - y1;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+void CameraController::ResetBallTracking() {
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    m_ballTracking = BallTrackingData();
+    LOG_INFO("Ball tracking state reset");
+}
+
+void CameraController::NotifyBallStateChanged(BallState newState, BallState oldState) {
+    if (m_ballStateCallback && m_ballStateConfig.enableStateCallback) {
+        BallStateInfo info;
+        GetBallStateInfo(&info);
+        m_ballStateCallback(newState, oldState, &info, m_ballStateCallbackContext);
+    }
+
+    LOG_INFO("Ball state changed: " + std::to_string(static_cast<int>(oldState)) +
+        " -> " + std::to_string(static_cast<int>(newState)));
+}
+
+void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+
+    auto now = std::chrono::steady_clock::now();
+    BallState previousState = m_ballTracking.currentState;
+
+    if (!result || !result->ballFound || result->ballCount == 0) {
+        // No ball detected
+        if (m_ballTracking.isTracking) {
+            m_ballTracking.consecutiveDetections = 0;
+            m_ballTracking.isTracking = false;
+            m_ballTracking.previousState = m_ballTracking.currentState;
+            m_ballTracking.currentState = BallState::NOT_DETECTED;
+            m_ballTracking.lastStateChangeTime = now;
+        }
+    }
+    else {
+        // Ball detected
+        float currentX = result->balls[0].centerX;
+        float currentY = result->balls[0].centerY;
+
+        if (!m_ballTracking.isTracking) {
+            // Start new tracking
+            m_ballTracking.lastPositionX = currentX;
+            m_ballTracking.lastPositionY = currentY;
+            m_ballTracking.lastDetectionTime = now;
+            m_ballTracking.stableStartTime = now;
+            m_ballTracking.isTracking = true;
+            m_ballTracking.consecutiveDetections = 1;
+            m_ballTracking.previousState = m_ballTracking.currentState;
+            m_ballTracking.currentState = BallState::MOVING;
+            m_ballTracking.lastStateChangeTime = now;
+        }
+        else {
+            // Continue tracking
+            float distance = CalculateDistance(
+                m_ballTracking.lastPositionX,
+                m_ballTracking.lastPositionY,
+                currentX,
+                currentY
+            );
+
+            m_ballTracking.consecutiveDetections++;
+
+            if (distance > m_ballStateConfig.movementThreshold) {
+                // Ball is moving
+                if (m_ballTracking.currentState != BallState::MOVING) {
+                    m_ballTracking.previousState = m_ballTracking.currentState;
+                    m_ballTracking.currentState = BallState::MOVING;
+                    m_ballTracking.lastStateChangeTime = now;
+                }
+                m_ballTracking.stableStartTime = now;
+                m_ballTracking.lastPositionX = currentX;
+                m_ballTracking.lastPositionY = currentY;
+            }
+            else if (distance <= m_ballStateConfig.positionTolerance) {
+                // Ball is at same position
+                auto stableDuration = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.stableStartTime).count();
+
+                if (m_ballTracking.currentState == BallState::MOVING) {
+                    // Transition from moving to stabilizing
+                    m_ballTracking.previousState = m_ballTracking.currentState;
+                    m_ballTracking.currentState = BallState::STABILIZING;
+                    m_ballTracking.stableStartTime = now;
+                    m_ballTracking.lastStateChangeTime = now;
+                }
+                else if (m_ballTracking.currentState == BallState::STABILIZING) {
+                    // Check for READY transition
+                    if (stableDuration >= m_ballStateConfig.stableTimeMs &&
+                        m_ballTracking.consecutiveDetections >= m_ballStateConfig.minConsecutiveDetections) {
+                        m_ballTracking.previousState = m_ballTracking.currentState;
+                        m_ballTracking.currentState = BallState::READY;
+                        m_ballTracking.lastStateChangeTime = now;
+                    }
+                }
+                else if (m_ballTracking.currentState == BallState::READY) {
+                    // READY state
+                }
+
+                // Update position with small changes
+                m_ballTracking.lastPositionX = currentX;
+                m_ballTracking.lastPositionY = currentY;
+            }
+            else {
+                // Small movement detected
+                if (m_ballTracking.currentState == BallState::READY ||
+                    m_ballTracking.currentState == BallState::STOPPED) {
+                    // Ball started moving again
+                    m_ballTracking.previousState = m_ballTracking.currentState;
+                    m_ballTracking.currentState = BallState::MOVING;
+                    m_ballTracking.stableStartTime = now;
+                    m_ballTracking.lastStateChangeTime = now;
+                }
+                else if (m_ballTracking.currentState == BallState::STABILIZING) {
+                    // Restart stabilization
+                    m_ballTracking.stableStartTime = now;
+                }
+
+                m_ballTracking.lastPositionX = currentX;
+                m_ballTracking.lastPositionY = currentY;
+            }
+
+            m_ballTracking.lastDetectionTime = now;
+        }
+    }
+
+    // Notify if state changed
+    if (previousState != m_ballTracking.currentState) {
+        NotifyBallStateChanged(m_ballTracking.currentState, previousState);
+    }
+}
+
+// Ball state tracking public methods
+bool CameraController::EnableBallStateTracking(bool enable) {
+    if (enable == m_ballStateTrackingEnabled.load()) {
+        return true;
+    }
+
+    if (enable) {
+        // Enable real-time detection if not already enabled
+        if (!m_realtimeDetectionEnabled.load()) {
+            LOG_WARNING("Ball state tracking requires real-time detection. Enabling it automatically.");
+            if (!EnableRealtimeDetection(true)) {
+                LOG_ERROR("Failed to enable real-time detection for ball state tracking");
+                return false;
+            }
+        }
+
+        ResetBallTracking();
+        m_ballStateTrackingEnabled = true;
+        LOG_INFO("Ball state tracking enabled");
+    }
+    else {
+        m_ballStateTrackingEnabled = false;
+        ResetBallTracking();
+        LOG_INFO("Ball state tracking disabled");
+    }
+
+    return true;
+}
+
+BallState CameraController::GetBallState() const {
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    return m_ballTracking.currentState;
+}
+
+bool CameraController::GetBallStateInfo(BallStateInfo* info) const {
+    if (!info) return false;
+    
+    // 2025-07-30: Ïù¥Í±∞ Ï∂îÍ∞ÄÌïòÎ©¥ Abort ÏóêÎü¨ Îú∏.
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+
+    info->currentState = m_ballTracking.currentState;
+    info->previousState = m_ballTracking.previousState;
+    info->lastPositionX = m_ballTracking.lastPositionX;
+    info->lastPositionY = m_ballTracking.lastPositionY;
+    info->consecutiveDetections = m_ballTracking.consecutiveDetections;
+    info->isTracking = m_ballTracking.isTracking;
+
+    // Calculate stable duration
+    if (m_ballTracking.currentState == BallState::STABILIZING ||
+        m_ballTracking.currentState == BallState::READY ||
+        m_ballTracking.currentState == BallState::STOPPED) {
+        auto now = std::chrono::steady_clock::now();
+        info->stableDurationMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.stableStartTime).count());
+    }
+    else {
+        info->stableDurationMs = 0;
+    }
+
+    // Last state change time
+    info->lastStateChangeTime = std::chrono::duration<double>(m_ballTracking.lastStateChangeTime.time_since_epoch()).count();
+
+    return true;
+}
+
+bool CameraController::SetBallStateConfig(const BallStateConfig& config) {
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+
+    // Validate configuration
+    if (config.positionTolerance <= 0 || config.movementThreshold <= 0 ||
+        config.stableTimeMs <= 0 || config.minConsecutiveDetections <= 0) {
+        LOG_ERROR("Invalid ball state configuration");
+        return false;
+    }
+
+    m_ballStateConfig = config;
+    LOG_INFO("Ball state configuration updated");
+    return true;
+}
+
+BallStateConfig CameraController::GetBallStateConfig() const {
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    return m_ballStateConfig;
+}
+
+void CameraController::SetBallStateChangeCallback(BallStateChangeCallback callback, void* context) {
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    m_ballStateCallback = callback;
+    m_ballStateCallbackContext = context;
+}
+
+int CameraController::GetTimeInCurrentState() const {
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+
+    auto now = std::chrono::steady_clock::now();
+    return static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_ballTracking.lastStateChangeTime).count()
+        );
+}
+
+bool CameraController::IsBallStable() const {
+    std::lock_guard<std::mutex> lock(m_ballStateMutex);
+    return (m_ballTracking.currentState == BallState::READY ||
+        m_ballTracking.currentState == BallState::STOPPED);
 }

@@ -32,6 +32,13 @@
 #define IDC_STATIC_BALL_INFO            1027
 #define IDC_STATIC_DETECTION_FPS        1028
 
+#define IDC_STATIC_BALL_STATE           1050
+#define IDC_STATIC_STATE_TIME           1051
+#define IDC_STATIC_STABLE_TIME          1052
+#define IDC_BUTTON_RESET_TRACKING       1053
+#define IDC_BUTTON_CONFIGURE_TRACKING   1054
+
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED

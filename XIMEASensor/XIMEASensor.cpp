@@ -732,6 +732,160 @@ void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessin
 }
 
 
+// ============================================================================
+// BALL STATE TRACKING FUNCTIONS
+// ============================================================================
+
+// Enable/disable ball state tracking
+bool Camera_EnableBallStateTracking(bool enable) {
+    try {
+        return CameraController::GetInstance().EnableBallStateTracking(enable);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_EnableBallStateTracking: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Check if ball state tracking is enabled
+bool Camera_IsBallStateTrackingEnabled() {
+    try {
+        return CameraController::GetInstance().IsBallStateTrackingEnabled();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_IsBallStateTrackingEnabled: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Get current ball state
+BallState Camera_GetBallState() {
+    try {
+        return CameraController::GetInstance().GetBallState();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetBallState: " + std::string(e.what()));
+        return BallState::NOT_DETECTED;
+    }
+}
+
+// Get detailed ball state information
+bool Camera_GetBallStateInfo(BallStateInfo* info) {
+    try {
+        if (!info) {
+            LOG_ERROR("Invalid parameter: info is nullptr");
+            return false;
+        }
+
+        return CameraController::GetInstance().GetBallStateInfo(info);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetBallStateInfo: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Set ball state tracking configuration
+bool Camera_SetBallStateConfig(const BallStateConfig* config) {
+    try {
+        if (!config) {
+            LOG_ERROR("Invalid parameter: config is nullptr");
+            return false;
+        }
+
+        return CameraController::GetInstance().SetBallStateConfig(*config);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetBallStateConfig: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Get current ball state tracking configuration
+bool Camera_GetBallStateConfig(BallStateConfig* config) {
+    try {
+        if (!config) {
+            LOG_ERROR("Invalid parameter: config is nullptr");
+            return false;
+        }
+
+        *config = CameraController::GetInstance().GetBallStateConfig();
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetBallStateConfig: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Set callback for ball state changes
+void Camera_SetBallStateChangeCallback(BallStateChangeCallback callback, void* userContext) {
+    try {
+        CameraController::GetInstance().SetBallStateChangeCallback(callback, userContext);
+
+        if (callback) {
+            LOG_INFO("Ball state change callback registered");
+        }
+        else {
+            LOG_INFO("Ball state change callback cleared");
+        }
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetBallStateChangeCallback: " + std::string(e.what()));
+    }
+}
+
+// Reset ball state tracking
+void Camera_ResetBallStateTracking() {
+    try {
+        //CameraController::GetInstance().ResetBallStateTracking();
+        LOG_INFO("Ball state tracking reset");
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_ResetBallStateTracking: " + std::string(e.what()));
+    }
+}
+
+// Get ball state as string
+const char* Camera_GetBallStateString(BallState state) {
+    switch (state) {
+    case BallState::NOT_DETECTED:
+        return "NOT_DETECTED";
+    case BallState::MOVING:
+        return "MOVING";
+    case BallState::STABILIZING:
+        return "STABILIZING";
+    case BallState::READY:
+        return "READY";
+    case BallState::STOPPED:
+        return "STOPPED";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+// Get time in current state (milliseconds)
+int Camera_GetTimeInCurrentState() {
+    try {
+        return CameraController::GetInstance().GetTimeInCurrentState();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetTimeInCurrentState: " + std::string(e.what()));
+        return 0;
+    }
+}
+
+// Check if ball is in stable state (READY or STOPPED)
+bool Camera_IsBallStable() {
+    try {
+        return CameraController::GetInstance().IsBallStable();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_IsBallStable: " + std::string(e.what()));
+        return false;
+    }
+}
+
 
 // ============================================================================
 // CONTINUOUS CAPTURE FUNCTIONS (Conditional Compilation)

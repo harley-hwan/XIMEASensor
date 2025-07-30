@@ -79,6 +79,10 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_EN_CHANGE(IDC_EDIT_EXPOSURE, &CXIMEASensorDiagDlg::OnEnChangeEditExposure)
     ON_EN_CHANGE(IDC_EDIT_GAIN, &CXIMEASensorDiagDlg::OnEnChangeEditGain)
     ON_EN_CHANGE(IDC_EDIT_FRAMERATE, &CXIMEASensorDiagDlg::OnEnChangeEditFramerate)
+    // 2025-07-30
+    ON_BN_CLICKED(IDC_BUTTON_RESET_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking)
+    ON_BN_CLICKED(IDC_BUTTON_CONFIGURE_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking)
+    ON_MESSAGE(WM_UPDATE_BALL_STATE, &CXIMEASensorDiagDlg::OnUpdateBallState)
 END_MESSAGE_MAP()
 
 void CXIMEASensorDiagDlg::LoadDefaultSettings()
@@ -125,6 +129,17 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     m_staticBallPosition = (CStatic*)GetDlgItem(IDC_STATIC_BALL_POSITION);
     m_staticBallInfo = (CStatic*)GetDlgItem(IDC_STATIC_BALL_INFO);
     m_staticDetectionFPS = (CStatic*)GetDlgItem(IDC_STATIC_DETECTION_FPS);
+
+    // 2025-07-30: 볼 상태 관련 컨트롤 초기화
+    m_staticBallState = (CStatic*)GetDlgItem(IDC_STATIC_BALL_STATE);
+    m_staticStateTime = (CStatic*)GetDlgItem(IDC_STATIC_STATE_TIME);
+    m_staticStableTime = (CStatic*)GetDlgItem(IDC_STATIC_STABLE_TIME);
+    m_btnResetTracking = (CButton*)GetDlgItem(IDC_BUTTON_RESET_TRACKING);
+    m_btnConfigureTracking = (CButton*)GetDlgItem(IDC_BUTTON_CONFIGURE_TRACKING);
+
+    if (m_staticBallState) { m_staticBallState->SetWindowText(_T("NOT DETECTED")); }
+    if (m_btnResetTracking) { m_btnResetTracking->EnableWindow(FALSE); }
+    if (m_btnConfigureTracking) { m_btnConfigureTracking->EnableWindow(TRUE); }
 
     if (!Camera_Initialize("./logs/XIMEASensor.log", 1)) {
         AfxMessageBox(_T("Failed to initialize camera system!"));
@@ -204,6 +219,13 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
 void CXIMEASensorDiagDlg::OnDestroy()
 {
     CDialogEx::OnDestroy();
+
+    // 2025-07-30: 볼 상태 추적 비활성화
+    if (Camera_IsBallStateTrackingEnabled()) {
+        Camera_EnableBallStateTracking(false);
+    }
+    Camera_SetBallStateChangeCallback(nullptr, nullptr);
+
 
     if (Camera_IsRealtimeDetectionEnabled()) {
         Camera_EnableRealtimeDetection(false);
@@ -599,6 +621,10 @@ void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
         if (m_pendingFrameUpdates > 0) {
             DrawFrame();
         }
+    }
+    else if (nIDEvent == TIMER_BALL_STATE_UPDATE) {
+        // 볼 상태 표시 업데이트
+        UpdateBallStateDisplay();
     }
 
     CDialogEx::OnTimer(nIDEvent);
@@ -1075,47 +1101,6 @@ void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResul
     PostMessage(WM_UPDATE_BALL_DETECTION);
 }
 
-void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
-{
-    if (!m_checkRealtimeDetection || !m_isStreaming) return;
-
-    BOOL isChecked = (m_checkRealtimeDetection->GetCheck() == BST_CHECKED);
-
-    if (isChecked) {
-        Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback, this);
-
-        if (Camera_EnableRealtimeDetection(true)) {
-            m_lastDetectionStatsUpdate = std::chrono::steady_clock::now();
-
-            if (m_staticBallPosition) {
-                m_staticBallPosition->SetWindowText(_T("Detecting..."));
-            }
-
-            TRACE(_T("Real-time ball detection enabled\n"));
-        }
-        else {
-            AfxMessageBox(_T("Failed to enable real-time detection!"));
-            m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
-        }
-    }
-    else {
-        Camera_EnableRealtimeDetection(false);
-        Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
-
-        if (m_staticBallPosition) {
-            m_staticBallPosition->SetWindowText(_T("Not detected"));
-        }
-        if (m_staticBallInfo) {
-            m_staticBallInfo->SetWindowText(_T("-"));
-        }
-        if (m_staticDetectionFPS) {
-            m_staticDetectionFPS->SetWindowText(_T("0.0"));
-        }
-
-        TRACE(_T("Real-time ball detection disabled\n"));
-    }
-}
-
 LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
 {
     RealtimeDetectionResult result;
@@ -1182,6 +1167,9 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
     result = m_lastDetectionResult;
     LeaveCriticalSection(&m_detectionCriticalSection);
 
+    // 현재 볼 상태 가져오기
+    BallState currentState = Camera_GetBallState();
+
     if (result.ballFound && result.ballCount > 0) {
         // Get display buffer dimensions for proper scaling
         int displayIdx = m_displayBufferIndex.load();
@@ -1194,14 +1182,22 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
         float scaleX = (float)rect.Width() / displayBuffer.width;
         float scaleY = (float)rect.Height() / displayBuffer.height;
 
-        CPen redPen(PS_SOLID, 3, RGB(255, 0, 0));
-        CPen* pOldPen = dc.SelectObject(&redPen);
+        // 상태별 색상과 두께 설정
+        COLORREF penColor = GetBallStateColor(currentState);
+        int penWidth = (currentState == BallState::READY) ? 4 : 3;
+
+        CPen pen(PS_SOLID, penWidth, penColor);
+        CPen* pOldPen = dc.SelectObject(&pen);
         CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
 
+        //CPen redPen(PS_SOLID, 3, RGB(255, 0, 0));
+        //CPen* pOldPen = dc.SelectObject(&redPen);
+        //CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
+        int x, y, radius;
         for (int i = 0; i < result.ballCount; i++) {
-            int x = (int)(result.balls[i].centerX * scaleX);
-            int y = (int)(result.balls[i].centerY * scaleY);
-            int radius = (int)(result.balls[i].radius * scaleX);
+            x = (int)(result.balls[i].centerX * scaleX);
+            y = (int)(result.balls[i].centerY * scaleY);
+            radius = (int)(result.balls[i].radius * scaleX);
 
             dc.Ellipse(x - radius, y - radius, x + radius, y + radius);
 
@@ -1211,7 +1207,7 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
             dc.LineTo(x + 5, y);
             dc.MoveTo(x, y - 5);
             dc.LineTo(x, y + 5);
-            dc.SelectObject(&redPen);
+            dc.SelectObject(&pen);
 
             if (result.balls[i].confidence > 0.8f) {
                 CString confStr;
@@ -1222,7 +1218,263 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
             }
         }
 
+        // READY 상태면 추가 표시
+        if (currentState == BallState::READY) {
+            dc.SetTextColor(RGB(0, 255, 0));
+            dc.SetBkMode(TRANSPARENT);
+
+            CFont font;
+            font.CreateFont(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, 0,
+                ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, _T("Arial"));
+
+            CFont* pOldFont = dc.SelectObject(&font);
+            dc.TextOut(x - 20, y + radius + 10, _T("READY"));
+            dc.SelectObject(pOldFont);
+        }
+
         dc.SelectObject(pOldPen);
         dc.SelectObject(pOldBrush);
+    }
+}
+
+
+
+// 볼 상태 변경 콜백 (static)
+void CXIMEASensorDiagDlg::BallStateChangeCallback(BallState newState, BallState oldState, 
+                                                  const BallStateInfo* info, void* userContext)
+{
+    CXIMEASensorDiagDlg* pDlg = static_cast<CXIMEASensorDiagDlg*>(userContext);
+    if (pDlg && info) {
+        pDlg->OnBallStateChanged(newState, oldState, info);
+    }
+}
+
+// 볼 상태 변경 핸들러
+void CXIMEASensorDiagDlg::OnBallStateChanged(BallState newState, BallState oldState, 
+                                              const BallStateInfo* info)
+{
+    // UI 업데이트를 위해 메시지 포스트
+    PostMessage(WM_UPDATE_BALL_STATE, static_cast<WPARAM>(newState), 
+                reinterpret_cast<LPARAM>(info));
+    
+    // READY 상태 전환 시 알림
+    if (newState == BallState::READY && oldState != BallState::READY) {
+        MessageBeep(MB_OK);
+        TRACE(_T("Ball is READY!\n"));
+    }
+}
+
+// 실시간 탐지 활성화 수정
+void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
+{
+    if (!m_checkRealtimeDetection || !m_isStreaming) return;
+
+    BOOL isChecked = (m_checkRealtimeDetection->GetCheck() == BST_CHECKED);
+
+    if (isChecked) {
+        // 실시간 탐지 콜백 설정
+        Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback, this);
+
+        if (Camera_EnableRealtimeDetection(true)) {
+            m_lastDetectionStatsUpdate = std::chrono::steady_clock::now();
+
+            // 볼 상태 추적 활성화
+            Camera_SetBallStateChangeCallback(BallStateChangeCallback, this);
+            Camera_EnableBallStateTracking(true);
+            
+            // 볼 상태 업데이트 타이머 시작
+            SetTimer(TIMER_BALL_STATE_UPDATE, 100, nullptr);  // 100ms 간격
+            
+            if (m_btnResetTracking) {
+                m_btnResetTracking->EnableWindow(TRUE);
+            }
+
+            if (m_staticBallPosition) {
+                m_staticBallPosition->SetWindowText(_T("Detecting..."));
+            }
+            if (m_staticBallState) {
+                m_staticBallState->SetWindowText(_T("NOT DETECTED"));
+            }
+
+            TRACE(_T("Real-time ball detection and state tracking enabled\n"));
+        }
+        else {
+            AfxMessageBox(_T("Failed to enable real-time detection!"));
+            m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
+        }
+    }
+    else {
+        // 볼 상태 추적 비활성화
+        Camera_EnableBallStateTracking(false);
+        Camera_SetBallStateChangeCallback(nullptr, nullptr);
+        
+        Camera_EnableRealtimeDetection(false);
+        Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
+        
+        KillTimer(TIMER_BALL_STATE_UPDATE);
+        
+        if (m_btnResetTracking) {
+            m_btnResetTracking->EnableWindow(FALSE);
+        }
+
+        if (m_staticBallPosition) {
+            m_staticBallPosition->SetWindowText(_T("Not detected"));
+        }
+        if (m_staticBallInfo) {
+            m_staticBallInfo->SetWindowText(_T("-"));
+        }
+        if (m_staticDetectionFPS) {
+            m_staticDetectionFPS->SetWindowText(_T("0.0"));
+        }
+        if (m_staticBallState) {
+            m_staticBallState->SetWindowText(_T("NOT DETECTED"));
+        }
+        if (m_staticStateTime) {
+            m_staticStateTime->SetWindowText(_T("0 ms"));
+        }
+        if (m_staticStableTime) {
+            m_staticStableTime->SetWindowText(_T("0 ms"));
+        }
+
+        TRACE(_T("Real-time ball detection and state tracking disabled\n"));
+    }
+}
+
+// 볼 상태 표시 업데이트
+void CXIMEASensorDiagDlg::UpdateBallStateDisplay()
+{
+    if (!Camera_IsBallStateTrackingEnabled()) return;
+    
+    BallStateInfo info;
+    if (Camera_GetBallStateInfo(&info)) {
+        // 현재 상태 표시
+        if (m_staticBallState) {
+            CString stateStr = GetBallStateDisplayString(info.currentState);
+            m_staticBallState->SetWindowText(stateStr);
+        }
+        
+        // 현재 상태 지속 시간
+        int timeInState = Camera_GetTimeInCurrentState();
+        if (m_staticStateTime) {
+            CString timeStr;
+            if (timeInState < 1000) {
+                timeStr.Format(_T("%d ms"), timeInState);
+            } else {
+                timeStr.Format(_T("%.1f s"), timeInState / 1000.0f);
+            }
+            m_staticStateTime->SetWindowText(timeStr);
+        }
+        
+        // 안정화 시간 (STABILIZING, READY, STOPPED 상태에서만)
+        if (m_staticStableTime) {
+            if (info.currentState == BallState::STABILIZING || 
+                info.currentState == BallState::READY || 
+                info.currentState == BallState::STOPPED) {
+                CString stableStr;
+                if (info.stableDurationMs < 1000) {
+                    stableStr.Format(_T("%d ms"), info.stableDurationMs);
+                } else {
+                    stableStr.Format(_T("%.1f s"), info.stableDurationMs / 1000.0f);
+                }
+                m_staticStableTime->SetWindowText(stableStr);
+            } else {
+                m_staticStableTime->SetWindowText(_T("0 ms"));
+            }
+        }
+    }
+}
+
+// 볼 상태 업데이트 메시지 핸들러
+LRESULT CXIMEASensorDiagDlg::OnUpdateBallState(WPARAM wParam, LPARAM lParam)
+{
+    BallState newState = static_cast<BallState>(wParam);
+    
+    // 즉시 상태 업데이트
+    UpdateBallStateDisplay();
+    
+    // 상태별 추가 동작
+    switch (newState) {
+    case BallState::READY:
+        TRACE(_T("Ball is in READY state!\n"));
+        break;
+    case BallState::MOVING:
+        TRACE(_T("Ball started moving\n"));
+        break;
+    }
+    
+    return 0;
+}
+
+// 볼 추적 리셋 버튼 핸들러
+void CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking()
+{
+    Camera_ResetBallStateTracking();
+    UpdateBallStateDisplay();
+    
+    CString msg = _T("Ball state tracking has been reset.");
+    SetDlgItemText(IDC_STATIC_STATUS, msg);
+    
+    TRACE(_T("Ball state tracking reset\n"));
+}
+
+// 볼 추적 설정 버튼 핸들러
+void CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking()
+{
+    // 현재 설정 가져오기
+    BallStateConfig config;
+    Camera_GetBallStateConfig(&config);
+    
+    // 간단한 설정 다이얼로그 (실제로는 별도 다이얼로그 클래스 생성 권장)
+    CString msg;
+    msg.Format(_T("Ball State Tracking Configuration:\n\n")
+               _T("Position Tolerance: %.1f pixels\n")
+               _T("Movement Threshold: %.1f pixels\n")
+               _T("Stable Time: %d ms\n")
+               _T("Min Consecutive Detections: %d\n\n")
+               _T("Default values are optimized for most cases."),
+               config.positionTolerance,
+               config.movementThreshold,
+               config.stableTimeMs,
+               config.minConsecutiveDetections);
+    
+    AfxMessageBox(msg, MB_OK | MB_ICONINFORMATION);
+}
+
+// 볼 상태 문자열 변환
+CString CXIMEASensorDiagDlg::GetBallStateDisplayString(BallState state)
+{
+    switch (state) {
+    case BallState::NOT_DETECTED:
+        return _T("NOT DETECTED");
+    case BallState::MOVING:
+        return _T("MOVING");
+    case BallState::STABILIZING:
+        return _T("STABILIZING...");
+    case BallState::READY:
+        return _T("READY");
+    case BallState::STOPPED:
+        return _T("STOPPED");
+    default:
+        return _T("UNKNOWN");
+    }
+}
+
+// 볼 상태별 색상
+COLORREF CXIMEASensorDiagDlg::GetBallStateColor(BallState state)
+{
+    switch (state) {
+    case BallState::NOT_DETECTED:
+        return RGB(128, 128, 128);  // 회색
+    case BallState::MOVING:
+        return RGB(255, 165, 0);    // 주황색
+    case BallState::STABILIZING:
+        return RGB(255, 255, 0);    // 노란색
+    case BallState::READY:
+        return RGB(0, 255, 0);      // 초록색
+    case BallState::STOPPED:
+        return RGB(0, 128, 255);    // 파란색
+    default:
+        return RGB(255, 0, 0);      // 빨간색
     }
 }

@@ -8,7 +8,7 @@
 #include <vector>
 #include <cmath>
 #include <queue>
-#include <condition_variable>  // std::condition_variable
+#include <condition_variable>
 #include "XIMEASensor.h" 
 #include "IXIMEACallback.h"
 #include "Logger.h"
@@ -78,6 +78,56 @@ private:
     std::atomic<int> deviceNotReadyCount;
     static const int MAX_DEVICE_NOT_READY_ERRORS = 5;
 
+    // Real-time ball detection
+    std::atomic<bool> m_realtimeDetectionEnabled;
+    std::unique_ptr<BallDetector> m_realtimeBallDetector;
+    RealtimeDetectionCallback m_realtimeCallback;
+    void* m_realtimeCallbackContext;
+
+    std::mutex m_detectionQueueMutex;
+    std::queue<std::pair<std::vector<unsigned char>, FrameInfo>> m_detectionQueue;
+    std::thread m_detectionThread;
+    std::atomic<bool> m_detectionThreadRunning;
+    std::condition_variable m_detectionCV;
+
+    // Real-time detection statistics
+    std::atomic<int> m_realtimeProcessedFrames;
+    double m_realtimeTotalProcessingTime;
+    std::chrono::steady_clock::time_point m_realtimeStartTime;
+    RealtimeDetectionResult m_lastDetectionResult;
+    std::mutex m_realtimeStatsMutex;
+    std::mutex m_lastResultMutex;
+
+    // Ball state tracking
+    struct BallTrackingData {
+        BallState currentState;
+        BallState previousState;
+        float lastPositionX;
+        float lastPositionY;
+        std::chrono::steady_clock::time_point lastDetectionTime;
+        std::chrono::steady_clock::time_point stableStartTime;
+        std::chrono::steady_clock::time_point lastStateChangeTime;
+        int consecutiveDetections;
+        bool isTracking;
+
+        BallTrackingData()
+            : currentState(BallState::NOT_DETECTED)
+            , previousState(BallState::NOT_DETECTED)
+            , lastPositionX(0.0f)
+            , lastPositionY(0.0f)
+            , consecutiveDetections(0)
+            , isTracking(false) {
+        }
+    };
+
+    // Ball state tracking members
+    std::atomic<bool> m_ballStateTrackingEnabled;
+    BallTrackingData m_ballTracking;
+    BallStateConfig m_ballStateConfig;
+    BallStateChangeCallback m_ballStateCallback;
+    void* m_ballStateCallbackContext;
+    mutable std::mutex m_ballStateMutex;
+
     CameraController();
 
     void CaptureLoop();
@@ -90,29 +140,14 @@ private:
     void UpdateStatistics(bool frameReceived);
     std::string GetXiApiErrorString(XI_RETURN error);
 
-
-    // 2025-07-28: realTime ballDetect
-    std::atomic<bool> m_realtimeDetectionEnabled;
-    std::unique_ptr<BallDetector> m_realtimeBallDetector;
-    RealtimeDetectionCallback m_realtimeCallback;
-    void* m_realtimeCallbackContext;
-
-    std::mutex m_detectionQueueMutex;
-    std::queue<std::pair<std::vector<unsigned char>, FrameInfo>> m_detectionQueue;
-    std::thread m_detectionThread;
-    std::atomic<bool> m_detectionThreadRunning;
-    std::condition_variable m_detectionCV;
-
-    // realTime detect statistics
-    std::atomic<int> m_realtimeProcessedFrames;
-    double m_realtimeTotalProcessingTime;
-    std::chrono::steady_clock::time_point m_realtimeStartTime;
-    RealtimeDetectionResult m_lastDetectionResult;
-    std::mutex m_realtimeStatsMutex;       // mutex for statistic
-    std::mutex m_lastResultMutex;
-
     void RealtimeDetectionWorker();
     void ProcessRealtimeDetection(const unsigned char* data, int width, int height, int frameIndex);
+
+    // Ball state tracking methods
+    void UpdateBallState(const RealtimeDetectionResult* result);
+    float CalculateDistance(float x1, float y1, float x2, float y2);
+    void NotifyBallStateChanged(BallState newState, BallState oldState);
+    void ResetBallTracking();
 
 public:
     ~CameraController();
@@ -163,7 +198,7 @@ public:
     int GetConnectedDeviceCount();
     bool GetDeviceInfo(int index, std::string& name, std::string& serial);
 
-    // 2025-07-28: realTime ballDetect
+    // Real-time ball detection
     bool EnableRealtimeDetection(bool enable);
     bool IsRealtimeDetectionEnabled() const { return m_realtimeDetectionEnabled.load(); }
     void SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* context);
@@ -173,4 +208,16 @@ public:
     bool SetRealtimeDetectionDownscale(int factor);
     bool SetRealtimeDetectionMaxCandidates(int maxCandidates);
     void GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS);
+
+    // Ball state tracking
+    bool EnableBallStateTracking(bool enable);
+    bool IsBallStateTrackingEnabled() const { return m_ballStateTrackingEnabled.load(); }
+    BallState GetBallState() const;
+    bool GetBallStateInfo(BallStateInfo* info) const;
+    bool SetBallStateConfig(const BallStateConfig& config);
+    BallStateConfig GetBallStateConfig() const;
+    void SetBallStateChangeCallback(BallStateChangeCallback callback, void* context);
+    //void ResetBallStateTracking();
+    int GetTimeInCurrentState() const;
+    bool IsBallStable() const;
 };

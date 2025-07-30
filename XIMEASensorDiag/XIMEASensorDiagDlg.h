@@ -13,16 +13,7 @@
 #define WM_UPDATE_FPS       (WM_USER + 103)
 #define WM_CONTINUOUS_CAPTURE_COMPLETE (WM_USER + 104)
 #define WM_UPDATE_BALL_DETECTION (WM_USER + 105)
-#define WM_UPDATE_BALL_STATE (WM_USER + 106)  // 추가
-
-// 볼 상태 열거형 추가
-enum class BallState {
-    NOT_DETECTED,   // 볼이 감지되지 않음
-    MOVING,         // 볼이 움직이는 중
-    STABILIZING,    // 볼이 멈추려고 하는 중 (위치가 안정화되는 중)
-    READY,          // 볼이 3초 이상 같은 위치에 있음 (준비 상태)
-    STOPPED         // 볼이 멈춤 (READY 이후 상태)
-};
+#define WM_UPDATE_BALL_STATE (WM_USER + 106)  // 볼 상태 업데이트 메시지
 
 class CXIMEASensorDiagDlg : public CDialogEx
 {
@@ -52,6 +43,14 @@ private:
     CStatic* m_staticBallPosition = nullptr;
     CStatic* m_staticBallInfo = nullptr;
     CStatic* m_staticDetectionFPS = nullptr;
+
+    // 볼 상태 표시 컨트롤들
+    CStatic* m_staticBallState = nullptr;
+    CStatic* m_staticStateTime = nullptr;
+    CStatic* m_staticStableTime = nullptr;
+    CButton* m_btnResetTracking = nullptr;
+    CButton* m_btnConfigureTracking = nullptr;
+
     CSliderCtrl* m_sliderExposure = nullptr;
     CSliderCtrl* m_sliderGain = nullptr;
     CSliderCtrl* m_sliderFramerate = nullptr;
@@ -75,7 +74,7 @@ private:
         ~FrameBuffer() { if (data) delete[] data; }
     };
 
-    FrameBuffer m_frameBuffers[3];  // Triple buffering
+    FrameBuffer m_frameBuffers[3];
     std::atomic<int> m_writeBufferIndex;
     std::atomic<int> m_readBufferIndex;
     std::atomic<int> m_displayBufferIndex;
@@ -84,7 +83,7 @@ private:
     std::atomic<int> m_pendingFrameUpdates;
     std::chrono::steady_clock::time_point m_lastFrameDrawTime;
     static constexpr int MAX_PENDING_FRAMES = 2;
-    static constexpr int MIN_FRAME_INTERVAL_MS = 16; // ~60 FPS max for UI
+    static constexpr int MIN_FRAME_INTERVAL_MS = 4;
 
     // FPS 계산
     std::chrono::steady_clock::time_point m_lastFPSUpdate;
@@ -101,6 +100,9 @@ private:
     CRITICAL_SECTION m_detectionCriticalSection;
     std::chrono::steady_clock::time_point m_lastDetectionStatsUpdate;
 
+    // 볼 상태 업데이트 타이머
+    static constexpr UINT_PTR TIMER_BALL_STATE_UPDATE = 1003;
+
     // USB 상태 모니터링
     std::atomic<int> m_usbErrorCount;
     std::chrono::steady_clock::time_point m_lastUSBError;
@@ -110,6 +112,7 @@ private:
     // 정적 콜백 함수
     static void RealtimeDetectionCallback(const RealtimeDetectionResult* result, void* userContext);
     static void ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state);
+    static void BallStateChangeCallback(BallState newState, BallState oldState, const BallStateInfo* info, void* userContext);
     static CXIMEASensorDiagDlg* s_pThis;
 
     // Helper functions
@@ -125,6 +128,9 @@ private:
     bool ShouldSkipFrame();
     void HandleUSBError();
     void ResetUSBErrorCount();
+    void UpdateBallStateDisplay();
+    CString GetBallStateDisplayString(BallState state);
+    COLORREF GetBallStateColor(BallState state);
 
     // Callback handlers
     void OnFrameReceivedCallback(const FrameInfo& frameInfo);
@@ -133,6 +139,7 @@ private:
     void OnPropertyChangedCallback(const std::string& propertyName, const std::string& value);
     void OnContinuousCaptureProgress(int currentFrame, double elapsedSeconds, int state);
     void OnRealtimeDetectionResult(const RealtimeDetectionResult* result);
+    void OnBallStateChanged(BallState newState, BallState oldState, const BallStateInfo* info);
 
 public:
     // Message handlers
@@ -142,6 +149,8 @@ public:
     afx_msg void OnBnClickedButtonSnapshot();
     afx_msg void OnBnClickedButtonSettings();
     afx_msg void OnBnClickedCheckRealtimeDetection();
+    afx_msg void OnBnClickedButtonResetTracking();
+    afx_msg void OnBnClickedButtonConfigureTracking();
     afx_msg void OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar);
     afx_msg void OnCbnSelchangeComboDevices();
 
@@ -150,6 +159,7 @@ public:
     afx_msg LRESULT OnUpdateError(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnUpdateFPS(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnUpdateBallDetection(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnUpdateBallState(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnContinuousCaptureComplete(WPARAM wParam, LPARAM lParam);
 
     afx_msg void OnDestroy();
