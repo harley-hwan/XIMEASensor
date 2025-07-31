@@ -54,13 +54,16 @@ namespace {
 #define MEASURE_TIME(name, code, metricsVar) { code }
 #endif
 
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
-#define DEBUG_SAVE_IMAGE(code) { code }
-#define DEBUG_IMAGE_TIME_MEASURE(name, code, metricsVar) MEASURE_TIME(name, code, metricsVar)
-#else
-#define DEBUG_SAVE_IMAGE(code) { }
-#define DEBUG_IMAGE_TIME_MEASURE(name, code, metricsVar) { }
-#endif
+// Runtime-controlled debug image saving macros
+#define DEBUG_SAVE_IMAGE(code) \
+    if (m_params.saveIntermediateImages) { code }
+
+#define DEBUG_IMAGE_TIME_MEASURE(name, code, metricsVar) \
+    if (m_params.saveIntermediateImages) { \
+        MEASURE_TIME(name, code, metricsVar) \
+    } else { \
+        metricsVar = 0.0; \
+    }
 
 // Constructor 
 BallDetector::DetectionParams::DetectionParams() {
@@ -84,10 +87,9 @@ BallDetector::DetectionParams::DetectionParams() {
     enhanceShadows = false;
     shadowEnhanceFactor = 0.7f;
 
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
+    // Debug options - runtime controlled
     saveIntermediateImages = false;
     debugOutputDir = "";
-#endif
 
     // Performance optimize
     fastMode = true;
@@ -109,12 +111,11 @@ public:
     cv::Mat m_cameraMatrix;
     cv::Mat m_distCoeffs;
 
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
+    // Debug image buffers - always available for runtime control
     cv::Mat m_lastProcessedImage;
     cv::Mat m_lastBinaryImage;
     cv::Mat m_lastEdgeImage;
     cv::Mat m_lastShadowEnhanced;
-#endif
 
     cv::Mat m_tempBuffer1;
     cv::Mat m_tempBuffer2;
@@ -128,12 +129,16 @@ public:
 
     std::string m_currentCaptureFolder;
 
-    Impl() : m_currentCaptureFolder("") {
+    // Store params reference for debug flag checking
+    const DetectionParams* m_paramsPtr;
+
+    Impl() : m_currentCaptureFolder(""), m_paramsPtr(nullptr) {
         initializeBuffers();
         initializeLUTs();
     }
 
     void setCurrentCaptureFolder(const std::string& folder) { m_currentCaptureFolder = folder; }
+    void setParamsReference(const DetectionParams* params) { m_paramsPtr = params; }
 
     cv::Mat preprocessImage(const cv::Mat& grayImage, const DetectionParams& params);
     cv::Mat enhanceShadowRegions(const cv::Mat& image, float factor);
@@ -150,10 +155,8 @@ public:
 
     std::vector<BallInfo> evaluateCandidatesTBB(const cv::Mat& image, const std::vector<cv::Vec3f>& candidates, const DetectionParams& params, float scaleFactor, const cv::Rect& roiRect, int frameIndex);
 
-    // Utility functions
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
+    // Utility functions - always available
     void saveIntermediateImages(const std::string& basePath, int frameIndex);
-#endif
 
     inline float fastDistance(float x1, float y1, float x2, float y2) {
         float dx = x2 - x1;
@@ -195,11 +198,8 @@ BallDetector::BallDetector()
     LOG_INFO("BallDetector initialized with TBB optimization");
     LOG_INFO("Performance profiling initially: " +
         std::string(m_performanceProfilingEnabled ? "ENABLED" : "DISABLED"));
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
-    LOG_INFO("Debug image saving: AVAILABLE (runtime control)");
-#else
-    LOG_INFO("Debug image saving: DISABLED (compile-time)");
-#endif
+    LOG_INFO("Debug image saving: RUNTIME CONTROLLED (saveIntermediateImages flag)");
+
     InitializeDefaultParams();
     m_lastMetrics.Reset();
 }
@@ -231,6 +231,9 @@ void BallDetector::SetCurrentCaptureFolder(const std::string& folder) {
 BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int width, int height, int frameIndex) {
     auto totalStartTime = std::chrono::high_resolution_clock::now();
     m_lastMetrics.Reset();
+
+    // Set params reference for Impl class
+    pImpl->setParamsReference(&m_params);
 
     BallDetectionResult result;
     result.found = false;
@@ -272,7 +275,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         cv::Mat processed;
         if (!m_params.skipPreprocessing) {
             MEASURE_TIME("Preprocessing",
-                processed = pImpl->preprocessImage(workingImage, m_params);,
+                processed = pImpl->preprocessImage(workingImage, m_params); ,
                 m_lastMetrics.preprocessingTime_ms
             )
         }
@@ -284,7 +287,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         // Circle detection
         std::vector<cv::Vec3f> candidates;
         MEASURE_TIME("Hough circle detection",
-            candidates = pImpl->detectCirclesHough(processed, m_params);,
+            candidates = pImpl->detectCirclesHough(processed, m_params); ,
             m_lastMetrics.houghDetectionTime_ms
         )
 
@@ -294,7 +297,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
                     cv::Mat binary;
                 cv::threshold(processed, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
                 auto contourCircles = pImpl->detectCirclesByContour(binary, m_params);
-                candidates.insert(candidates.end(), contourCircles.begin(), contourCircles.end());,
+                candidates.insert(candidates.end(), contourCircles.begin(), contourCircles.end()); ,
                     m_lastMetrics.contourDetectionTime_ms
                     )
             }
@@ -306,7 +309,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         if (!candidates.empty()) {
             MEASURE_TIME("TBB candidate evaluation",
                 validBalls = pImpl->evaluateCandidatesTBB(
-                    workingImage, candidates, m_params, scaleFactor, roiRect, frameIndex);,
+                    workingImage, candidates, m_params, scaleFactor, roiRect, frameIndex); ,
                 m_lastMetrics.candidateEvaluationTime_ms
             )
         }
@@ -335,7 +338,8 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
             }
             else {
                 // top candidates
-                tbb::parallel_sort(validBalls.begin(), validBalls.end(),[](const BallInfo& a, const BallInfo& b) { return a.confidence > b.confidence; });
+                tbb::parallel_sort(validBalls.begin(), validBalls.end(),
+                    [](const BallInfo& a, const BallInfo& b) { return a.confidence > b.confidence; });
 
                 int maxBalls = std::min(MAX_DISPLAY_BALLS, static_cast<int>(validBalls.size()));
                 result.balls.assign(validBalls.begin(), validBalls.begin() + maxBalls);
@@ -344,44 +348,45 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
             m_lastMetrics.ballDetected = true;
 
             const BallInfo& ball = result.balls[0];
-            LOG_INFO("Ball detected at (" + std::to_string(cvRound(ball.center.x)) + ", " + std::to_string(cvRound(ball.center.y)) + "), radius=" + std::to_string(cvRound(ball.radius)) + ", confidence=" + std::to_string(ball.confidence));
+            LOG_INFO("Ball detected at (" + std::to_string(cvRound(ball.center.x)) + ", " +
+                std::to_string(cvRound(ball.center.y)) + "), radius=" +
+                std::to_string(cvRound(ball.radius)) + ", confidence=" +
+                std::to_string(ball.confidence));
         }
 
-        // Save debug images
-        if (m_params.saveIntermediateImages) {
+        // Save debug images - runtime controlled
+        DEBUG_IMAGE_TIME_MEASURE("Debug image saving",
             std::string debugPath;
 
-            if (!pImpl->m_currentCaptureFolder.empty()) {
-                debugPath = pImpl->m_currentCaptureFolder + "/debug_images";
-            }
-            else if (!m_params.debugOutputDir.empty()) {
-                debugPath = m_params.debugOutputDir;
-            }
-            else {
-                debugPath = "./debug_images";
-                LOG_WARNING("No debug output directory specified, using ./debug_images");
-            }
-
-            DEBUG_IMAGE_TIME_MEASURE("Debug image saving",
-                try {
-                if (!fs::exists(debugPath)) {
-                    fs::create_directories(debugPath);
-                    LOG_DEBUG("Created debug directory: " + debugPath);
-                }
-
-                pImpl->saveIntermediateImages(debugPath, frameIndex);
-
-                if (result.found) {
-                    std::string resultPath = debugPath + "/frame_" + std::to_string(frameIndex) + "_result.png";
-                    SaveDetectionImage(imageData, width, height, result, resultPath, true);
-                }
-            }
-            catch (const fs::filesystem_error& e) {
-                LOG_ERROR("Failed to create debug directory: " + std::string(e.what()));
-            },
-                m_lastMetrics.imagesSavingTime_ms
-                )
+        if (!pImpl->m_currentCaptureFolder.empty()) {
+            debugPath = pImpl->m_currentCaptureFolder + "/debug_images";
         }
+        else if (!m_params.debugOutputDir.empty()) {
+            debugPath = m_params.debugOutputDir;
+        }
+        else {
+            debugPath = "./debug_images";
+            LOG_WARNING("No debug output directory specified, using ./debug_images");
+        }
+
+        try {
+            if (!fs::exists(debugPath)) {
+                fs::create_directories(debugPath);
+                LOG_DEBUG("Created debug directory: " + debugPath);
+            }
+
+            pImpl->saveIntermediateImages(debugPath, frameIndex);
+
+            if (result.found) {
+                std::string resultPath = debugPath + "/frame_" + std::to_string(frameIndex) + "_result.png";
+                SaveDetectionImage(imageData, width, height, result, resultPath, true);
+            }
+        }
+        catch (const fs::filesystem_error& e) {
+            LOG_ERROR("Failed to create debug directory: " + std::string(e.what()));
+        },
+            m_lastMetrics.imagesSavingTime_ms
+            )
 
     }
     catch (const cv::Exception& e) {
@@ -397,7 +402,8 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
     m_lastMetrics.totalDetectionTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(totalEndTime - totalStartTime).count() / 1000.0;
 
     if (m_performanceProfilingEnabled && (frameIndex % PERFORMANCE_LOG_INTERVAL == 0)) {
-        LOG_INFO("Frame " + std::to_string(frameIndex) + " - Total detection time: " + std::to_string(m_lastMetrics.totalDetectionTime_ms) + " ms");
+        LOG_INFO("Frame " + std::to_string(frameIndex) + " - Total detection time: " +
+            std::to_string(m_lastMetrics.totalDetectionTime_ms) + " ms");
     }
 
     return result;
@@ -421,12 +427,12 @@ cv::Mat BallDetector::Impl::preprocessImage(const cv::Mat& grayImage, const Dete
         cv::normalize(processed, processed, 0, 255, cv::NORM_MINMAX);
     }
 
-    // for debugging
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
-    DEBUG_SAVE_IMAGE(m_lastProcessedImage = processed.clone();)
-#endif
+    // for debugging - runtime controlled
+    if (params.saveIntermediateImages) {
+        m_lastProcessedImage = processed.clone();
+    }
 
-        return processed;
+    return processed;
 }
 
 cv::Mat BallDetector::Impl::enhanceShadowRegions(const cv::Mat& image, float factor) {
@@ -446,10 +452,12 @@ cv::Mat BallDetector::Impl::enhanceShadowRegions(const cv::Mat& image, float fac
         }
     );
 
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
-    DEBUG_SAVE_IMAGE(m_lastShadowEnhanced = result.clone();)
-#endif
-        return result;
+    // Runtime controlled debug save
+    if (m_paramsPtr && m_paramsPtr->saveIntermediateImages) {
+        m_lastShadowEnhanced = result.clone();
+    }
+
+    return result;
 }
 
 std::vector<cv::Vec3f> BallDetector::Impl::detectCirclesHough(const cv::Mat& image, const DetectionParams& params) {
@@ -465,12 +473,12 @@ std::vector<cv::Vec3f> BallDetector::Impl::detectCirclesHough(const cv::Mat& ima
 
     // Use Hough gradient
     cv::HoughCircles(image, circles, cv::HOUGH_GRADIENT,
-                     params.dp,
-                     params.minDist,
-                     params.param1,
-                     params.param2,
-                     minRadius,
-                     maxRadius);
+        params.dp,
+        params.minDist,
+        params.param1,
+        params.param2,
+        minRadius,
+        maxRadius);
 
     // Limit candidates
     if (params.maxCandidates > 0 && circles.size() > static_cast<size_t>(params.maxCandidates)) {
@@ -487,9 +495,10 @@ std::vector<cv::Vec3f> BallDetector::Impl::detectCirclesByContour(const cv::Mat&
 
     cv::findContours(binaryImage, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
-    DEBUG_SAVE_IMAGE(m_lastBinaryImage = binaryImage.clone();)
-#endif
+    // Runtime controlled debug save
+    if (params.saveIntermediateImages) {
+        m_lastBinaryImage = binaryImage.clone();
+    }
 
     const float minArea = static_cast<float>(CV_PI * params.minRadius * params.minRadius);
     const float maxArea = static_cast<float>(CV_PI * params.maxRadius * params.maxRadius);
@@ -532,7 +541,8 @@ bool BallDetector::Impl::quickValidateCircle(const cv::Mat& image, const cv::Vec
     int radius = cvRound(circle[2]);
 
     const int margin = 2;
-    if (cx - radius - margin < 0 || cy - radius - margin < 0 || cx + radius + margin >= image.cols || cy + radius + margin >= image.rows) {
+    if (cx - radius - margin < 0 || cy - radius - margin < 0 ||
+        cx + radius + margin >= image.cols || cy + radius + margin >= image.rows) {
         return false;
     }
 
@@ -695,7 +705,9 @@ std::vector<BallInfo> BallDetector::Impl::evaluateCandidatesTBB(
                     }
 
                     // brightness
-                    cv::Rect ballRect(cvRound(circle[0] - circle[2] / 2), cvRound(circle[1] - circle[2] / 2), cvRound(circle[2]), cvRound(circle[2]));
+                    cv::Rect ballRect(cvRound(circle[0] - circle[2] / 2),
+                        cvRound(circle[1] - circle[2] / 2),
+                        cvRound(circle[2]), cvRound(circle[2]));
                     ballRect &= cv::Rect(0, 0, image.cols, image.rows);
                     if (ballRect.area() > 0) {
                         info.brightness = static_cast<float>(cv::mean(image(ballRect))[0]);
@@ -711,7 +723,8 @@ std::vector<BallInfo> BallDetector::Impl::evaluateCandidatesTBB(
 
     std::vector<BallInfo> validBalls(concurrentValidBalls.begin(), concurrentValidBalls.end());
 
-    LOG_DEBUG("Evaluated " + std::to_string(candidates.size()) + " candidates, " + std::to_string(validBalls.size()) + " passed validation");
+    LOG_DEBUG("Evaluated " + std::to_string(candidates.size()) + " candidates, " +
+        std::to_string(validBalls.size()) + " passed validation");
 
     return validBalls;
 }
@@ -732,14 +745,15 @@ cv::Mat BallDetector::Impl::extractROI(const cv::Mat& image, float scale) {
     return image(roiRect);
 }
 
-cv::Point2f BallDetector::Impl::transformToOriginalCoords(const cv::Point2f& roiPoint, const cv::Size& roiSize, const cv::Size& origSize, float scale) {
+cv::Point2f BallDetector::Impl::transformToOriginalCoords(const cv::Point2f& roiPoint, const cv::Size& roiSize,
+    const cv::Size& origSize, float scale) {
     cv::Point2f originalPoint;
     originalPoint.x = roiPoint.x + (origSize.width - roiSize.width) / 2.0f;
     originalPoint.y = roiPoint.y + (origSize.height - roiSize.height) / 2.0f;
     return originalPoint;
 }
 
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
+// Always available, runtime controlled
 void BallDetector::Impl::saveIntermediateImages(const std::string& basePath, int frameIndex) {
     if (basePath.empty()) {
         LOG_ERROR("Debug output path is empty");
@@ -813,7 +827,6 @@ void BallDetector::Impl::saveIntermediateImages(const std::string& basePath, int
         LOG_ERROR("Error saving debug images: " + std::string(e.what()));
     }
 }
-#endif
 
 double BallDetector::EstimateProcessingTime(int width, int height) const {
     double pixels = width * height;
@@ -840,7 +853,9 @@ double BallDetector::EstimateProcessingTime(int width, int height) const {
     return baseTime;
 }
 
-bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int width, int height, const BallDetectionResult& result, const std::string& outputPath, bool saveAsColor) {
+bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int width, int height,
+    const BallDetectionResult& result, const std::string& outputPath,
+    bool saveAsColor) {
     if (!originalImage || width <= 0 || height <= 0) {
         LOG_ERROR("Invalid parameters for SaveDetectionImage");
         return false;
@@ -853,7 +868,8 @@ bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int wi
 
         // title
         cv::rectangle(colorImg, cv::Point(0, 0), cv::Point(width, 50), cv::Scalar(40, 40, 40), cv::FILLED);
-        cv::putText(colorImg, "Ball Detection Result", cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
+        cv::putText(colorImg, "Ball Detection Result", cv::Point(10, 30),
+            cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
 
         if (result.found && !result.balls.empty()) {
             int infoY = 70;
@@ -883,22 +899,26 @@ bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int wi
                 // Ball info
                 std::ostringstream info;
                 info << "Ball " << (i + 1) << ":";
-                cv::putText(colorImg, info.str(), cv::Point(15, infoY), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255), 2);
+                cv::putText(colorImg, info.str(), cv::Point(15, infoY),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255), 2);
 
                 info.str("");
                 info << "  Center: (" << cvRound(ball.center.x) << ", " << cvRound(ball.center.y) << ")";
-                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 20),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
                 info.str("");
                 info << "  Radius: " << radius << " pixels";
-                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 40), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 40),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
                 info.str("");
                 info << "  Confidence: " << std::fixed << std::setprecision(1) << (ball.confidence * 100) << "%";
                 cv::Scalar confColor = (ball.confidence > 0.8) ? cv::Scalar(0, 255, 0) :
                     (ball.confidence > 0.6) ? cv::Scalar(0, 255, 255) :
                     cv::Scalar(0, 165, 255);
-                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 60), cv::FONT_HERSHEY_SIMPLEX, 0.5, confColor, 1);
+                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 60),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, confColor, 1);
 
                 infoY += 100;
             }
@@ -918,7 +938,8 @@ bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int wi
             // No ball
             cv::Rect msgBg(10, 60, 200, 40);
             cv::rectangle(colorImg, msgBg, cv::Scalar(0, 0, 100), cv::FILLED);
-            cv::putText(colorImg, "No ball detected", cv::Point(15, 85), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+            cv::putText(colorImg, "No ball detected", cv::Point(15, 85),
+                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
         }
 
         auto now = std::chrono::system_clock::now();
@@ -928,7 +949,8 @@ bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int wi
 
         std::ostringstream timestamp;
         timestamp << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S");
-        cv::putText(colorImg, timestamp.str(), cv::Point(width - 180, height - 10), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+        cv::putText(colorImg, timestamp.str(), cv::Point(width - 180, height - 10),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
         bool success = false;
         if (saveAsColor) {

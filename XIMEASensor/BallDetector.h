@@ -4,7 +4,6 @@
 #include <opencv2/core/types.hpp>
 #include <memory>
 
-#define ENABLE_DEBUG_IMAGE_SAVING       // save_debug_images or not     // 이거 지우는 방법으로 구현해야됨. 이거 주석하면 디버그 이미지 저장 안됨
 //#define ENABLE_DETECTION_IMAGE_SAVING
 #define ENABLE_PERFORMANCE_PROFILING    // performance_report log or not
 

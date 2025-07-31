@@ -1219,7 +1219,6 @@ bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* total
 // Enable/disable ball detector debug images
 bool Camera_SetBallDetectorDebugImages(bool enable) {
     try {
-#ifdef ENABLE_DEBUG_IMAGE_SAVING
         // Update global default
         g_continuousCaptureConfig.saveBallDetectorDebugImages = enable;
 
@@ -1239,34 +1238,23 @@ bool Camera_SetBallDetectorDebugImages(bool enable) {
                 params.saveIntermediateImages = enable;
                 ballDetector->SetParameters(params);
 
-                LOG_INFO("Ball detector debug images globally " +
+                LOG_INFO("Ball detector debug images " +
                     std::string(enable ? "enabled" : "disabled"));
             }
+        }
+
+        // Also update real-time ball detector in CameraController
+        auto& controller = CameraController::GetInstance();
+        if (controller.IsRealtimeDetectionEnabled()) {
+            // Get the realtime ball detector through the controller's internal mechanism
+            // Since we can't directly access m_realtimeBallDetector from here,
+            // we need to add a method to CameraController or use another approach
+            LOG_INFO("Note: Real-time ball detector debug settings may need manual update");
         }
 
         LOG_INFO("Ball detector debug images default set to: " +
             std::string(enable ? "enabled" : "disabled"));
         return true;
-#else
-        // Debug image saving is disabled at compile time
-        if (enable) {
-            LOG_WARNING("Ball detector debug images requested but ENABLE_DEBUG_IMAGE_SAVING is not defined");
-            LOG_INFO("To enable debug image saving, define ENABLE_DEBUG_IMAGE_SAVING in BallDetector.h and recompile");
-        }
-        else {
-            LOG_INFO("Ball detector debug images disabled (compile-time disabled)");
-        }
-
-        // Still update configuration for consistency
-        auto* captureManager = CameraController::GetInstance().GetContinuousCaptureManager();
-        if (captureManager && !captureManager->IsCapturing()) {
-            auto config = captureManager->GetConfig();
-            config.saveBallDetectorDebugImages = enable;
-            captureManager->SetConfig(config);
-        }
-
-        return true;
-#endif
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_SetBallDetectorDebugImages: " + std::string(e.what()));

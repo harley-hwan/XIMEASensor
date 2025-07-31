@@ -71,33 +71,19 @@ void ContinuousCaptureManager::ConfigureBallDetectorOptimal() {
 }
 
 void ContinuousCaptureManager::SetConfig(const ContinuousCaptureConfig& config) {
-    if (m_isCapturing.load()) {
-        LOG_WARNING("Cannot change config while capturing");
-        return;
-    }
-
-    LOG_INFO("========== Setting new configuration ==========");
-    LOG_INFO("Previous config:");
-    LOG_INFO("  Ball Detection: " + std::string(m_config.enableBallDetection ? "ENABLED" : "DISABLED"));
-    LOG_INFO("  Save Original: " + std::string(m_config.saveOriginalImages ? "YES" : "NO"));
-    LOG_INFO("  Save Detection: " + std::string(m_config.saveDetectionImages ? "YES" : "NO"));
-    LOG_INFO("  Save Debug Images: " + std::string(m_config.saveBallDetectorDebugImages ? "YES" : "NO"));
-
     m_config = config;
 
-    LOG_INFO("New config:");
-    LOG_INFO("  Duration: " + std::to_string(config.durationSeconds) + "s");
-    LOG_INFO("  Format: " + std::to_string(config.imageFormat) + " (0=PNG, 1=JPG)");
-    LOG_INFO("  JPG Quality: " + std::to_string(config.jpgQuality));
-    LOG_INFO("  Async Save: " + std::string(config.useAsyncSave ? "YES" : "NO"));
-    LOG_INFO("  Ball Detection: " + std::string(config.enableBallDetection ? "ENABLED" : "DISABLED"));
-    LOG_INFO("  Save Original: " + std::string(config.saveOriginalImages ? "YES" : "NO"));
-    LOG_INFO("  Save Detection: " + std::string(config.saveDetectionImages ? "YES" : "NO"));
-    LOG_INFO("  Save Debug Images: " + std::string(config.saveBallDetectorDebugImages ? "YES" : "NO"));
-    if (!config.debugImagePath.empty()) {
-        LOG_INFO("  Debug Image Path: " + config.debugImagePath);
+    // Update ball detector if it exists
+    if (m_ballDetector) {
+        auto params = m_ballDetector->GetParameters();
+        params.saveIntermediateImages = config.saveBallDetectorDebugImages;
+
+        if (!config.debugImagePath.empty()) {
+            params.debugOutputDir = config.debugImagePath;
+        }
+
+        m_ballDetector->SetParameters(params);
     }
-    LOG_INFO("==============================================");
 }
 
 bool ContinuousCaptureManager::StartCapture() {
