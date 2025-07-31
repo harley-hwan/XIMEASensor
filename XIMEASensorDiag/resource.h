@@ -38,6 +38,7 @@
 #define IDC_BUTTON_RESET_TRACKING       1053
 #define IDC_BUTTON_CONFIGURE_TRACKING   1054
 
+#define IDC_CHECK_DEBUG_IMAGES          1055
 
 // Next default values for new objects
 // 
