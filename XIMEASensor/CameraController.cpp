@@ -1502,8 +1502,7 @@ void CameraController::GetBallStateInfoInternal(BallStateInfo* info) const {
         m_ballTracking.currentState == BallState::STOPPED) {
         auto now = std::chrono::steady_clock::now();
         info->stableDurationMs = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - m_ballTracking.stableStartTime).count());
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.stableStartTime).count());
     }
     else {
         info->stableDurationMs = 0;
