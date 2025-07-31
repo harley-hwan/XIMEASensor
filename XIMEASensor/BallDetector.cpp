@@ -323,7 +323,8 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
 
         // 5. Find contours of bright regions and filter by size/circularity
         std::vector<cv::Vec3f> candidates;
-        //MEASURE_TIME("Contour detection",
+
+        //MEASURE_TIME("Contour detection",     //여기 수정
             // Use external contour retrieval to get outer boundaries only
             std::vector<std::vector<cv::Point>> contours;
         cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
@@ -372,7 +373,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         );
         candidates.assign(circleList.begin(), circleList.end());
         LOG_DEBUG("Contour detection found " + std::to_string(candidates.size()) + " circle candidates");
-        //, m_lastMetrics.contourDetectionTime_ms);
+        //, m_lastMetrics.contourDetectionTime_ms);         // 여기 수정
 
         // 6. (Optional) Fallback to HoughCircles if no candidates found and high accuracy mode is requested
         if (candidates.empty() && !m_params.fastMode) {
