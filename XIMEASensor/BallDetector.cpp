@@ -324,56 +324,55 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         // 5. Find contours of bright regions and filter by size/circularity
         std::vector<cv::Vec3f> candidates;
 
-        //MEASURE_TIME("Contour detection",     //여기 수정
-            // Use external contour retrieval to get outer boundaries only
-            std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        std::vector<std::vector<cv::Point>> contours;
+        float minR, maxR, minArea, maxArea;
 
-        // Filter contours by expected area and shape
-        const float origMinR = static_cast<float>(m_params.minRadius);
-        const float origMaxR = static_cast<float>(m_params.maxRadius);
-        float minR = origMinR, maxR = origMaxR;
-        if (m_params.downscaleFactor > 1) {
-            // Scale radius bounds to match the working image scale
-            float factor = static_cast<float>(m_params.downscaleFactor);
-            // Ensure minimum radius is at least 3 pixels in working image
-            minR = std::max(3.0f, origMinR / factor);
-            maxR = origMaxR / factor;
-        }
-        const float minArea = CV_PI * minR * minR;
-        const float maxArea = CV_PI * maxR * maxR;
+        MEASURE_TIME("Contour detection",
+            {
+                cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-        tbb::concurrent_vector<cv::Vec3f> circleList;
-        tbb::parallel_for(tbb::blocked_range<size_t>(0, contours.size()),
-            [&](const tbb::blocked_range<size_t>& range) {
-                for (size_t i = range.begin(); i != range.end(); ++i) {
-                    double area = cv::contourArea(contours[i]);
-                    if (area < minArea || area > maxArea) {
-                        continue; // reject contours that are too small or too large
-                    }
-                    // Minimum Enclosing Circle for the contour
-                    cv::Point2f center;
-                    float radius;
-                    cv::minEnclosingCircle(contours[i], center, radius);
-                    if (radius < minR || radius > maxR) {
-                        continue; // extra check on radius in case shape is irregular
-                    }
-                    double perimeter = cv::arcLength(contours[i], true);
-                    if (perimeter <= 0) {
-                        continue;
-                    }
-                    // Calculate circularity metric (1.0 is a perfect circle)
-                    double circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
-                    if (circularity >= m_params.minCircularity) {
-                        // This contour is a valid circle candidate
-                        circleList.push_back(cv::Vec3f(center.x, center.y, radius));
-                    }
+                const float origMinR = static_cast<float>(m_params.minRadius);
+                const float origMaxR = static_cast<float>(m_params.maxRadius);
+                minR = origMinR;
+                maxR = origMaxR;
+                if (m_params.downscaleFactor > 1) {
+                    float factor = static_cast<float>(m_params.downscaleFactor);
+                    minR = std::max(3.0f, origMinR / factor);
+                    maxR = origMaxR / factor;
                 }
-            }
+                minArea = static_cast<float>(CV_PI * minR * minR);
+                maxArea = static_cast<float>(CV_PI * maxR * maxR);
+
+                tbb::concurrent_vector<cv::Vec3f> circleList;
+                tbb::parallel_for(tbb::blocked_range<size_t>(0, contours.size()),
+                    [&](const tbb::blocked_range<size_t>& range) {
+                        for (size_t i = range.begin(); i != range.end(); ++i) {
+                            double area = cv::contourArea(contours[i]);
+                            if (area < minArea || area > maxArea) {
+                                continue;
+                            }
+                            cv::Point2f center;
+                            float radius;
+                            cv::minEnclosingCircle(contours[i], center, radius);
+                            if (radius < minR || radius > maxR) {
+                                continue;
+                            }
+                            double perimeter = cv::arcLength(contours[i], true);
+                            if (perimeter <= 0) {
+                                continue;
+                            }
+                            double circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
+                            if (circularity >= m_params.minCircularity) {
+                                circleList.push_back(cv::Vec3f(center.x, center.y, radius));
+                            }
+                        }
+                    }
+                );
+                candidates.assign(circleList.begin(), circleList.end());
+                LOG_DEBUG("Contour detection found " + std::to_string(candidates.size()) + " circle candidates");
+            },
+            m_lastMetrics.contourDetectionTime_ms
         );
-        candidates.assign(circleList.begin(), circleList.end());
-        LOG_DEBUG("Contour detection found " + std::to_string(candidates.size()) + " circle candidates");
-        //, m_lastMetrics.contourDetectionTime_ms);         // 여기 수정
 
         // 6. (Optional) Fallback to HoughCircles if no candidates found and high accuracy mode is requested
         if (candidates.empty() && !m_params.fastMode) {
