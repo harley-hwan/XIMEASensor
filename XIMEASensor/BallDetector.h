@@ -3,6 +3,11 @@
 #include <string>
 #include <opencv2/core/types.hpp>
 #include <memory>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
 
 #define ENABLE_PERFORMANCE_PROFILING
 
@@ -57,9 +62,15 @@ public:
 
         // Preprocessing params
         bool skipPreprocessing;             // 전처리 스킵
-        bool enhanceShadows;                // 그림자 영역 향상
         float shadowEnhanceFactor;          // 그림자 향상 팩터
-        bool useMorphology;                 // 형태학적 연산 사용
+        bool useEnhanceShadows;             // 그림자 영역 향상
+        bool useMorphology;                 // 모폴로지 연산 사용
+        bool useNormalization;              // 이미지 정규화 사용
+
+        // Detection method control
+        bool useContourDetection;           // Contour 기반 검출 사용
+        bool useHoughDetection;             // Hough 기반 검출 사용
+        bool useThresholding;               // 이진화 사용 (Contour detection에 필수)
 
         // Performance params
         bool fastMode;                      // 고속 모드
@@ -114,6 +125,16 @@ private:
 
     void InitializeDefaultParams();
 
+    // Helper functions for DetectBall
+    std::vector<cv::Vec3f> detectByContours(const cv::Mat& binary, 
+                                            const cv::Mat& grayImage,
+                                            float downscaleFactor);
+    void selectBestBalls(const std::vector<BallInfo>& validBalls, 
+                        BallDetectionResult& result);
+    void saveDebugImages(const unsigned char* imageData, int width, int height,
+                        int frameIndex, const BallDetectionResult& result);
+    void logPerformanceMetrics(int frameIndex) const;
+
 public:
     BallDetector();
     ~BallDetector();
@@ -135,7 +156,9 @@ public:
 
     BallDetectionResult DetectBall(const unsigned char* imageData, int width, int height, int frameIndex = 0);
 
-    bool SaveDetectionImage(const unsigned char* originalImage, int width, int height, const BallDetectionResult& result, const std::string& outputPath, bool saveAsColor = false);
+    bool SaveDetectionImage(const unsigned char* originalImage, int width, int height,
+        const BallDetectionResult& result, const std::string& outputPath,
+        bool saveAsColor = false);
 
     PerformanceMetrics GetLastPerformanceMetrics() const { return m_lastMetrics; }
 

@@ -29,7 +29,6 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
     m_pendingFrameUpdates(0),
     m_usbErrorCount(0)
 {
-    InitializeCriticalSection(&m_detectionCriticalSection);
     m_cameraCallback = std::make_unique<CameraCallback>();
     memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
     s_pThis = this;
@@ -37,18 +36,15 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
 
 CXIMEASensorDiagDlg::~CXIMEASensorDiagDlg()
 {
-    DeleteCriticalSection(&m_detectionCriticalSection);
+    // 소멸자는 이제 자동으로 모든 unique_ptr을 정리
 }
 
 void CXIMEASensorDiagDlg::InitializeFrameBuffers()
 {
     size_t maxBufferSize = 2048 * 2048;
-    for (int i = 0; i < 3; i++) {
-        if (m_frameBuffers[i].data == nullptr) {
-            m_frameBuffers[i].data = new unsigned char[maxBufferSize];
-            memset(m_frameBuffers[i].data, 0, maxBufferSize);
-        }
-        m_frameBuffers[i].ready = false;
+    for (auto& buffer : m_frameBuffers) {
+        buffer.allocate(maxBufferSize);
+        buffer.ready = false;
     }
 }
 
@@ -220,12 +216,11 @@ void CXIMEASensorDiagDlg::OnDestroy()
 {
     CDialogEx::OnDestroy();
 
-    // 2025-07-30: 볼 상태 추적 비활성화
+    // 볼 상태 추적 비활성화
     if (Camera_IsBallStateTrackingEnabled()) {
         Camera_EnableBallStateTracking(false);
     }
     Camera_SetBallStateChangeCallback(nullptr, nullptr);
-
 
     if (Camera_IsRealtimeDetectionEnabled()) {
         Camera_EnableRealtimeDetection(false);
@@ -672,14 +667,11 @@ void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
     if (!writeBuffer.ready.exchange(false)) {
         int requiredSize = frameInfo.width * frameInfo.height;
 
-        // Reallocate if necessary
-        if (requiredSize > 1280 * 960) {
-            delete[] writeBuffer.data;
-            writeBuffer.data = new unsigned char[requiredSize];
-        }
+        // 재할당이 필요한 경우
+        writeBuffer.reallocate(requiredSize);
 
         if (frameInfo.data && requiredSize > 0) {
-            memcpy(writeBuffer.data, frameInfo.data, requiredSize);
+            memcpy(writeBuffer.data.get(), frameInfo.data, requiredSize);
             writeBuffer.width = frameInfo.width;
             writeBuffer.height = frameInfo.height;
         }
@@ -850,62 +842,85 @@ void CXIMEASensorDiagDlg::DrawFrame()
     int displayIdx = m_displayBufferIndex.load();
     FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
 
-    if (displayBuffer.ready && displayBuffer.data &&
-        displayBuffer.width > 0 && displayBuffer.height > 0) {
+    if (!displayBuffer.ready || !displayBuffer.data ||
+        displayBuffer.width <= 0 || displayBuffer.height <= 0) {
+        return;
+    }
 
-        // Mark last draw time
-        m_lastFrameDrawTime = std::chrono::steady_clock::now();
+    // Mark last draw time
+    m_lastFrameDrawTime = std::chrono::steady_clock::now();
 
-        size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD);
-        BITMAPINFO* pBmpInfo = (BITMAPINFO*)malloc(bmpInfoSize);
-        memset(pBmpInfo, 0, bmpInfoSize);
+    // 그레이스케일 8비트 이미지를 위한 BITMAPINFO 구조체 생성
+    constexpr int PALETTE_SIZE = 256;
+    const size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + PALETTE_SIZE * sizeof(RGBQUAD);
 
-        pBmpInfo->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        pBmpInfo->bmiHeader.biWidth = displayBuffer.width;
-        pBmpInfo->bmiHeader.biHeight = -displayBuffer.height;  // Top-down DIB
-        pBmpInfo->bmiHeader.biPlanes = 1;
-        pBmpInfo->bmiHeader.biBitCount = 8;
-        pBmpInfo->bmiHeader.biCompression = BI_RGB;
-        pBmpInfo->bmiHeader.biSizeImage = displayBuffer.width * displayBuffer.height;
-        pBmpInfo->bmiHeader.biXPelsPerMeter = 0;
-        pBmpInfo->bmiHeader.biYPelsPerMeter = 0;
-        pBmpInfo->bmiHeader.biClrUsed = 256;
-        pBmpInfo->bmiHeader.biClrImportant = 256;
+    // 일반 new 사용 (예외 발생 가능)
+    std::unique_ptr<uint8_t[]> bmpInfoBuffer;
+    try {
+        bmpInfoBuffer.reset(new uint8_t[bmpInfoSize]);
+    }
+    catch (const std::bad_alloc&) {
+        TRACE(_T("Failed to allocate memory for BITMAPINFO\n"));
+        return;
+    }
 
-        RGBQUAD* pPalette = (RGBQUAD*)(&pBmpInfo->bmiColors[0]);
-        for (int i = 0; i < 256; i++) {
-            pPalette[i].rgbBlue = i;
-            pPalette[i].rgbGreen = i;
-            pPalette[i].rgbRed = i;
-            pPalette[i].rgbReserved = 0;
-        }
+    // BITMAPINFO 포인터로 캐스팅
+    BITMAPINFO* pBmpInfo = reinterpret_cast<BITMAPINFO*>(bmpInfoBuffer.get());
+    memset(pBmpInfo, 0, bmpInfoSize);
 
-        int oldStretchMode = SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
-        SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, NULL);
+    // BITMAPINFOHEADER 설정
+    BITMAPINFOHEADER& header = pBmpInfo->bmiHeader;
+    header.biSize = sizeof(BITMAPINFOHEADER);
+    header.biWidth = displayBuffer.width;
+    header.biHeight = -displayBuffer.height;  // Top-down DIB (음수 = top-down)
+    header.biPlanes = 1;
+    header.biBitCount = 8;  // 8비트 그레이스케일
+    header.biCompression = BI_RGB;
+    header.biSizeImage = displayBuffer.width * displayBuffer.height;
+    header.biXPelsPerMeter = 0;
+    header.biYPelsPerMeter = 0;
+    header.biClrUsed = PALETTE_SIZE;
+    header.biClrImportant = PALETTE_SIZE;
 
-        int result = StretchDIBits(dc.GetSafeHdc(),
-            0, 0, rect.Width(), rect.Height(),
-            0, 0, displayBuffer.width, displayBuffer.height,
-            displayBuffer.data,
-            pBmpInfo,
-            DIB_RGB_COLORS,
-            SRCCOPY);
+    // 그레이스케일 팔레트 설정
+    RGBQUAD* pPalette = pBmpInfo->bmiColors;
+    for (int i = 0; i < PALETTE_SIZE; i++) {
+        pPalette[i].rgbBlue = static_cast<BYTE>(i);
+        pPalette[i].rgbGreen = static_cast<BYTE>(i);
+        pPalette[i].rgbRed = static_cast<BYTE>(i);
+        pPalette[i].rgbReserved = 0;
+    }
 
-        if (result == GDI_ERROR) {
-            DWORD error = GetLastError();
-            TRACE(_T("StretchDIBits failed with error: %d\n"), error);
-        }
+    // 고품질 스트레칭 모드 설정
+    HDC hdc = dc.GetSafeHdc();
+    int oldStretchMode = SetStretchBltMode(hdc, HALFTONE);
+    SetBrushOrgEx(hdc, 0, 0, NULL);
 
-        SetStretchBltMode(dc.GetSafeHdc(), oldStretchMode);
+    // 이미지 그리기 - displayBuffer.data.get()으로 실제 포인터 얻기
+    int result = StretchDIBits(
+        hdc,
+        0, 0, rect.Width(), rect.Height(),  // 대상 영역
+        0, 0, displayBuffer.width, displayBuffer.height,  // 소스 영역
+        displayBuffer.data.get(),  // unique_ptr에서 실제 포인터 얻기
+        pBmpInfo,
+        DIB_RGB_COLORS,
+        SRCCOPY
+    );
 
-        free(pBmpInfo);
+    if (result == GDI_ERROR) {
+        DWORD error = GetLastError();
+        TRACE(_T("StretchDIBits failed with error: %d\n"), error);
+    }
 
-        // Draw detection overlay if enabled
-        if (Camera_IsRealtimeDetectionEnabled()) {
-            DrawDetectionOverlay(dc, rect);
-        }
+    // 스트레칭 모드 복원
+    SetStretchBltMode(hdc, oldStretchMode);
+
+    // Detection overlay 그리기
+    if (Camera_IsRealtimeDetectionEnabled()) {
+        DrawDetectionOverlay(dc, rect);
     }
 }
+
 
 void CXIMEASensorDiagDlg::ShowError(const CString& message)
 {
@@ -1094,19 +1109,21 @@ void CXIMEASensorDiagDlg::RealtimeDetectionCallback(const RealtimeDetectionResul
 
 void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResult* result)
 {
-    EnterCriticalSection(&m_detectionCriticalSection);
-    m_lastDetectionResult = *result;
-    LeaveCriticalSection(&m_detectionCriticalSection);
-
+    {
+        std::lock_guard<std::mutex> lock(m_detectionMutex);
+        m_lastDetectionResult = *result;
+    }
+    
     PostMessage(WM_UPDATE_BALL_DETECTION);
 }
 
 LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
 {
     RealtimeDetectionResult result;
-    EnterCriticalSection(&m_detectionCriticalSection);
-    result = m_lastDetectionResult;
-    LeaveCriticalSection(&m_detectionCriticalSection);
+    {
+        std::lock_guard<std::mutex> lock(m_detectionMutex);
+        result = m_lastDetectionResult;
+    }
 
     if (result.ballFound && result.ballCount > 0) {
         CString posStr;
@@ -1163,9 +1180,10 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
 void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
 {
     RealtimeDetectionResult result;
-    EnterCriticalSection(&m_detectionCriticalSection);
-    result = m_lastDetectionResult;
-    LeaveCriticalSection(&m_detectionCriticalSection);
+    {
+        std::lock_guard<std::mutex> lock(m_detectionMutex);
+        result = m_lastDetectionResult;
+    }
 
     // 현재 볼 상태 가져오기
     BallState currentState = Camera_GetBallState();
@@ -1190,9 +1208,6 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
         CPen* pOldPen = dc.SelectObject(&pen);
         CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
 
-        //CPen redPen(PS_SOLID, 3, RGB(255, 0, 0));
-        //CPen* pOldPen = dc.SelectObject(&redPen);
-        //CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
         int x, y, radius;
         for (int i = 0; i < result.ballCount; i++) {
             x = (int)(result.balls[i].centerX * scaleX);
@@ -1237,8 +1252,6 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
         dc.SelectObject(pOldBrush);
     }
 }
-
-
 
 // 볼 상태 변경 콜백 (static)
 void CXIMEASensorDiagDlg::BallStateChangeCallback(BallState newState, BallState oldState, 

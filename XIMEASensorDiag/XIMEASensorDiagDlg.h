@@ -5,6 +5,8 @@
 #include <memory>
 #include <chrono>
 #include <atomic>
+#include <mutex>
+#include <array>
 
 // 메시지 정의
 #define WM_UPDATE_FRAME     (WM_USER + 100)
@@ -13,7 +15,7 @@
 #define WM_UPDATE_FPS       (WM_USER + 103)
 #define WM_CONTINUOUS_CAPTURE_COMPLETE (WM_USER + 104)
 #define WM_UPDATE_BALL_DETECTION (WM_USER + 105)
-#define WM_UPDATE_BALL_STATE (WM_USER + 106)  // 볼 상태 업데이트 메시지
+#define WM_UPDATE_BALL_STATE (WM_USER + 106)
 
 class CXIMEASensorDiagDlg : public CDialogEx
 {
@@ -63,18 +65,33 @@ private:
     std::unique_ptr<CameraCallback> m_cameraCallback;
     std::atomic<bool> m_isStreaming;
 
-    // Triple buffering for smooth display
+    // Triple buffering for smooth display - 개선된 버전
     struct FrameBuffer {
-        unsigned char* data;
+        std::unique_ptr<unsigned char[]> data;
         int width;
         int height;
         std::atomic<bool> ready;
 
-        FrameBuffer() : data(nullptr), width(0), height(0), ready(false) {}
-        ~FrameBuffer() { if (data) delete[] data; }
+        FrameBuffer() : width(0), height(0), ready(false) {}
+
+        void allocate(size_t size) {
+            data = std::make_unique<unsigned char[]>(size);
+            memset(data.get(), 0, size);
+        }
+
+        void reallocate(size_t newSize) {
+            if (!data || getCurrentSize() < newSize) {
+                data = std::make_unique<unsigned char[]>(newSize);
+                memset(data.get(), 0, newSize);
+            }
+        }
+
+        size_t getCurrentSize() const {
+            return data ? (2048 * 2048) : 0;
+        }
     };
 
-    FrameBuffer m_frameBuffers[3];
+    std::array<FrameBuffer, 3> m_frameBuffers;
     std::atomic<int> m_writeBufferIndex;
     std::atomic<int> m_readBufferIndex;
     std::atomic<int> m_displayBufferIndex;
@@ -95,9 +112,9 @@ private:
     float m_defaultGainDb;
     float m_defaultFps;
 
-    // 실시간 검출 관련
+    // 실시간 검출 관련 - CRITICAL_SECTION 대신 mutex 사용
     RealtimeDetectionResult m_lastDetectionResult;
-    CRITICAL_SECTION m_detectionCriticalSection;
+    std::mutex m_detectionMutex;
     std::chrono::steady_clock::time_point m_lastDetectionStatsUpdate;
 
     // 볼 상태 업데이트 타이머

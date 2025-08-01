@@ -9,6 +9,7 @@
 #include <cmath>
 #include <queue>
 #include <condition_variable>
+#include <array>
 #include "XIMEASensor.h" 
 #include "IXIMEACallback.h"
 #include "Logger.h"
@@ -52,6 +53,20 @@ private:
     std::atomic<bool> isRunning;
     std::atomic<bool> isPaused;
 
+    // 더블 버퍼링을 위한 구조체
+    struct ImageBuffer {
+        std::unique_ptr<unsigned char[]> data;
+        int width = 0;
+        int height = 0;
+        std::atomic<bool> ready{ false };
+    };
+
+    std::array<ImageBuffer, 2> buffers;
+    std::atomic<int> writeIndex{ 0 };
+    std::atomic<int> readIndex{ 1 };
+    std::mutex bufferSwapMutex;
+
+    // 기존 버퍼는 호환성을 위해 유지 (차후 제거)
     std::mutex frameMutex;
     unsigned char* frameBuffer;
     unsigned char* workingBuffer;
@@ -146,7 +161,7 @@ private:
     // Ball state tracking methods
     void UpdateBallState(const RealtimeDetectionResult* result);
     float CalculateDistance(float x1, float y1, float x2, float y2);
-    void NotifyBallStateChanged(BallState newState, BallState oldState);
+    void NotifyBallStateChanged(BallState newState, BallState oldState, const BallStateInfo& info);
     void ResetBallTracking();
 
 public:

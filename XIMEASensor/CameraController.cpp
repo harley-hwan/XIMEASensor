@@ -12,7 +12,6 @@
 std::unique_ptr<CameraController> CameraController::instance = nullptr;
 std::mutex CameraController::instanceMutex;
 
-// CameraController.cpp 수정
 CameraController::CameraController()
     : xiH(nullptr),
     isRunning(false),
@@ -24,14 +23,12 @@ CameraController::CameraController()
     currentExposure(CameraDefaults::EXPOSURE_US),
     currentGain(CameraDefaults::GAIN_DB),
     currentState(CameraState::DISCONNECTED),
-    // realTime detection
     m_realtimeDetectionEnabled(false),
     m_realtimeCallback(nullptr),
     m_realtimeCallbackContext(nullptr),
     m_detectionThreadRunning(false),
     m_realtimeProcessedFrames(0),
     m_realtimeTotalProcessingTime(0.0),
-    // ball state tracking
     m_ballStateTrackingEnabled(false),
     m_ballStateCallback(nullptr),
     m_ballStateCallbackContext(nullptr) {
@@ -46,11 +43,9 @@ CameraController::CameraController()
     m_continuousCapture = std::make_unique<ContinuousCaptureManager>();
 #endif
 
-    // BallDetector 인스턴스 생성 - 기본 파라미터를 그대로 사용
     m_realtimeBallDetector = std::make_unique<BallDetector>();
     memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
 
-    // Initialize ball state tracking
     m_ballStateConfig = BallStateConfig();
     m_ballTracking = BallTrackingData();
 
@@ -61,26 +56,38 @@ CameraController::~CameraController() {
     LOG_INFO("CameraController destructor called");
 
     try {
-        // 1. Ball state tracking 비활성화
+        // 1. 모든 작업 중지 플래그 설정
         if (m_ballStateTrackingEnabled.load()) {
             m_ballStateTrackingEnabled = false;
         }
 
-        // 2. Real-time detection 스레드 안전하게 종료
         if (m_detectionThreadRunning.load()) {
             m_detectionThreadRunning = false;
             m_detectionCV.notify_all();
+        }
 
-            if (m_detectionThread.joinable()) {
-                // 최대 3초 대기
-                auto future = std::async(std::launch::async, [this] {
-                    m_detectionThread.join();
-                    });
+        if (isRunning.load()) {
+            isRunning = false;
+        }
 
-                if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout) {
-                    LOG_ERROR("Detection thread did not stop in time, forcing termination");
-                    // 강제 종료는 위험하므로 로그만 남김
-                }
+        // 2. Detection 스레드 종료 대기
+        if (m_detectionThread.joinable()) {
+            // condition_variable에 타임아웃 추가
+            {
+                std::unique_lock<std::mutex> lock(m_detectionQueueMutex);
+                // 큐를 비우고 종료 신호
+                std::queue<std::pair<std::vector<unsigned char>, FrameInfo>> empty;
+                std::swap(m_detectionQueue, empty);
+            }
+            m_detectionCV.notify_all();
+
+            // 직접 join with 제한 시간
+            try {
+                m_detectionThread.join();
+            }
+            catch (const std::exception& e) {
+                LOG_ERROR("Failed to join detection thread: " + std::string(e.what()));
+                m_detectionThread.detach();
             }
         }
 
@@ -90,21 +97,10 @@ CameraController::~CameraController() {
             callbacks.clear();
         }
 
-        // 4. 캡처 스레드 종료
-        if (isRunning.load()) {
-            isRunning = false;
-
-            if (captureThread.joinable()) {
-                isPaused = false;
-
-                auto future = std::async(std::launch::async, [this] {
-                    captureThread.join();
-                    });
-
-                if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout) {
-                    LOG_ERROR("Capture thread did not stop in time");
-                }
-            }
+        // 4. Capture 스레드 종료
+        if (captureThread.joinable()) {
+            isPaused = false;
+            captureThread.join();
         }
 
         // 5. 카메라 하드웨어 정리
@@ -226,10 +222,11 @@ bool CameraController::OpenCamera(int deviceIndex) {
     xiSetParamInt(xiH, XI_PRM_COLOR_FILTER_ARRAY, XI_CFA_NONE);
     xiSetParamInt(xiH, XI_PRM_TRANSPORT_PIXEL_FORMAT, XI_GenTL_Image_Format_Mono8);
 
-    // Allocate frame buffers
+    // RAII 패턴을 사용한 프레임 버퍼 할당
     {
         std::lock_guard<std::mutex> lock(frameMutex);
 
+        // 기존 버퍼 정리
         if (frameBuffer) {
             delete[] frameBuffer;
             frameBuffer = nullptr;
@@ -240,30 +237,25 @@ bool CameraController::OpenCamera(int deviceIndex) {
         }
 
         size_t bufferSize = PYTHON1300_WIDTH * PYTHON1300_HEIGHT;
-        try {
-            frameBuffer = new unsigned char[bufferSize];
-            workingBuffer = new unsigned char[bufferSize];
 
-            memset(frameBuffer, 0, bufferSize);
-            memset(workingBuffer, 0, bufferSize);
-        }
-        catch (const std::bad_alloc& e) {
-            LOG_ERROR("Failed to allocate frame buffers: " + std::string(e.what()));
+        // unique_ptr로 임시 할당
+        std::unique_ptr<unsigned char[]> tempFrame(new(std::nothrow) unsigned char[bufferSize]);
+        std::unique_ptr<unsigned char[]> tempWorking(new(std::nothrow) unsigned char[bufferSize]);
 
-            if (frameBuffer) {
-                delete[] frameBuffer;
-                frameBuffer = nullptr;
-            }
-            if (workingBuffer) {
-                delete[] workingBuffer;
-                workingBuffer = nullptr;
-            }
-
+        if (!tempFrame || !tempWorking) {
+            LOG_ERROR("Failed to allocate frame buffers");
             xiCloseDevice(xiH);
             xiH = nullptr;
-
             return false;
         }
+
+        // 초기화
+        memset(tempFrame.get(), 0, bufferSize);
+        memset(tempWorking.get(), 0, bufferSize);
+
+        // 성공 시에만 소유권 이전
+        frameBuffer = tempFrame.release();
+        workingBuffer = tempWorking.release();
     }
 
     CameraState oldState = currentState.exchange(CameraState::CONNECTED);
@@ -392,8 +384,7 @@ void CameraController::CaptureLoop() {
     auto frameInterval = std::chrono::microseconds((int)(1000000.0f / currentFrameRate));
     auto nextFrameTime = std::chrono::steady_clock::now();
 
-    // Reduced timeout for better USB recovery
-    const int IMAGE_TIMEOUT_MS = 50;  // Reduced from 100ms
+    const int IMAGE_TIMEOUT_MS = 50;
     int consecutiveTimeouts = 0;
     const int MAX_CONSECUTIVE_TIMEOUTS = 10;
 
@@ -434,21 +425,34 @@ void CameraController::CaptureLoop() {
                 continue;
             }
 
-            FrameInfo frameInfo;
-            frameInfo.data = (unsigned char*)image.bp;
-            frameInfo.width = image.width;
-            frameInfo.height = image.height;
-            frameInfo.frameNumber = image.nframe;
-            frameInfo.acqFrameNumber = image.acq_nframe;
-            frameInfo.timestamp = image.tsSec + (image.tsUSec / 1000000.0);
-            frameInfo.currentFPS = currentFPS;
-            frameInfo.blackLevel = image.black_level;
-            frameInfo.GPI_level = image.GPI_level;
-            frameInfo.exposureTime_ms = image.exposure_time_us / 1000.0f;
-            frameInfo.gain_db = image.gain_db;
-            frameInfo.format = image.frm;
+            // 더블 버퍼링을 사용한 프레임 복사
+            {
+                auto& writeBuffer = buffers[writeIndex.load()];
 
-            // Use lock-free approach for frame buffer update
+                // 크기 변경 시에만 재할당
+                if (!writeBuffer.data ||
+                    writeBuffer.width != image.width ||
+                    writeBuffer.height != image.height) {
+                    writeBuffer.data = std::make_unique<unsigned char[]>(imageSize);
+                    writeBuffer.width = image.width;
+                    writeBuffer.height = image.height;
+                }
+
+                // 직접 쓰기 버퍼에 복사
+                memcpy(writeBuffer.data.get(), image.bp, imageSize);
+                writeBuffer.ready = true;
+
+                // 원자적 스왑
+                {
+                    std::lock_guard<std::mutex> lock(bufferSwapMutex);
+                    int oldWrite = writeIndex.load();
+                    int oldRead = readIndex.load();
+                    writeIndex.store(oldRead);
+                    readIndex.store(oldWrite);
+                }
+            }
+
+            // 기존 호환성을 위한 프레임 버퍼 업데이트
             {
                 std::lock_guard<std::mutex> lock(frameMutex);
 
@@ -465,6 +469,20 @@ void CameraController::CaptureLoop() {
 
                 memcpy(frameBuffer, image.bp, imageSize);
             }
+
+            FrameInfo frameInfo;
+            frameInfo.data = (unsigned char*)image.bp;
+            frameInfo.width = image.width;
+            frameInfo.height = image.height;
+            frameInfo.frameNumber = image.nframe;
+            frameInfo.acqFrameNumber = image.acq_nframe;
+            frameInfo.timestamp = image.tsSec + (image.tsUSec / 1000000.0);
+            frameInfo.currentFPS = currentFPS;
+            frameInfo.blackLevel = image.black_level;
+            frameInfo.GPI_level = image.GPI_level;
+            frameInfo.exposureTime_ms = image.exposure_time_us / 1000.0f;
+            frameInfo.gain_db = image.gain_db;
+            frameInfo.format = image.frm;
 
 #ifdef ENABLE_CONTINUOUS_CAPTURE
             // Continuous capture
@@ -491,12 +509,9 @@ void CameraController::CaptureLoop() {
         else if (stat == XI_TIMEOUT) {
             consecutiveTimeouts++;
 
-            // If too many consecutive timeouts, might be USB issue
             if (consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
                 LOG_WARNING("Multiple consecutive timeouts detected");
                 consecutiveTimeouts = 0;
-
-                // Brief pause to allow USB recovery
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
 
@@ -522,7 +537,6 @@ void CameraController::CaptureLoop() {
                 break;
             }
 
-            // Brief pause to allow device recovery
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             UpdateStatistics(false);
         }
@@ -532,7 +546,6 @@ void CameraController::CaptureLoop() {
                 "Frame grab error: " + GetXiApiErrorString(stat));
             UpdateStatistics(false);
 
-            // Brief pause on error
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
     }
@@ -547,29 +560,47 @@ bool CameraController::GetFrame(unsigned char* buffer, int bufferSize, int& outW
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(frameMutex);
+    // 새로운 더블 버퍼링 방식 사용
+    auto& readBuffer = buffers[readIndex.load()];
+    
+    if (!readBuffer.ready.load()) {
+        // 폴백: 기존 방식 사용
+        std::lock_guard<std::mutex> lock(frameMutex);
 
-    int currentFrameSize = width * height;
+        int currentFrameSize = width * height;
 
-    if (currentFrameSize <= 0) {
-        LOG_ERROR("Invalid frame dimensions: " + std::to_string(width) + "x" + std::to_string(height));
+        if (currentFrameSize <= 0) {
+            LOG_ERROR("Invalid frame dimensions: " + std::to_string(width) + "x" + std::to_string(height));
+            return false;
+        }
+
+        if (bufferSize < currentFrameSize) {
+            LOG_ERROR("Buffer size too small: " + std::to_string(bufferSize) + " < " + std::to_string(currentFrameSize));
+            return false;
+        }
+
+        if (!frameBuffer) {
+            LOG_ERROR("Frame buffer not initialized");
+            return false;
+        }
+
+        memcpy(buffer, frameBuffer, currentFrameSize);
+        outWidth = width;
+        outHeight = height;
+
+        return true;
+    }
+    
+    int frameSize = readBuffer.width * readBuffer.height;
+    if (bufferSize < frameSize) {
+        LOG_ERROR("Buffer size too small");
         return false;
     }
-
-    if (bufferSize < currentFrameSize) {
-        LOG_ERROR("Buffer size too small: " + std::to_string(bufferSize) + " < " + std::to_string(currentFrameSize));
-        return false;
-    }
-
-    if (!frameBuffer) {
-        LOG_ERROR("Frame buffer not initialized");
-        return false;
-    }
-
-    memcpy(buffer, frameBuffer, currentFrameSize);
-    outWidth = width;
-    outHeight = height;
-
+    
+    memcpy(buffer, readBuffer.data.get(), frameSize);
+    outWidth = readBuffer.width;
+    outHeight = readBuffer.height;
+    
     return true;
 }
 
@@ -1290,20 +1321,16 @@ void CameraController::ResetBallTracking() {
     m_ballTracking = BallTrackingData();
 }
 
-void CameraController::NotifyBallStateChanged(BallState newState, BallState oldState) {
+void CameraController::NotifyBallStateChanged(BallState newState, BallState oldState, const BallStateInfo& info) {
     if (m_ballStateCallback && m_ballStateConfig.enableStateCallback) {
-        BallStateInfo info;
-        // 공개 API 사용 (적절한 락 보호)
-        if (GetBallStateInfo(&info)) {
-            try {
-                m_ballStateCallback(newState, oldState, &info, m_ballStateCallbackContext);
-            }
-            catch (const std::exception& e) {
-                LOG_ERROR("Exception in ball state change callback: " + std::string(e.what()));
-            }
-            catch (...) {
-                LOG_ERROR("Unknown exception in ball state change callback");
-            }
+        try {
+            m_ballStateCallback(newState, oldState, &info, m_ballStateCallbackContext);
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("Exception in ball state change callback: " + std::string(e.what()));
+        }
+        catch (...) {
+            LOG_ERROR("Unknown exception in ball state change callback");
         }
     }
 
@@ -1311,10 +1338,12 @@ void CameraController::NotifyBallStateChanged(BallState newState, BallState oldS
         " -> " + std::string(Camera_GetBallStateString(newState)));
 }
 
+
 void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
     BallState previousState;
     BallState newState;
     bool stateChanged = false;
+    BallStateInfo stateInfo;  // 미리 정보 복사
 
     {
         std::lock_guard<std::mutex> lock(m_ballStateMutex);
@@ -1424,11 +1453,16 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
 
         newState = m_ballTracking.currentState;
         stateChanged = (previousState != newState);
+
+        if (stateChanged) {
+            // 락이 걸려있는 동안 정보 복사
+            GetBallStateInfoInternal(&stateInfo);
+        }
     } // 여기서 mutex lock 해제됨
 
-    // 락 해제 후 콜백 호출 (데드락 방지)
+    // 락 해제 후 콜백 호출
     if (stateChanged) {
-        NotifyBallStateChanged(newState, previousState);
+        NotifyBallStateChanged(newState, previousState, stateInfo);
     }
 }
 

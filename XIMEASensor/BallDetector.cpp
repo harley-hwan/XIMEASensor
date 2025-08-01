@@ -82,9 +82,15 @@ BallDetector::DetectionParams::DetectionParams() {
 
     // Preprocessing
     skipPreprocessing = false;
-    enhanceShadows = false;
+    useEnhanceShadows = true;
     shadowEnhanceFactor = 0.7f;
     useMorphology = false;
+    useNormalization = true;
+
+    // Detection method control
+    useContourDetection = true;
+    useHoughDetection = true;
+    useThresholding = true;
 
     // Performance
     fastMode = true;
@@ -129,7 +135,30 @@ public:
     std::string m_currentCaptureFolder;
     const DetectionParams* m_paramsPtr;
 
-    Impl() : m_currentCaptureFolder(""), m_paramsPtr(nullptr) {}
+    // 비동기 저장을 위한 멤버
+    struct SaveTask {
+        cv::Mat image;
+        std::string path;
+    };
+
+    std::queue<SaveTask> m_saveQueue;
+    std::mutex m_saveQueueMutex;
+    std::condition_variable m_saveCV;
+    std::thread m_saveThread;
+    std::atomic<bool> m_saveThreadRunning{ false };
+
+    Impl() : m_currentCaptureFolder(""), m_paramsPtr(nullptr) {
+        m_saveThreadRunning = true;
+        m_saveThread = std::thread(&Impl::saveWorker, this);
+    }
+
+    ~Impl() {
+        m_saveThreadRunning = false;
+        m_saveCV.notify_all();
+        if (m_saveThread.joinable()) {
+            m_saveThread.join();
+        }
+    }
 
     void setCurrentCaptureFolder(const std::string& folder) { m_currentCaptureFolder = folder; }
     void setParamsReference(const DetectionParams* params) { m_paramsPtr = params; }
@@ -145,6 +174,33 @@ public:
         const DetectionParams& params, float scaleFactor,
         const cv::Rect& roiRect, int frameIndex);
     void saveIntermediateImages(const std::string& basePath, int frameIndex);
+
+private:
+    void saveWorker() {
+        while (m_saveThreadRunning.load()) {
+            std::unique_lock<std::mutex> lock(m_saveQueueMutex);
+            m_saveCV.wait(lock, [this] {
+                return !m_saveQueue.empty() || !m_saveThreadRunning.load();
+                });
+
+            while (!m_saveQueue.empty()) {
+                SaveTask task = std::move(m_saveQueue.front());
+                m_saveQueue.pop();
+                lock.unlock();
+
+                // 실제 저장 (lock 없이)
+                try {
+                    cv::imwrite(task.path, task.image);
+                    LOG_DEBUG("Saved image: " + task.path);
+                }
+                catch (const cv::Exception& e) {
+                    LOG_ERROR("Failed to save image: " + std::string(e.what()));
+                }
+
+                lock.lock();
+            }
+        }
+    }
 };
 
 // BallDetector Constructor
@@ -191,13 +247,13 @@ void BallDetector::SetCurrentCaptureFolder(const std::string& folder) {
 BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int width, int height, int frameIndex) {
     auto totalStartTime = std::chrono::high_resolution_clock::now();
     m_lastMetrics.Reset();
-
     pImpl->setParamsReference(&m_params);
 
     BallDetectionResult result;
     result.found = false;
     result.balls.clear();
 
+    // 입력 검증
     if (!imageData || width <= 0 || height <= 0) {
         result.errorMessage = "Invalid input parameters";
         LOG_ERROR("DetectBall: " + result.errorMessage);
@@ -205,227 +261,137 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
     }
 
     try {
+        // 원본 이미지 래핑 (복사 없음)
         cv::Mat grayImage(height, width, CV_8UC1, const_cast<unsigned char*>(imageData));
 
-        // 1. ROI extraction
-        cv::Mat processImage = grayImage;
+        // 작업 이미지와 스케일 팩터 초기화
+        cv::Mat workingImage = grayImage;
         cv::Rect roiRect(0, 0, width, height);
-
-        MEASURE_TIME("ROI extraction",
-            if (m_params.useROI && m_params.roiScale < 1.0f) {
-                processImage = pImpl->extractROI(grayImage, m_params.roiScale);
-                roiRect = cv::Rect((width - processImage.cols) / 2,
-                    (height - processImage.rows) / 2,
-                    processImage.cols, processImage.rows);
-            },
-                m_lastMetrics.roiExtractionTime_ms
-                );
-
-        // 2. Downscaling
-        cv::Mat workingImage = processImage;
         float scaleFactor = 1.0f;
 
-        MEASURE_TIME("Image downscaling",
-            if (m_params.fastMode && m_params.downscaleFactor > 1) {
-                int newWidth = processImage.cols / m_params.downscaleFactor;
-                int newHeight = processImage.rows / m_params.downscaleFactor;
-                if (newWidth >= MIN_DOWNSCALE_WIDTH && newHeight >= MIN_DOWNSCALE_HEIGHT) {
-                    cv::resize(processImage, pImpl->m_downscaledImage, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
+        // ========== 1. ROI 추출 (선택적) ==========
+        if (m_params.useROI && m_params.roiScale < 1.0f) {
+            MEASURE_TIME("ROI extraction",
+                workingImage = pImpl->extractROI(grayImage, m_params.roiScale);
+            int offsetX = (width - workingImage.cols) / 2;
+            int offsetY = (height - workingImage.rows) / 2;
+            roiRect = cv::Rect(offsetX, offsetY, workingImage.cols, workingImage.rows);
+            , m_lastMetrics.roiExtractionTime_ms);
+        }
 
-                    workingImage = pImpl->m_downscaledImage;
-                    scaleFactor = static_cast<float>(m_params.downscaleFactor);
-                    LOG_DEBUG("Image downscaled to " + std::to_string(newWidth) + "x" + std::to_string(newHeight));
-                }
-            },
-                m_lastMetrics.downscaleTime_ms
-                );
+        // ========== 2. 다운스케일링 (고속 모드에서만) ==========
+        if (m_params.fastMode && m_params.downscaleFactor > 1) {
+            int newWidth = workingImage.cols / m_params.downscaleFactor;
+            int newHeight = workingImage.rows / m_params.downscaleFactor;
 
-        // 3. Preprocessing
-        cv::Mat processed;
+            if (newWidth >= MIN_DOWNSCALE_WIDTH && newHeight >= MIN_DOWNSCALE_HEIGHT) {
+                MEASURE_TIME("Image downscaling",
+                    cv::Mat downscaled;
+                cv::resize(workingImage, downscaled, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
+                workingImage = downscaled;
+                pImpl->m_downscaledImage = downscaled;
+                scaleFactor = static_cast<float>(m_params.downscaleFactor);
+                , m_lastMetrics.downscaleTime_ms);
+
+                LOG_DEBUG("Image downscaled to " + std::to_string(newWidth) + "x" + std::to_string(newHeight));
+            }
+        }
+
+        // ========== 3. 전처리 (선택적) ==========
+        cv::Mat processed = workingImage;
         if (!m_params.skipPreprocessing) {
             MEASURE_TIME("Preprocessing",
-                processed = pImpl->preprocessImage(workingImage, m_params); ,
-                m_lastMetrics.preprocessingTime_ms
-            );
-        }
-        else {
-            processed = workingImage;
-            m_lastMetrics.preprocessingTime_ms = 0.0;
+                processed = pImpl->preprocessImage(workingImage, m_params);
+            , m_lastMetrics.preprocessingTime_ms);
         }
 
-        // 4. Thresholding - not use
-        cv::Mat binary;
-        MEASURE_TIME("Thresholding",
-            if (m_params.useAdaptiveThreshold) {
-                cv::adaptiveThreshold(processed, binary, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, 51, 5);
-            }
-            else {
-                double threshVal = m_params.brightnessThreshold > 0 ? m_params.brightnessThreshold : 0;
-                int threshType = m_params.brightnessThreshold > 0 ? cv::THRESH_BINARY : (cv::THRESH_BINARY | cv::THRESH_OTSU);
-                cv::threshold(processed, binary, threshVal, 255, threshType);
-            }, 
-                m_lastMetrics.thresholdingTime_ms
-                );
-
-        // 5. Morphology - not use
-        MEASURE_TIME("Morphology operations",
-            if (m_params.useMorphology) {
-                cv::Mat morphKernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-                cv::morphologyEx(binary, binary, cv::MORPH_OPEN, morphKernel);
-                cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, morphKernel);
-            },
-                m_lastMetrics.morphologyTime_ms
-                );
-
-        if (m_params.saveIntermediateImages) {
-            pImpl->m_lastBinaryImage = binary.clone();
-        }
-
-        // 6. Contour detection
+        // ========== 4. 검출 방법 선택 및 실행 ==========
         std::vector<cv::Vec3f> candidates;
-        std::vector<std::vector<cv::Point>> contours;
 
-        MEASURE_TIME("Contour detection",
-            {
-                cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        // 4.1 Contour 기반 검출
+        if (m_params.useContourDetection && m_params.useThresholding) {
+            cv::Mat binary;
 
-                float minR = static_cast<float>(m_params.minRadius);
-                float maxR = static_cast<float>(m_params.maxRadius);
-                if (m_params.downscaleFactor > 1) {
-                    float factor = static_cast<float>(m_params.downscaleFactor);
-                    minR = std::max(3.0f, minR / factor);
-                    maxR = maxR / factor;
+            // 이진화 (Contour detection에 필수)
+            MEASURE_TIME("Thresholding",
+                if (m_params.useAdaptiveThreshold) {
+                    cv::adaptiveThreshold(processed, binary, 255,
+                        cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, 51, 5);
                 }
-                float minArea = static_cast<float>(CV_PI * minR * minR);
-                float maxArea = static_cast<float>(CV_PI * maxR * maxR);
+                else {
+                    double threshVal = m_params.brightnessThreshold > 0 ?
+                        m_params.brightnessThreshold : 0;
+                    int threshType = m_params.brightnessThreshold > 0 ?
+                        cv::THRESH_BINARY : (cv::THRESH_BINARY | cv::THRESH_OTSU);
+                    cv::threshold(processed, binary, threshVal, 255, threshType);
+                }
+            , m_lastMetrics.thresholdingTime_ms);
 
-                tbb::concurrent_vector<cv::Vec3f> circleList;
-                tbb::parallel_for(tbb::blocked_range<size_t>(0, contours.size()),
-                    [&](const tbb::blocked_range<size_t>& range) {
-                        for (size_t i = range.begin(); i != range.end(); ++i) {
-                            double area = cv::contourArea(contours[i]);
-                            if (area < minArea || area > maxArea) {
-                                continue;
-                            }
-                            cv::Point2f center;
-                            float radius;
-                            cv::minEnclosingCircle(contours[i], center, radius);
-                            if (radius < minR || radius > maxR) {
-                                continue;
-                            }
-                            double perimeter = cv::arcLength(contours[i], true);
-                            if (perimeter <= 0) {
-                                continue;
-                            }
-                            double circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
-                            if (circularity >= m_params.minCircularity) {
-                                circleList.push_back(cv::Vec3f(center.x, center.y, radius));
-                            }
-                        }
-                    }
-                );
-                candidates.assign(circleList.begin(), circleList.end());
-                LOG_DEBUG("Contour detection found " + std::to_string(candidates.size()) + " circle candidates");
-            },
-            m_lastMetrics.contourDetectionTime_ms
-        );
-
-        // 7. Hough fallback
-        if (candidates.empty() && !m_params.fastMode) {
-            MEASURE_TIME("Hough circle detection (fallback)",
-                candidates = pImpl->detectCirclesHough(processed, m_params); ,
-                m_lastMetrics.houghDetectionTime_ms
-            );
-            if (!candidates.empty()) {
-                LOG_DEBUG("Hough fallback found " + std::to_string(candidates.size()) + " candidates");
+            // Morphology 연산 (선택적)
+            if (m_params.useMorphology) {
+                MEASURE_TIME("Morphology operations",
+                    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+                cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
+                cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, kernel);
+                , m_lastMetrics.morphologyTime_ms);
             }
+
+            // 디버그 이미지 저장
+            if (m_params.saveIntermediateImages) {
+                pImpl->m_lastBinaryImage = binary.clone();
+            }
+
+            // Contour 검출
+            MEASURE_TIME("Contour detection",
+                candidates = detectByContours(binary, processed, scaleFactor);
+            , m_lastMetrics.contourDetectionTime_ms);
+
+            LOG_DEBUG("Contour detection found " + std::to_string(candidates.size()) + " circle candidates");
         }
-        else {
-            m_lastMetrics.houghDetectionTime_ms = 0.0;
+
+        // 4.2 Hough 기반 검출 (Contour가 실패했거나 Hough만 사용하는 경우)
+        if (m_params.useHoughDetection && (candidates.empty() || !m_params.useContourDetection)) {
+            MEASURE_TIME("Hough circle detection",
+                auto houghCandidates = pImpl->detectCirclesHough(processed, m_params);
+            candidates.insert(candidates.end(), houghCandidates.begin(), houghCandidates.end());
+            , m_lastMetrics.houghDetectionTime_ms);
+
+            if (!candidates.empty()) {
+                LOG_DEBUG("Hough detection found " + std::to_string(candidates.size()) + " candidates");
+            }
         }
 
         m_lastMetrics.candidatesFound = static_cast<int>(candidates.size());
 
-        // 8. Evaluate candidates
+        // ========== 5. 후보 평가 및 검증 ==========
         std::vector<BallInfo> validBalls;
         if (!candidates.empty()) {
             MEASURE_TIME("Candidate evaluation",
-                validBalls = pImpl->evaluateCandidatesTBB(workingImage, candidates, m_params, scaleFactor, roiRect, frameIndex); ,
-                m_lastMetrics.candidateEvaluationTime_ms
-            );
-        }
-        else {
-            m_lastMetrics.candidateEvaluationTime_ms = 0.0;
+                // 이미지 선택: Contour 검출 시 원본 processed 이미지 사용
+                cv::Mat evaluationImage = processed;
+            validBalls = pImpl->evaluateCandidatesTBB(
+                evaluationImage, candidates, m_params, scaleFactor, roiRect, frameIndex);
+            , m_lastMetrics.candidateEvaluationTime_ms);
         }
         m_lastMetrics.candidatesEvaluated = static_cast<int>(candidates.size());
 
-        // 9. Select best ball(s)
+        // ========== 6. 최종 선택 ==========
         if (!validBalls.empty()) {
-            if (!m_params.detectMultiple) {
-                BallInfo bestBall = tbb::parallel_reduce(
-                    tbb::blocked_range<size_t>(0, validBalls.size()),
-                    validBalls[0],
-                    [&validBalls](const tbb::blocked_range<size_t>& r, BallInfo currentBest) {
-                        for (size_t i = r.begin(); i != r.end(); ++i) {
-                            if (validBalls[i].confidence > currentBest.confidence) {
-                                currentBest = validBalls[i];
-                            }
-                        }
-                        return currentBest;
-                    },
-                    [](const BallInfo& a, const BallInfo& b) {
-                        return (a.confidence > b.confidence) ? a : b;
-                    }
-                );
-                result.balls.push_back(bestBall);
-            }
-            else {
-                tbb::parallel_sort(validBalls.begin(), validBalls.end(),
-                    [](const BallInfo& a, const BallInfo& b) {
-                        return a.confidence > b.confidence;
-                    });
-                int maxBalls = std::min(MAX_DISPLAY_BALLS, static_cast<int>(validBalls.size()));
-                result.balls.assign(validBalls.begin(), validBalls.begin() + maxBalls);
-            }
-            result.found = true;
+            selectBestBalls(validBalls, result);
             m_lastMetrics.ballDetected = true;
 
+            // 로그 출력
             const BallInfo& ball = result.balls[0];
-            LOG_INFO("Ball detected at (" + std::to_string(cvRound(ball.center.x)) + ", " +
-                std::to_string(cvRound(ball.center.y)) + "), radius=" +
-                std::to_string(cvRound(ball.radius)) + ", confidence=" +
+            LOG_INFO("Ball detected at (" + std::to_string(static_cast<int>(ball.center.x)) + ", " +
+                std::to_string(static_cast<int>(ball.center.y)) + "), radius=" +
+                std::to_string(static_cast<int>(ball.radius)) + ", confidence=" +
                 std::to_string(ball.confidence));
         }
 
-        // 10. Save debug images
-        DEBUG_IMAGE_TIME_MEASURE("Debug image saving",
-            std::string debugPath;
-            if (!pImpl->m_currentCaptureFolder.empty()) {
-                debugPath = pImpl->m_currentCaptureFolder + "/debug_images";
-            }
-            else if (!m_params.debugOutputDir.empty()) {
-                debugPath = m_params.debugOutputDir;
-            }
-            else {
-                debugPath = "./debug_images";
-                LOG_WARNING("No debug output directory specified, using ./debug_images");
-            }
-            try {
-                if (!fs::exists(debugPath)) {
-                    fs::create_directories(debugPath);
-                    LOG_DEBUG("Created debug directory: " + debugPath);
-                }
-                pImpl->saveIntermediateImages(debugPath, frameIndex);
-                if (result.found) {
-                    std::string resultPath = debugPath + "/frame_" + std::to_string(frameIndex) + "_result.png";
-                    SaveDetectionImage(imageData, width, height, result, resultPath, true);
-                }
-            }
-            catch (const fs::filesystem_error& e) {
-                LOG_ERROR("Failed to create/save debug images: " + std::string(e.what()));
-            },
-            m_lastMetrics.imagesSavingTime_ms
-            );
+        // ========== 7. 디버그 이미지 저장 ==========
+        if (m_params.saveIntermediateImages) {
+            saveDebugImages(imageData, width, height, frameIndex, result);
+        }
 
     }
     catch (const cv::Exception& e) {
@@ -437,16 +403,221 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         LOG_ERROR(result.errorMessage);
     }
 
+    // 총 처리 시간 계산
     auto totalEndTime = std::chrono::high_resolution_clock::now();
-    m_lastMetrics.totalDetectionTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(totalEndTime - totalStartTime).count() / 1000.0;
+    m_lastMetrics.totalDetectionTime_ms =
+        std::chrono::duration_cast<std::chrono::microseconds>(totalEndTime - totalStartTime).count() / 1000.0;
 
     if (m_performanceProfilingEnabled && (frameIndex % PERFORMANCE_LOG_INTERVAL == 0)) {
-        LOG_INFO("Frame " + std::to_string(frameIndex) + " - Total detection time: " + std::to_string(m_lastMetrics.totalDetectionTime_ms) + " ms");
+        logPerformanceMetrics(frameIndex);
     }
 
     return result;
 }
 
+// Helper functions implementation
+std::vector<cv::Vec3f> BallDetector::detectByContours(const cv::Mat& binary,
+    const cv::Mat& grayImage,
+    float downscaleFactor) {
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    // 반지름 범위 조정 (다운스케일 고려)
+    float minR = static_cast<float>(m_params.minRadius);
+    float maxR = static_cast<float>(m_params.maxRadius);
+    if (downscaleFactor > 1) {
+        minR = std::max(3.0f, minR / downscaleFactor);
+        maxR = maxR / downscaleFactor;
+    }
+
+    float minArea = static_cast<float>(CV_PI * minR * minR);
+    float maxArea = static_cast<float>(CV_PI * maxR * maxR);
+
+    // 병렬 처리로 후보 검출
+    tbb::concurrent_vector<cv::Vec3f> circleList;
+
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, contours.size()),
+        [&](const tbb::blocked_range<size_t>& range) {
+            for (size_t i = range.begin(); i != range.end(); ++i) {
+                double area = cv::contourArea(contours[i]);
+
+                // 면적 필터링
+                if (area < minArea || area > maxArea) {
+                    continue;
+                }
+
+                // 최소 외접원 계산
+                cv::Point2f center;
+                float radius;
+                cv::minEnclosingCircle(contours[i], center, radius);
+
+                // 반지름 필터링
+                if (radius < minR || radius > maxR) {
+                    continue;
+                }
+
+                // 원형도 계산
+                double perimeter = cv::arcLength(contours[i], true);
+                if (perimeter <= 0) {
+                    continue;
+                }
+
+                double circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
+                if (circularity >= m_params.minCircularity) {
+                    // 추가 검증: 실제 픽셀 밝기 확인
+                    if (m_params.useColorFilter) {
+                        cv::Rect checkRect(
+                            static_cast<int>(center.x - 2),
+                            static_cast<int>(center.y - 2),
+                            5, 5
+                        );
+                        checkRect &= cv::Rect(0, 0, grayImage.cols, grayImage.rows);
+
+                        if (checkRect.area() > 0) {
+                            double meanBrightness = cv::mean(grayImage(checkRect))[0];
+                            if (meanBrightness < m_params.brightnessThreshold * 0.5) {
+                                continue;  // 너무 어두운 영역 제외
+                            }
+                        }
+                    }
+
+                    circleList.push_back(cv::Vec3f(center.x, center.y, radius));
+                }
+            }
+        }
+    );
+
+    return std::vector<cv::Vec3f>(circleList.begin(), circleList.end());
+}
+
+void BallDetector::selectBestBalls(const std::vector<BallInfo>& validBalls,
+    BallDetectionResult& result) {
+    if (!m_params.detectMultiple) {
+        // 단일 검출 모드: 최고 신뢰도 공 선택
+        if (m_params.useParallel && validBalls.size() > 10) {
+            // 병렬 처리로 최고 신뢰도 찾기
+            BallInfo bestBall = tbb::parallel_reduce(
+                tbb::blocked_range<size_t>(0, validBalls.size()),
+                validBalls[0],
+                [&validBalls](const tbb::blocked_range<size_t>& r, BallInfo currentBest) {
+                    for (size_t i = r.begin(); i != r.end(); ++i) {
+                        if (validBalls[i].confidence > currentBest.confidence) {
+                            currentBest = validBalls[i];
+                        }
+                    }
+                    return currentBest;
+                },
+                [](const BallInfo& a, const BallInfo& b) {
+                    return (a.confidence > b.confidence) ? a : b;
+                }
+            );
+            result.balls.push_back(bestBall);
+        }
+        else {
+            // 순차 처리
+            auto bestIt = std::max_element(validBalls.begin(), validBalls.end(),
+                [](const BallInfo& a, const BallInfo& b) {
+                    return a.confidence < b.confidence;
+                });
+            result.balls.push_back(*bestIt);
+        }
+    }
+    else {
+        // 다중 검출 모드: 신뢰도 순으로 정렬
+        std::vector<BallInfo> sortedBalls = validBalls;
+
+        if (m_params.useParallel && sortedBalls.size() > 10) {
+            tbb::parallel_sort(sortedBalls.begin(), sortedBalls.end(),
+                [](const BallInfo& a, const BallInfo& b) {
+                    return a.confidence > b.confidence;
+                });
+        }
+        else {
+            std::sort(sortedBalls.begin(), sortedBalls.end(),
+                [](const BallInfo& a, const BallInfo& b) {
+                    return a.confidence > b.confidence;
+                });
+        }
+
+        // 겹치는 검출 제거
+        std::vector<BallInfo> finalBalls;
+        for (const auto& ball : sortedBalls) {
+            bool overlap = false;
+            for (const auto& selected : finalBalls) {
+                float dist = cv::norm(ball.center - selected.center);
+                if (dist < (ball.radius + selected.radius) * 0.5f) {
+                    overlap = true;
+                    break;
+                }
+            }
+
+            if (!overlap) {
+                finalBalls.push_back(ball);
+                if (finalBalls.size() >= MAX_DISPLAY_BALLS) {
+                    break;
+                }
+            }
+        }
+
+        result.balls = std::move(finalBalls);
+    }
+
+    result.found = true;
+}
+
+void BallDetector::saveDebugImages(const unsigned char* imageData, int width, int height,
+    int frameIndex, const BallDetectionResult& result) {
+    DEBUG_IMAGE_TIME_MEASURE("Debug image saving",
+        std::string debugPath;
+    if (!pImpl->m_currentCaptureFolder.empty()) {
+        debugPath = pImpl->m_currentCaptureFolder + "/debug_images";
+    }
+    else if (!m_params.debugOutputDir.empty()) {
+        debugPath = m_params.debugOutputDir;
+    }
+    else {
+        debugPath = "./debug_images";
+    }
+
+    try {
+        if (!fs::exists(debugPath)) {
+            fs::create_directories(debugPath);
+            LOG_DEBUG("Created debug directory: " + debugPath);
+        }
+
+        pImpl->saveIntermediateImages(debugPath, frameIndex);
+
+        if (result.found) {
+            std::string resultPath = debugPath + "/frame_" +
+                std::to_string(frameIndex) + "_result.png";
+            SaveDetectionImage(imageData, width, height, result, resultPath, true);
+        }
+    }
+    catch (const fs::filesystem_error& e) {
+        LOG_ERROR("Failed to save debug images: " + std::string(e.what()));
+    }
+    , m_lastMetrics.imagesSavingTime_ms);
+}
+
+void BallDetector::logPerformanceMetrics(int frameIndex) const {
+    std::stringstream ss;
+    ss << "Frame " << frameIndex << " Performance Metrics:\n";
+    ss << "  Total: " << m_lastMetrics.totalDetectionTime_ms << " ms\n";
+    ss << "  - ROI: " << m_lastMetrics.roiExtractionTime_ms << " ms\n";
+    ss << "  - Downscale: " << m_lastMetrics.downscaleTime_ms << " ms\n";
+    ss << "  - Preprocess: " << m_lastMetrics.preprocessingTime_ms << " ms\n";
+    ss << "  - Threshold: " << m_lastMetrics.thresholdingTime_ms << " ms\n";
+    ss << "  - Morphology: " << m_lastMetrics.morphologyTime_ms << " ms\n";
+    ss << "  - Contour: " << m_lastMetrics.contourDetectionTime_ms << " ms\n";
+    ss << "  - Hough: " << m_lastMetrics.houghDetectionTime_ms << " ms\n";
+    ss << "  - Evaluation: " << m_lastMetrics.candidateEvaluationTime_ms << " ms\n";
+    ss << "  Candidates: " << m_lastMetrics.candidatesFound << " found, "
+        << m_lastMetrics.candidatesEvaluated << " evaluated";
+
+    LOG_INFO(ss.str());
+}
+
+// Impl class methods implementation
 cv::Mat BallDetector::Impl::preprocessImage(const cv::Mat& grayImage, const DetectionParams& params) {
     cv::Mat processed = grayImage.clone();
 
@@ -456,12 +627,12 @@ cv::Mat BallDetector::Impl::preprocessImage(const cv::Mat& grayImage, const Dete
     cv::GaussianBlur(processed, processed, kernelSize, sigma, sigma, cv::BORDER_REPLICATE);
 
     // Shadow enhancement
-    if (params.enhanceShadows && !params.fastMode) {
+    if (params.useEnhanceShadows && !params.fastMode) {
         processed = enhanceShadowRegions(processed, params.shadowEnhanceFactor);
     }
 
     // Normalization
-    if (!params.fastMode && params.contrastThreshold > 0) {
+    if (params.useNormalization && params.contrastThreshold > 0) {
         cv::normalize(processed, processed, 0, 255, cv::NORM_MINMAX);
     }
 
@@ -528,7 +699,8 @@ bool BallDetector::Impl::quickValidateCircle(const cv::Mat& image, const cv::Vec
     const int margin = 2;
 
     // Boundary check
-    if (cx - radius - margin < 0 || cy - radius - margin < 0 || cx + radius + margin >= image.cols || cy + radius + margin >= image.rows) {
+    if (cx - radius - margin < 0 || cy - radius - margin < 0 ||
+        cx + radius + margin >= image.cols || cy + radius + margin >= image.rows) {
         return false;
     }
 
@@ -691,8 +863,8 @@ std::vector<BallInfo> BallDetector::Impl::evaluateCandidatesTBB(const cv::Mat& i
 
                     // Calculate brightness
                     cv::Rect ballRect(cvRound(circle[0] - circle[2] / 2),
-                                      cvRound(circle[1] - circle[2] / 2),
-                                      cvRound(circle[2]), cvRound(circle[2]));
+                        cvRound(circle[1] - circle[2] / 2),
+                        cvRound(circle[2]), cvRound(circle[2]));
 
                     ballRect &= cv::Rect(0, 0, image.cols, image.rows);
                     if (ballRect.area() > 0) {
@@ -751,63 +923,35 @@ void BallDetector::Impl::saveIntermediateImages(const std::string& basePath, int
 
     std::string prefix = basePath + "/frame_" + std::to_string(frameIndex);
 
-    try {
-        int savedCount = 0;
+    // 비동기 저장을 위해 큐에 추가
+    std::lock_guard<std::mutex> lock(m_saveQueueMutex);
 
-        if (!m_lastProcessedImage.empty()) {
-            std::string path = prefix + "_01_processed.png";
-            if (cv::imwrite(path, m_lastProcessedImage)) {
-                LOG_DEBUG("Saved processed image: " + path);
-                savedCount++;
-            }
-            else {
-                LOG_ERROR("Failed to save processed image: " + path);
-            }
-        }
-
-        if (!m_lastBinaryImage.empty()) {
-            std::string path = prefix + "_02_binary.png";
-            if (cv::imwrite(path, m_lastBinaryImage)) {
-                LOG_DEBUG("Saved binary image: " + path);
-                savedCount++;
-            }
-        }
-
-        if (!m_lastShadowEnhanced.empty()) {
-            std::string path = prefix + "_03_shadow_enhanced.png";
-            if (cv::imwrite(path, m_lastShadowEnhanced)) {
-                LOG_DEBUG("Saved shadow enhanced image: " + path);
-                savedCount++;
-            }
-        }
-
-        if (savedCount > 0) {
-            LOG_DEBUG("Saved " + std::to_string(savedCount) + " debug images for frame " +
-                std::to_string(frameIndex));
-        }
-        else {
-            LOG_WARNING("No debug images saved for frame " + std::to_string(frameIndex));
-        }
+    if (!m_lastProcessedImage.empty()) {
+        m_saveQueue.push({ m_lastProcessedImage.clone(), prefix + "_01_processed.png" });
     }
-    catch (const cv::Exception& e) {
-        LOG_ERROR("OpenCV error saving debug images: " + std::string(e.what()));
+
+    if (!m_lastBinaryImage.empty()) {
+        m_saveQueue.push({ m_lastBinaryImage.clone(), prefix + "_02_binary.png" });
     }
-    catch (const std::exception& e) {
-        LOG_ERROR("Error saving debug images: " + std::string(e.what()));
+
+    if (!m_lastShadowEnhanced.empty()) {
+        m_saveQueue.push({ m_lastShadowEnhanced.clone(), prefix + "_03_shadow_enhanced.png" });
     }
+
+    m_saveCV.notify_one();
 }
 
 double BallDetector::EstimateProcessingTime(int width, int height) const {
     double pixels = width * height;
     double scaledPixels = pixels;
 
-    if (m_params.useROI)                { scaledPixels *= (m_params.roiScale * m_params.roiScale); }
-    if (m_params.downscaleFactor > 1)   { scaledPixels /= (m_params.downscaleFactor * m_params.downscaleFactor); }
+    if (m_params.useROI) { scaledPixels *= (m_params.roiScale * m_params.roiScale); }
+    if (m_params.downscaleFactor > 1) { scaledPixels /= (m_params.downscaleFactor * m_params.downscaleFactor); }
 
     double baseTime = scaledPixels / 50000.0;  // ~20ms for 1MP
 
-    if (m_params.fastMode)              { baseTime *= 0.5; }
-    if (m_params.useParallel)           { baseTime /= std::min(4.0, static_cast<double>(m_params.processingThreads)); }
+    if (m_params.fastMode) { baseTime *= 0.5; }
+    if (m_params.useParallel) { baseTime /= std::min(4.0, static_cast<double>(m_params.processingThreads)); }
 
     return baseTime;
 }
