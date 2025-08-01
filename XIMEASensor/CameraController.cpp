@@ -12,6 +12,7 @@
 std::unique_ptr<CameraController> CameraController::instance = nullptr;
 std::mutex CameraController::instanceMutex;
 
+// CameraController.cpp 수정
 CameraController::CameraController()
     : xiH(nullptr),
     isRunning(false),
@@ -45,19 +46,8 @@ CameraController::CameraController()
     m_continuousCapture = std::make_unique<ContinuousCaptureManager>();
 #endif
 
+    // BallDetector 인스턴스 생성 - 기본 파라미터를 그대로 사용
     m_realtimeBallDetector = std::make_unique<BallDetector>();
-
-    // 실시간 검출용 최적화 설정
-    BallDetector::DetectionParams params;
-    params.fastMode = true;
-    params.useROI = true;
-    params.roiScale = 0.75f;
-    params.downscaleFactor = 2;
-    params.maxCandidates = 10;
-    params.useParallel = true;
-    params.saveIntermediateImages = false;
-    m_realtimeBallDetector->SetParameters(params);
-
     memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
 
     // Initialize ball state tracking

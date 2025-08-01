@@ -303,12 +303,16 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
 
     frameTiming.ballDetectionTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(detectionEnd - detectionStart).count() / 1000.0;
 
+    // 모든 성능 메트릭 복사
     auto metrics = m_ballDetector->GetLastPerformanceMetrics();
 
+    frameTiming.roiExtractionTime_ms = metrics.roiExtractionTime_ms;
+    frameTiming.downscaleTime_ms = metrics.downscaleTime_ms;
     frameTiming.preprocessingTime_ms = metrics.preprocessingTime_ms;
-    frameTiming.houghDetectionTime_ms = metrics.houghDetectionTime_ms;
-    frameTiming.adaptiveThresholdTime_ms = metrics.adaptiveThresholdTime_ms;
+    frameTiming.thresholdingTime_ms = metrics.thresholdingTime_ms;
+    frameTiming.morphologyTime_ms = metrics.morphologyTime_ms;
     frameTiming.contourDetectionTime_ms = metrics.contourDetectionTime_ms;
+    frameTiming.houghDetectionTime_ms = metrics.houghDetectionTime_ms;
     frameTiming.candidateEvaluationTime_ms = metrics.candidateEvaluationTime_ms;
     frameTiming.debugImagesSavingTime_ms = metrics.imagesSavingTime_ms;
 
@@ -316,7 +320,7 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
     frameTiming.candidatesEvaluated = metrics.candidatesEvaluated;
     frameTiming.ballDetected = metrics.ballDetected;
 
-
+    // 검출 이미지 저장
     auto saveImageStart = std::chrono::high_resolution_clock::now();
     if (m_config.saveDetectionImages && result.found) {
         std::stringstream detectionPath;
@@ -324,18 +328,20 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
 
         if (!result.balls.empty()) {
             const auto& firstBall = result.balls[0];
-            detectionPath << "_x" << static_cast<int>(firstBall.center.x) << "_y" << static_cast<int>(firstBall.center.y) << "_c" << static_cast<int>(firstBall.confidence * 100);
+            detectionPath << "_x" << static_cast<int>(firstBall.center.x)
+                << "_y" << static_cast<int>(firstBall.center.y)
+                << "_c" << static_cast<int>(firstBall.confidence * 100);
         }
 
         detectionPath << ".jpg";
-
         m_ballDetector->SaveDetectionImage(item.data.data(), item.width, item.height, result, detectionPath.str(), true);
     }
     auto saveImageEnd = std::chrono::high_resolution_clock::now();
-    
+
     if (m_config.saveDetectionImages && result.found) {
         frameTiming.saveDetectionImageTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(saveImageEnd - saveImageStart).count() / 1000.0;
-    } else {
+    }
+    else {
         frameTiming.saveDetectionImageTime_ms = 0.0;
     }
 
@@ -344,6 +350,7 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
 
     frameTiming.otherOperationsTime_ms = frameTiming.totalFrameProcessingTime_ms - frameTiming.ballDetectionTime_ms - frameTiming.saveDetectionImageTime_ms - frameTiming.imageLoadTime_ms;
 
+    // 통계 업데이트
     {
         std::lock_guard<std::mutex> lock(m_detectionMutex);
 
@@ -351,17 +358,22 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
         m_sessionPerformance.totalFramesProcessed++;
         m_sessionPerformance.totalProcessingTime_ms += frameTiming.totalFrameProcessingTime_ms;
 
+        // 모든 알고리즘 시간 누적
+        m_sessionPerformance.totalROIExtractionTime_ms += frameTiming.roiExtractionTime_ms;
+        m_sessionPerformance.totalDownscaleTime_ms += frameTiming.downscaleTime_ms;
         m_sessionPerformance.totalPreprocessingTime_ms += frameTiming.preprocessingTime_ms;
-        m_sessionPerformance.totalHoughDetectionTime_ms += frameTiming.houghDetectionTime_ms;
+        m_sessionPerformance.totalThresholdingTime_ms += frameTiming.thresholdingTime_ms;
+        m_sessionPerformance.totalMorphologyTime_ms += frameTiming.morphologyTime_ms;
         m_sessionPerformance.totalContourDetectionTime_ms += frameTiming.contourDetectionTime_ms;
+        m_sessionPerformance.totalHoughDetectionTime_ms += frameTiming.houghDetectionTime_ms;
         m_sessionPerformance.totalCandidateEvaluationTime_ms += frameTiming.candidateEvaluationTime_ms;
         m_sessionPerformance.totalDebugImagesSavingTime_ms += frameTiming.debugImagesSavingTime_ms;
 
-        if (frameTiming.totalFrameProcessingTime_ms < m_sessionPerformance.minFrameTime_ms) { 
-            m_sessionPerformance.minFrameTime_ms = frameTiming.totalFrameProcessingTime_ms; 
+        if (frameTiming.totalFrameProcessingTime_ms < m_sessionPerformance.minFrameTime_ms) {
+            m_sessionPerformance.minFrameTime_ms = frameTiming.totalFrameProcessingTime_ms;
         }
-        if (frameTiming.totalFrameProcessingTime_ms > m_sessionPerformance.maxFrameTime_ms) { 
-            m_sessionPerformance.maxFrameTime_ms = frameTiming.totalFrameProcessingTime_ms; 
+        if (frameTiming.totalFrameProcessingTime_ms > m_sessionPerformance.maxFrameTime_ms) {
+            m_sessionPerformance.maxFrameTime_ms = frameTiming.totalFrameProcessingTime_ms;
         }
 
         if (result.found && !result.balls.empty()) {
@@ -370,13 +382,14 @@ void ContinuousCaptureManager::ProcessBallDetection(const SaveItem& item) {
             m_detectionResult.totalBallsDetected += static_cast<int>(result.balls.size());
 
             float sumConfidence = 0.0f;
-            for (const auto& ball : result.balls) { 
-                sumConfidence += ball.confidence; 
+            for (const auto& ball : result.balls) {
+                sumConfidence += ball.confidence;
             }
 
             if (m_detectionResult.totalBallsDetected > 0) {
                 m_detectionResult.averageConfidence =
-                    ((m_detectionResult.averageConfidence * (m_detectionResult.totalBallsDetected - result.balls.size())) + sumConfidence) / m_detectionResult.totalBallsDetected;
+                    ((m_detectionResult.averageConfidence * (m_detectionResult.totalBallsDetected - result.balls.size()))
+                        + sumConfidence) / m_detectionResult.totalBallsDetected;
             }
         }
     }
@@ -398,13 +411,17 @@ void ContinuousCaptureManager::SaveSessionPerformanceReport() {
 
     double actualFPS = m_frameCount.load() / m_actualDuration;
 
-    // only algorithm
+    // 모든 알고리즘 평균 시간 계산
+    double avgROIExtraction = m_sessionPerformance.totalROIExtractionTime_ms / m_sessionPerformance.totalFramesProcessed;
+    double avgDownscale = m_sessionPerformance.totalDownscaleTime_ms / m_sessionPerformance.totalFramesProcessed;
     double avgPreprocessing = m_sessionPerformance.totalPreprocessingTime_ms / m_sessionPerformance.totalFramesProcessed;
-    double avgHough = m_sessionPerformance.totalHoughDetectionTime_ms / m_sessionPerformance.totalFramesProcessed;
+    double avgThresholding = m_sessionPerformance.totalThresholdingTime_ms / m_sessionPerformance.totalFramesProcessed;
+    double avgMorphology = m_sessionPerformance.totalMorphologyTime_ms / m_sessionPerformance.totalFramesProcessed;
     double avgContour = m_sessionPerformance.totalContourDetectionTime_ms / m_sessionPerformance.totalFramesProcessed;
+    double avgHough = m_sessionPerformance.totalHoughDetectionTime_ms / m_sessionPerformance.totalFramesProcessed;
     double avgEvaluation = m_sessionPerformance.totalCandidateEvaluationTime_ms / m_sessionPerformance.totalFramesProcessed;
 
-    // i/o
+    // I/O 시간
     double avgDebugImageSave = m_sessionPerformance.totalDebugImagesSavingTime_ms / m_sessionPerformance.totalFramesProcessed;
     double avgDetectionImageSave = 0.0;
     double avgOtherOperations = 0.0;
@@ -416,7 +433,10 @@ void ContinuousCaptureManager::SaveSessionPerformanceReport() {
     avgDetectionImageSave /= m_sessionPerformance.totalFramesProcessed;
     avgOtherOperations /= m_sessionPerformance.totalFramesProcessed;
 
-    double totalPureAlgorithmTime = avgPreprocessing + avgHough + avgContour + avgEvaluation;
+    // 총 알고리즘 시간 계산
+    double totalPureAlgorithmTime = avgROIExtraction + avgDownscale + avgPreprocessing +
+        avgThresholding + avgMorphology + avgContour +
+        avgHough + avgEvaluation;
     double totalIOTime = avgDebugImageSave + avgDetectionImageSave;
     double totalOverhead = avgOtherOperations;
     double totalAccountedTime = totalPureAlgorithmTime + totalIOTime + totalOverhead;
@@ -465,24 +485,94 @@ void ContinuousCaptureManager::SaveSessionPerformanceReport() {
 
     report << "PROCESSING TIME BREAKDOWN (Average per Frame)\n";
     report << "============================================\n";
-    report << "A. Detection Algorithms (" << totalPureAlgorithmTime << " ms, " << (totalPureAlgorithmTime / m_sessionPerformance.avgFrameTime_ms * 100) << "%):\n";
-    report << "   - Preprocessing: " << avgPreprocessing << " ms (" << (avgPreprocessing / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
-    report << "   - Hough Circle Detection: " << avgHough << " ms (" << (avgHough / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
-    if (avgContour > 0.001) { report << "   - Contour Detection: " << avgContour << " ms (" << (avgContour / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n"; }
-    report << "   - Candidate Evaluation: " << avgEvaluation << " ms (" << (avgEvaluation / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n\n";
+    report << "A. Detection Algorithms (" << totalPureAlgorithmTime << " ms, "
+        << (totalPureAlgorithmTime / m_sessionPerformance.avgFrameTime_ms * 100) << "%):\n";
 
-    report << "B. I/O Operations (" << totalIOTime << " ms, " << (totalIOTime / m_sessionPerformance.avgFrameTime_ms * 100) << "%):\n";
-    if (avgDebugImageSave > 0.001) { report << "   - Debug Images Saving: " << avgDebugImageSave << " ms (" << (avgDebugImageSave / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n"; }
-    if (avgDetectionImageSave > 0.001) { report << "   - Detection Images Saving: " << avgDetectionImageSave << " ms (" << (avgDetectionImageSave / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n"; }
+    // 이미지 전처리 단계
+    report << "   1) Image Preparation:\n";
+    if (avgROIExtraction > 0.001) {
+        report << "      - ROI Extraction: " << avgROIExtraction << " ms ("
+            << (avgROIExtraction / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    }
+    if (avgDownscale > 0.001) {
+        report << "      - Downscaling: " << avgDownscale << " ms ("
+            << (avgDownscale / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    }
+    report << "      - Preprocessing (blur, etc.): " << avgPreprocessing << " ms ("
+        << (avgPreprocessing / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+
+    // 이진화 단계
+    report << "   2) Binary Segmentation:\n";
+    report << "      - Thresholding: " << avgThresholding << " ms ("
+        << (avgThresholding / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    if (avgMorphology > 0.001) {
+        report << "      - Morphology Operations: " << avgMorphology << " ms ("
+            << (avgMorphology / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    }
+
+    // 검출 단계
+    report << "   3) Circle Detection:\n";
+    report << "      - Contour Detection: " << avgContour << " ms ("
+        << (avgContour / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    if (avgHough > 0.001) {
+        report << "      - Hough Circle Detection: " << avgHough << " ms ("
+            << (avgHough / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    }
+    report << "      - Candidate Evaluation: " << avgEvaluation << " ms ("
+        << (avgEvaluation / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n\n";
+
+    report << "B. I/O Operations (" << totalIOTime << " ms, "
+        << (totalIOTime / m_sessionPerformance.avgFrameTime_ms * 100) << "%):\n";
+    if (avgDebugImageSave > 0.001) {
+        report << "   - Debug Images Saving: " << avgDebugImageSave << " ms ("
+            << (avgDebugImageSave / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    }
+    if (avgDetectionImageSave > 0.001) {
+        report << "   - Detection Images Saving: " << avgDetectionImageSave << " ms ("
+            << (avgDetectionImageSave / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    }
     report << "\n";
 
-    report << "C. System Overhead (" << totalOverhead << " ms, " << (totalOverhead / m_sessionPerformance.avgFrameTime_ms * 100) << "%):\n";
+    report << "C. System Overhead (" << totalOverhead << " ms, "
+        << (totalOverhead / m_sessionPerformance.avgFrameTime_ms * 100) << "%):\n";
     report << "   - Thread synchronization, memory operations, etc.\n\n";
 
-    report << "Total Accounted Time: " << totalAccountedTime << " ms (" << (totalAccountedTime / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    report << "Total Accounted Time: " << totalAccountedTime << " ms ("
+        << (totalAccountedTime / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
 
     double unaccountedTime = m_sessionPerformance.avgFrameTime_ms - totalAccountedTime;
-    if (std::abs(unaccountedTime) > 0.01) { report << "Unaccounted Time: " << unaccountedTime << " ms (" << (unaccountedTime / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    if (std::abs(unaccountedTime) > 0.01) {
+        report << "Unaccounted Time: " << unaccountedTime << " ms ("
+            << (unaccountedTime / m_sessionPerformance.avgFrameTime_ms * 100) << "%)\n";
+    }
+    report << "\n";
+
+    // 알고리즘 효율성 분석
+    report << "ALGORITHM EFFICIENCY ANALYSIS\n";
+    report << "----------------------------\n";
+
+    // 가장 시간이 많이 걸리는 단계 찾기
+    std::vector<std::pair<std::string, double>> algorithmTimes = {
+        {"ROI Extraction", avgROIExtraction},
+        {"Downscaling", avgDownscale},
+        {"Preprocessing", avgPreprocessing},
+        {"Thresholding", avgThresholding},
+        {"Morphology", avgMorphology},
+        {"Contour Detection", avgContour},
+        {"Hough Detection", avgHough},
+        {"Candidate Evaluation", avgEvaluation}
+    };
+
+    std::sort(algorithmTimes.begin(), algorithmTimes.end(),
+        [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    report << "Top time-consuming algorithms:\n";
+    int rank = 1;
+    for (const auto& [name, time] : algorithmTimes) {
+        if (time > 0.001) {
+            report << "   " << rank++ << ". " << name << ": " << time << " ms ("
+                << (time / totalPureAlgorithmTime * 100) << "% of algorithm time)\n";
+        }
     }
     report << "\n";
 
@@ -501,6 +591,8 @@ void ContinuousCaptureManager::SaveSessionPerformanceReport() {
     report << "Processing Threads: " << params.processingThreads << "\n";
     report << "Fast Mode: " << (params.fastMode ? "Enabled" : "Disabled") << "\n";
     report << "Parallel Processing: " << (params.useParallel ? "Enabled" : "Disabled") << "\n";
+    report << "Morphology Operations: " << (params.useMorphology ? "Enabled" : "Disabled") << "\n";
+    report << "Adaptive Threshold: " << (params.useAdaptiveThreshold ? "Enabled" : "Disabled") << "\n";
     report << "Save Debug Images: " << (params.saveIntermediateImages ? "Enabled" : "Disabled") << "\n";
 
     report << "\nIMAGE SAVING CONFIGURATION\n";
@@ -513,9 +605,9 @@ void ContinuousCaptureManager::SaveSessionPerformanceReport() {
 
     LOG_INFO("\n" + report.str());
 
+    // 파일로 저장
     std::stringstream filename;
-    filename << m_captureFolder << "/performance_report_"
-        << std::put_time(&localTime, "%Y%m%d_%H%M%S") << ".txt";
+    filename << m_captureFolder << "/performance_report_" << std::put_time(&localTime, "%Y%m%d_%H%M%S") << ".txt";
 
     try {
         std::ofstream reportFile(filename.str());
@@ -529,12 +621,19 @@ void ContinuousCaptureManager::SaveSessionPerformanceReport() {
         LOG_ERROR("Failed to save performance report: " + std::string(e.what()));
     }
 
+    // 요약 로그
     LOG_INFO("\n========== PERFORMANCE SUMMARY ==========");
     LOG_INFO("Average Frame Time: " + std::to_string(m_sessionPerformance.avgFrameTime_ms) + " ms");
-    LOG_INFO("  - Pure Algorithms: " + std::to_string(totalPureAlgorithmTime) + " ms (" + std::to_string(totalPureAlgorithmTime / m_sessionPerformance.avgFrameTime_ms * 100) + "%)");
+    LOG_INFO("  - Pure Algorithms: " + std::to_string(totalPureAlgorithmTime) + " ms ("
+        + std::to_string(totalPureAlgorithmTime / m_sessionPerformance.avgFrameTime_ms * 100) + "%)");
+    LOG_INFO("    * Preprocessing: " + std::to_string(avgROIExtraction + avgDownscale + avgPreprocessing) + " ms");
+    LOG_INFO("    * Segmentation: " + std::to_string(avgThresholding + avgMorphology) + " ms");
+    LOG_INFO("    * Detection: " + std::to_string(avgContour + avgHough + avgEvaluation) + " ms");
     LOG_INFO("  - I/O Operations: " + std::to_string(totalIOTime) + " ms (" + std::to_string(ioPercentage) + "%)");
-    LOG_INFO("  - System Overhead: " + std::to_string(totalOverhead) + " ms (" + std::to_string(totalOverhead / m_sessionPerformance.avgFrameTime_ms * 100) + "%)");
-    LOG_INFO("Detection Rate: " + std::to_string(m_sessionPerformance.framesWithBallDetected * 100.0 / m_sessionPerformance.totalFramesProcessed) + "%");
+    LOG_INFO("  - System Overhead: " + std::to_string(totalOverhead) + " ms ("
+        + std::to_string(totalOverhead / m_sessionPerformance.avgFrameTime_ms * 100) + "%)");
+    LOG_INFO("Detection Rate: "
+        + std::to_string(m_sessionPerformance.framesWithBallDetected * 100.0 / m_sessionPerformance.totalFramesProcessed) + "%");
     LOG_INFO("========================================\n");
 }
 

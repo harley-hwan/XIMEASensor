@@ -9,6 +9,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 // add headers that you want to pre-compile here
+#define NOMINMAX
 #include "framework.h"
 
 #define ENABLE_CONTINUOUS_CAPTURE

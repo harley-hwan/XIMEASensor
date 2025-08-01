@@ -4,8 +4,7 @@
 #include <opencv2/core/types.hpp>
 #include <memory>
 
-//#define ENABLE_DETECTION_IMAGE_SAVING
-#define ENABLE_PERFORMANCE_PROFILING    // performance_report log or not
+#define ENABLE_PERFORMANCE_PROFILING
 
 namespace cv {
     class Mat;
@@ -16,13 +15,11 @@ struct BallInfo {
     float radius;
     float confidence;     // Detection confidence (0.0 ~ 1.0)
     int frameIndex;
-
     float circularity;    // 0.0 ~ 1.0
     float brightness;     // Average brightness (0 ~ 255)
-    float contrast;
 
     BallInfo() : radius(0.0f), confidence(0.0f), frameIndex(0),
-        circularity(1.0f), brightness(0.0f), contrast(0.0f) {
+        circularity(1.0f), brightness(0.0f) {
     }
 };
 
@@ -37,84 +34,81 @@ struct BallDetectionResult {
 class BallDetector {
 public:
     struct DetectionParams {
-        // Hough Circle detection params
-        double dp;             // Inverse ratio of accumulator resolution
-        double minDist;        // Minimum distance between detected centers
-        double param1;         // Higher threshold for Canny edge detection
-        double param2;         // Circle detection threshold (lower = more permissive)
-        int minRadius;         // pixels
-        int maxRadius;         // pixels
+        // Circle detection params
+        int minRadius;                      // 최소 반지름 (픽셀)
+        int maxRadius;                      // 최대 반지름 (픽셀)
+        float minCircularity;               // 최소 원형도 (0.0 ~ 1.0)
 
-        int brightnessThreshold;
-        float minCircularity;      // 0.0 ~ 1.0
-        float contrastThreshold;
+        // Hough Circle params (fallback용)
+        double dp;                          // 누산기 해상도 역비율
+        double minDist;                     // 검출된 중심점 간 최소 거리
+        double param1;                      // Canny 엣지 상위 임계값
+        double param2;                      // 원 검출 임계값
 
-        // Detection opt
-        bool useColorFilter;
-        bool useCircularityCheck;
-        bool useHoughGradientAlt;
-        bool detectMultiple;
-        bool useMorphology;
-        bool useAdaptiveThreshold;
+        // Thresholding params
+        int brightnessThreshold;            // 전역 임계값 (0 = Otsu)
+        bool useAdaptiveThreshold;          // 적응형 임계값 사용
 
-        // Camera specific opt
-        bool correctPerspective;
-        bool enhanceShadows;
-        float shadowEnhanceFactor;  // 0.0 ~ 1.0
+        // Validation params
+        bool useColorFilter;                // 밝기 필터 사용
+        bool useCircularityCheck;           // 원형도 재검증
+        float contrastThreshold;            // 대비 임계값
+        bool detectMultiple;                // 다중 검출 모드
 
-        // Debug opt
-        bool saveIntermediateImages;
-        std::string debugOutputDir;
+        // Preprocessing params
+        bool skipPreprocessing;             // 전처리 스킵
+        bool enhanceShadows;                // 그림자 영역 향상
+        float shadowEnhanceFactor;          // 그림자 향상 팩터
+        bool useMorphology;                 // 형태학적 연산 사용
 
-        bool fastMode;
-        bool useROI;
-        float roiScale;             // 0.5 ~ 1.0
-        int downscaleFactor;        // 1 ~ 4
-        bool useParallel;           // parallel with TBB
-        int maxCandidates;
+        // Performance params
+        bool fastMode;                      // 고속 모드
+        bool useROI;                        // ROI 사용
+        float roiScale;                     // ROI 스케일 (0.5 ~ 1.0)
+        int downscaleFactor;                // 다운스케일 팩터 (1 ~ 4)
+        bool useParallel;                   // TBB 병렬 처리
+        int maxCandidates;                  // 최대 후보 개수
+        int processingThreads;              // 처리 스레드 수
 
-        bool skipPreprocessing;
-        int edgeThreshold;
-        bool useCache;
-        int processingThreads;
+        // Debug params
+        bool saveIntermediateImages;        // 중간 이미지 저장
+        std::string debugOutputDir;         // 디버그 출력 디렉토리
 
         DetectionParams();
     };
 
-    // Performance metrics struct
     struct PerformanceMetrics {
         double totalDetectionTime_ms;
+
+        // 이미지 전처리 단계
+        double roiExtractionTime_ms;
+        double downscaleTime_ms;
         double preprocessingTime_ms;
-        double houghDetectionTime_ms;
-        double adaptiveThresholdTime_ms;
+
+        // 이진화 단계
+        double thresholdingTime_ms;
+        double morphologyTime_ms;
+
+        // 검출 단계
         double contourDetectionTime_ms;
+        double houghDetectionTime_ms;
         double candidateEvaluationTime_ms;
+
+        // 저장 단계
         double imagesSavingTime_ms;
 
+        // 통계
         int candidatesFound;
         int candidatesEvaluated;
         bool ballDetected;
 
-        void Reset() {
-            totalDetectionTime_ms = 0;
-            preprocessingTime_ms = 0;
-            houghDetectionTime_ms = 0;
-            adaptiveThresholdTime_ms = 0;
-            contourDetectionTime_ms = 0;
-            candidateEvaluationTime_ms = 0;
-            imagesSavingTime_ms = 0;
-            candidatesFound = 0;
-            candidatesEvaluated = 0;
-            ballDetected = false;
-        }
+        void Reset();
     };
 
 private:
     DetectionParams m_params;
-
     class Impl;
     std::unique_ptr<Impl> pImpl;
-
     mutable PerformanceMetrics m_lastMetrics;
     bool m_performanceProfilingEnabled;
 
@@ -124,6 +118,7 @@ public:
     BallDetector();
     ~BallDetector();
 
+    // 복사 및 이동 금지
     BallDetector(const BallDetector&) = delete;
     BallDetector& operator=(const BallDetector&) = delete;
     BallDetector(BallDetector&&) = delete;

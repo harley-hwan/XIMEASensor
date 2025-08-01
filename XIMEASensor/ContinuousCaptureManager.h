@@ -50,16 +50,20 @@ private:
         struct FrameTimingData {
             int frameIndex = 0;
 
-            double totalFrameProcessingTime_ms = 0;     // ProcessBallDetection 전체 시간
-            double imageLoadTime_ms = 0;                // 이미지 로드 시간
-            double ballDetectionTime_ms = 0;            // BallDetector::DetectBall 전체 시간
-            double saveDetectionImageTime_ms = 0;       // 검출 결과 이미지 저장 시간
-            double otherOperationsTime_ms = 0;          // 기타 오버헤드
+            double totalFrameProcessingTime_ms = 0;
+            double imageLoadTime_ms = 0;
+            double ballDetectionTime_ms = 0;
+            double saveDetectionImageTime_ms = 0;
+            double otherOperationsTime_ms = 0;
 
+            // 상세 알고리즘 시간
+            double roiExtractionTime_ms = 0;
+            double downscaleTime_ms = 0;
             double preprocessingTime_ms = 0;
-            double houghDetectionTime_ms = 0;
-            double adaptiveThresholdTime_ms = 0;
+            double thresholdingTime_ms = 0;
+            double morphologyTime_ms = 0;
             double contourDetectionTime_ms = 0;
+            double houghDetectionTime_ms = 0;
             double candidateEvaluationTime_ms = 0;
             double debugImagesSavingTime_ms = 0;
 
@@ -88,6 +92,12 @@ private:
         double totalDetectionImageSavingTime_ms = 0.0;
         double totalOtherOperationsTime_ms = 0.0;
 
+        // SessionPerformanceData에도 누적 시간 추가
+        double totalROIExtractionTime_ms = 0.0;
+        double totalDownscaleTime_ms = 0.0;
+        double totalThresholdingTime_ms = 0.0;
+        double totalMorphologyTime_ms = 0.0;
+
         void Reset() {
             frameTimings.clear();
             totalFramesProcessed = 0;
@@ -103,6 +113,11 @@ private:
             totalDebugImagesSavingTime_ms = 0.0;
             totalDetectionImageSavingTime_ms = 0.0;
             totalOtherOperationsTime_ms = 0.0;
+
+            totalROIExtractionTime_ms = 0.0;
+            totalDownscaleTime_ms = 0.0;
+            totalThresholdingTime_ms = 0.0;
+            totalMorphologyTime_ms = 0.0;
         }
     };
 
