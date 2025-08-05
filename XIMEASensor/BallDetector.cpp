@@ -12,7 +12,7 @@
 #include <filesystem>
 #include <thread>
 #include <numeric>
-#include <immintrin.h>  // SIMD support
+#include <immintrin.h>  // SIMD
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_sort.h>
 #include <tbb/parallel_reduce.h>
@@ -319,7 +319,10 @@ void BallDetector::SetCurrentCaptureFolder(const std::string& folder) {
 
 // Optimized main detection function
 BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int width, int height, int frameIndex) {
+    auto totalStartTime = std::chrono::high_resolution_clock::now();
+
     // Initialize thread-local context with pre-allocated resources
+    auto contextInitStart = std::chrono::high_resolution_clock::now();
     if (!t_context) {
         t_context = std::make_unique<DetectionContext>();
     }
@@ -333,16 +336,21 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         context.tempMat3.create(height, width, CV_8UC1);
     }
     context.tempCandidates.reserve(100);
+    auto contextInitEnd = std::chrono::high_resolution_clock::now();
 
-    auto totalStartTime = std::chrono::high_resolution_clock::now();
     context.metrics.Reset();
+    context.metrics.contextInitTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+        contextInitEnd - contextInitStart).count() / 1000.0;
 
     // Get thread-safe copy of parameters
+    auto paramCopyStart = std::chrono::high_resolution_clock::now();
     DetectionParams localParams;
     {
         std::lock_guard<std::mutex> lock(m_paramsMutex);
         localParams = m_params;
     }
+    auto paramCopyEnd = std::chrono::high_resolution_clock::now();
+    context.metrics.parameterCopyTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(paramCopyEnd - paramCopyStart).count() / 1000.0;
 
     // Pass context to implementation
     pImpl->setContext(&context);
@@ -362,7 +370,10 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
 
     try {
         // Create Mat wrapper without copying data
+        auto matCreationStart = std::chrono::high_resolution_clock::now();
         cv::Mat grayImage(height, width, CV_8UC1, const_cast<unsigned char*>(imageData));
+        auto matCreationEnd = std::chrono::high_resolution_clock::now();
+        context.metrics.matCreationTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(matCreationEnd - matCreationStart).count() / 1000.0;
 
         cv::Mat workingImage = grayImage;
         cv::Rect roiRect(0, 0, width, height);
@@ -372,10 +383,10 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         if (localParams.useROI && localParams.roiScale < 1.0f) {
             MEASURE_TIME("ROI extraction",
                 workingImage = pImpl->extractROIOptimized(grayImage, localParams.roiScale);
-            int offsetX = (width - workingImage.cols) / 2;
-            int offsetY = (height - workingImage.rows) / 2;
-            roiRect = cv::Rect(offsetX, offsetY, workingImage.cols, workingImage.rows);
-            , context.metrics.roiExtractionTime_ms);
+                int offsetX = (width - workingImage.cols) / 2;
+                int offsetY = (height - workingImage.rows) / 2;
+                roiRect = cv::Rect(offsetX, offsetY, workingImage.cols, workingImage.rows);
+                , context.metrics.roiExtractionTime_ms);
         }
 
         // Downscaling - optimized with timing
@@ -401,19 +412,15 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         if (!localParams.skipPreprocessing) {
             MEASURE_TIME("Preprocessing",
                 processed = pImpl->preprocessImage(workingImage, localParams);
-            , context.metrics.preprocessingTime_ms);
+                , context.metrics.preprocessingTime_ms);
         }
 
-        // Edge detection - optimized with proper timing measurement
+        // Edge detection - FIXED: now properly tracked
         cv::Mat edgeMap;
-        double edgeDetectionTime = 0.0;
         if (localParams.edgeThreshold > 0) {
             MEASURE_TIME("Edge detection",
                 edgeMap = pImpl->computeEdgeMapOptimized(processed, 0);
-            , edgeDetectionTime);
-
-            // Edge detection 시간을 적절한 메트릭에 추가
-            context.metrics.candidateEvaluationTime_ms += edgeDetectionTime;
+                , context.metrics.edgeDetectionTime_ms);
         }
 
         // Detection - use pre-allocated vector
@@ -431,10 +438,8 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
                         localParams.adaptiveBlockSize, localParams.adaptiveConstant);
                 }
                 else {
-                    double threshVal = localParams.brightnessThreshold > 0 ?
-                        localParams.brightnessThreshold : 0;
-                    int threshType = localParams.brightnessThreshold > 0 ?
-                        cv::THRESH_BINARY : (cv::THRESH_BINARY | cv::THRESH_OTSU);
+                    double threshVal = localParams.brightnessThreshold > 0 ? localParams.brightnessThreshold : 0;
+                    int threshType = localParams.brightnessThreshold > 0 ? cv::THRESH_BINARY : (cv::THRESH_BINARY | cv::THRESH_OTSU);
                     cv::threshold(processed, binary, threshVal, 255, threshType);
                 }
             , context.metrics.thresholdingTime_ms);
@@ -442,9 +447,9 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
             if (localParams.useMorphology) {
                 MEASURE_TIME("Morphology operations",
                     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-                cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
-                cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, kernel);
-                , context.metrics.morphologyTime_ms);
+                    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
+                    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, kernel);
+                    , context.metrics.morphologyTime_ms);
             }
 
             if (localParams.saveIntermediateImages) {
@@ -453,8 +458,8 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
 
             MEASURE_TIME("Contour detection",
                 auto contourCandidates = detectByContoursOptimized(binary, processed, scaleFactor);
-            candidates.insert(candidates.end(), contourCandidates.begin(), contourCandidates.end());
-            , context.metrics.contourDetectionTime_ms);
+                candidates.insert(candidates.end(), contourCandidates.begin(), contourCandidates.end());
+                , context.metrics.contourDetectionTime_ms);
 
             LOG_DEBUG("Contour detection found " + std::to_string(candidates.size()) + " candidates");
         }
@@ -463,8 +468,8 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         if (localParams.useHoughDetection && (candidates.empty() || !localParams.useContourDetection)) {
             MEASURE_TIME("Hough circle detection",
                 auto houghCandidates = pImpl->detectCirclesHoughOptimized(processed, localParams);
-            candidates.insert(candidates.end(), houghCandidates.begin(), houghCandidates.end());
-            , context.metrics.houghDetectionTime_ms);
+                candidates.insert(candidates.end(), houghCandidates.begin(), houghCandidates.end());
+                , context.metrics.houghDetectionTime_ms);
 
             if (!candidates.empty()) {
                 LOG_DEBUG("Hough detection found " + std::to_string(candidates.size()) + " candidates");
@@ -475,8 +480,8 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         if (localParams.useTemplateMatching && m_templateInitialized) {
             MEASURE_TIME("Template matching",
                 auto templateCandidates = detectByTemplateOptimized(processed, scaleFactor);
-            candidates.insert(candidates.end(), templateCandidates.begin(), templateCandidates.end());
-            , context.metrics.templateMatchingTime_ms);
+                candidates.insert(candidates.end(), templateCandidates.begin(), templateCandidates.end());
+                , context.metrics.templateMatchingTime_ms);
         }
 
         context.metrics.candidatesFound = static_cast<int>(candidates.size());
@@ -485,9 +490,8 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         std::vector<BallInfo> validBalls;
         if (!candidates.empty()) {
             MEASURE_TIME("Candidate evaluation",
-                validBalls = pImpl->evaluateCandidatesOptimized(
-                    processed, candidates, localParams, scaleFactor, roiRect, frameIndex, edgeMap);
-            , context.metrics.candidateEvaluationTime_ms);
+                validBalls = pImpl->evaluateCandidatesOptimized(processed, candidates, localParams, scaleFactor, roiRect, frameIndex, edgeMap);
+                , context.metrics.candidateEvaluationTime_ms);
         }
         context.metrics.candidatesEvaluated = static_cast<int>(candidates.size());
         context.metrics.candidatesRejected = static_cast<int>(candidates.size() - validBalls.size());
@@ -496,21 +500,26 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         if (localParams.enableTracking && !validBalls.empty()) {
             MEASURE_TIME("Tracking update",
                 updateTrackingOptimized(validBalls);
-            , context.metrics.trackingTime_ms);
+                , context.metrics.trackingTime_ms);
         }
 
         // Final selection - optimized with timing
         if (!validBalls.empty()) {
             MEASURE_TIME("Ball selection",
                 selectBestBallsOptimized(validBalls, result);
-            , context.metrics.selectionTime_ms);
+                , context.metrics.selectionTime_ms);
 
-            // Final confidence filter
-            result.balls.erase(
-                std::remove_if(result.balls.begin(), result.balls.end(),
+                // Final confidence filter and processing
+                auto filterStart = std::chrono::high_resolution_clock::now();
+
+                // Final confidence filter
+                result.balls.erase(std::remove_if(result.balls.begin(), result.balls.end(), 
                     [](const BallInfo& ball) { return ball.confidence < MIN_CONFIDENCE_THRESHOLD; }),
                 result.balls.end()
             );
+
+            auto filterEnd = std::chrono::high_resolution_clock::now();
+            context.metrics.resultFilteringTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(filterEnd - filterStart).count() / 1000.0;
 
             if (!result.balls.empty()) {
                 context.metrics.ballDetected = true;
@@ -520,11 +529,14 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
                 }
 
                 // Calculate average confidence
+                auto confCalcStart = std::chrono::high_resolution_clock::now();
                 float totalConfidence = 0.0f;
                 for (const auto& ball : result.balls) {
                     totalConfidence += ball.confidence;
                 }
                 context.metrics.averageConfidence = totalConfidence / result.balls.size();
+                auto confCalcEnd = std::chrono::high_resolution_clock::now();
+                context.metrics.confidenceCalculationTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(confCalcEnd - confCalcStart).count() / 1000.0;
 
                 const BallInfo& ball = result.balls[0];
                 LOG_INFO("Ball detected at (" + std::to_string(static_cast<int>(ball.center.x)) + ", " +
@@ -542,7 +554,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         if (localParams.saveIntermediateImages) {
             MEASURE_TIME("Debug image saving",
                 saveDebugImagesAsync(imageData, width, height, frameIndex, result);
-            , context.metrics.imagesSavingTime_ms);
+                , context.metrics.imagesSavingTime_ms);
         }
 
     }
@@ -556,22 +568,32 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
     }
 
     auto totalEndTime = std::chrono::high_resolution_clock::now();
-    context.metrics.totalDetectionTime_ms =
-        std::chrono::duration_cast<std::chrono::microseconds>(totalEndTime - totalStartTime).count() / 1000.0;
+    context.metrics.totalDetectionTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(totalEndTime - totalStartTime).count() / 1000.0;
 
     // Save metrics thread-safely
+    auto metricsUpdateStart = std::chrono::high_resolution_clock::now();
     {
         std::lock_guard<std::mutex> lock(m_metricsMutex);
         m_lastMetrics = context.metrics;
+    }
+    auto metricsUpdateEnd = std::chrono::high_resolution_clock::now();
+
+    // Add synchronization time
+    context.metrics.synchronizationTime_ms = context.metrics.parameterCopyTime_ms +
+        std::chrono::duration_cast<std::chrono::microseconds>(metricsUpdateEnd - metricsUpdateStart).count() / 1000.0;
+
+    // Update metrics one more time to include synchronization time
+    {
+        std::lock_guard<std::mutex> lock(m_metricsMutex);
+        m_lastMetrics.synchronizationTime_ms = context.metrics.synchronizationTime_ms;
+        m_lastMetrics.metricsUpdateTime_ms = std::chrono::duration_cast<std::chrono::microseconds>(metricsUpdateEnd - metricsUpdateStart).count() / 1000.0;
     }
 
     return result;
 }
 
 // Optimized contour-based detection
-std::vector<cv::Vec3f> BallDetector::detectByContoursOptimized(const cv::Mat& binary,
-    const cv::Mat& grayImage,
-    float downscaleFactor) {
+std::vector<cv::Vec3f> BallDetector::detectByContoursOptimized(const cv::Mat& binary, const cv::Mat& grayImage, float downscaleFactor) {
 
     std::vector<std::vector<cv::Point>> contours;
     // Use RETR_EXTERNAL and CHAIN_APPROX_SIMPLE for efficiency
@@ -689,10 +711,10 @@ std::vector<cv::Vec3f> BallDetector::detectByContours(const cv::Mat& binary,
     return detectByContoursOptimized(binary, grayImage, downscaleFactor);
 }
 
-// Optimized template matching
+// template matching
 std::vector<cv::Vec3f> BallDetector::detectByTemplateOptimized(const cv::Mat& image, float downscaleFactor) {
     std::vector<cv::Vec3f> candidates;
-    candidates.reserve(TEMPLATE_SCALES * 5);  // Pre-allocate
+    candidates.reserve(TEMPLATE_SCALES * 5);
 
     if (m_ballTemplate.empty()) {
         return candidates;
@@ -704,9 +726,7 @@ std::vector<cv::Vec3f> BallDetector::detectByTemplateOptimized(const cv::Mat& im
     tbb::parallel_for(0, TEMPLATE_SCALES, [&](int s) {
         float scale = 1.0f - s * TEMPLATE_SCALE_STEP;
         cv::Mat scaledTemplate;
-        cv::resize(m_ballTemplate, scaledTemplate,
-            cv::Size(static_cast<int>(m_ballTemplate.cols * scale),
-                static_cast<int>(m_ballTemplate.rows * scale)));
+        cv::resize(m_ballTemplate, scaledTemplate, cv::Size(static_cast<int>(m_ballTemplate.cols * scale), static_cast<int>(m_ballTemplate.rows * scale)));
 
         cv::Mat result;
         cv::matchTemplate(image, scaledTemplate, result, cv::TM_CCOEFF_NORMED);
@@ -801,7 +821,7 @@ void BallDetector::selectBestBallsOptimized(const std::vector<BallInfo>& validBa
                 // Mark overlapping balls
                 for (size_t j = i + 1; j < sortedBalls.size(); ++j) {
                     if (!selected[j]) {
-                        float dist = cv::norm(sortedBalls[i].center - sortedBalls[j].center);
+                        float dist = static_cast<float>(cv::norm(sortedBalls[i].center - sortedBalls[j].center));
                         if (dist < (sortedBalls[i].radius + sortedBalls[j].radius) * 0.5f) {
                             selected[j] = true;
                         }
@@ -847,8 +867,7 @@ void BallDetector::saveDebugImagesAsync(const unsigned char* imageData, int widt
 
         // Save result image if ball found
         if (result.found) {
-            std::string resultPath = debugPath + "/frame_" +
-                std::to_string(frameIndex) + "_result.png";
+            std::string resultPath = debugPath + "/frame_" + std::to_string(frameIndex) + "_result.png";
 
             // Create result image in background
             std::thread([this, imageData, width, height, result, resultPath]() {
@@ -891,68 +910,80 @@ void BallDetector::updateTrackingOptimized(std::vector<BallInfo>& validBalls) {
     );
 }
 
-// Impl optimized methods
 
 cv::Mat BallDetector::Impl::preprocessImage(const cv::Mat& grayImage, const DetectionParams& params) {
     if (!m_context) return grayImage;
 
     cv::Mat processed = grayImage;
-    double filterTime = 0.0, claheTime = 0.0, shadowTime = 0.0, sharpenTime = 0.0, normalizeTime = 0.0;
+
+    // Initialize all timing variables
+    m_context->metrics.filterTime_ms = 0.0;
+    m_context->metrics.claheTime_ms = 0.0;
+    m_context->metrics.shadowEnhancementTime_ms = 0.0;
+    m_context->metrics.sharpenTime_ms = 0.0;
+    m_context->metrics.normalizationTime_ms = 0.0;
+
+    double totalPreprocessingStart = std::chrono::high_resolution_clock::now().time_since_epoch().count() / 1000000.0;
 
     // Apply filters
     if (!params.fastMode) {
         MEASURE_TIME("Bilateral filter",
             cv::bilateralFilter(grayImage, m_context->tempMat1, 5, 50, 50);
-        processed = m_context->tempMat1;
-        , filterTime);
+            processed = m_context->tempMat1;
+            , m_context->metrics.filterTime_ms);
     }
     else {
         MEASURE_TIME("Gaussian blur",
             cv::GaussianBlur(grayImage, m_context->tempMat1, cv::Size(3, 3), 0.75, 0.75, cv::BORDER_REPLICATE);
-        processed = m_context->tempMat1;
-        , filterTime);
+            processed = m_context->tempMat1;
+            , m_context->metrics.filterTime_ms);
     }
 
     // Apply CLAHE if needed
     if (params.useCLAHE) {
         MEASURE_TIME("CLAHE",
             processed = applyCLAHE(processed, params.claheClipLimit);
-        if (params.saveIntermediateImages) {
-            m_lastCLAHE = processed.clone();
-        }
-        , m_context->metrics.claheTime_ms);
+            if (params.saveIntermediateImages) {
+                m_lastCLAHE = processed.clone();
+            }
+            , m_context->metrics.claheTime_ms);
     }
 
-    // Shadow enhancement - optimized
-    if (params.useEnhanceShadows && !params.fastMode) {
+    // Shadow enhancement
+    if (params.useEnhanceShadows) {
         MEASURE_TIME("Shadow enhancement",
             processed = enhanceShadowRegionsOptimized(processed, params.shadowEnhanceFactor);
-        , shadowTime);
+            , m_context->metrics.shadowEnhancementTime_ms);
     }
 
     // Sharpening
     if (!params.fastMode && params.contrastThreshold > 0) {
         MEASURE_TIME("Sharpening",
             cv::Mat blurred;
-        cv::GaussianBlur(processed, blurred, cv::Size(0, 0), 1.0);
-        cv::addWeighted(processed, 1.5, blurred, -0.5, 0, m_context->tempMat2);
-        processed = m_context->tempMat2;
-        , sharpenTime);
+            cv::GaussianBlur(processed, blurred, cv::Size(0, 0), 1.0);
+            cv::addWeighted(processed, 1.5, blurred, -0.5, 0, m_context->tempMat2);
+            processed = m_context->tempMat2;
+            , m_context->metrics.sharpenTime_ms);
     }
 
     // Normalize with timing
     if (params.useNormalization) {
         MEASURE_TIME("Normalization",
             cv::normalize(processed, processed, 0, 255, cv::NORM_MINMAX);
-        , m_context->metrics.normalizationTime_ms);
+            , m_context->metrics.normalizationTime_ms);
     }
 
     if (params.saveIntermediateImages) {
         m_lastProcessedImage = processed.clone();
     }
 
+    // Calculate total preprocessing time
+    double totalPreprocessingEnd = std::chrono::high_resolution_clock::now().time_since_epoch().count() / 1000000.0;
+    m_context->metrics.preprocessingTime_ms = totalPreprocessingEnd - totalPreprocessingStart;
+
     return processed;
 }
+
 
 cv::Mat BallDetector::Impl::applyCLAHE(const cv::Mat& image, double clipLimit) {
     static thread_local cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(clipLimit, cv::Size(8, 8));
@@ -1058,12 +1089,12 @@ std::vector<cv::Vec3f> BallDetector::Impl::detectCirclesHoughOptimized(const cv:
 
     // Use HoughCircles with optimized parameters
     cv::HoughCircles(image, circles, cv::HOUGH_GRADIENT,
-        params.dp,
-        params.minDist,
-        params.param1,
-        params.param2,
-        minRadius,
-        maxRadius);
+                     params.dp,
+                     params.minDist,
+                     params.param1,
+                     params.param2,
+                     minRadius,
+                     maxRadius);
 
     // Limit candidates
     if (params.maxCandidates > 0 && circles.size() > static_cast<size_t>(params.maxCandidates)) {
@@ -1089,15 +1120,13 @@ bool BallDetector::Impl::quickValidateCircleOptimized(const cv::Mat& image, cons
         }
     }
 
-    // Contrast check - Fixed: proper boundary checking for all sample points
+    // Contrast check - proper boundary checking for all sample points
     if (params.contrastThreshold > 0) {
         int innerR = radius / 2;
         int outerR = radius * 3 / 2;
 
         // Check if all points are within bounds
-        if (cx - outerR < 0 || cx + outerR >= image.cols ||
-            cy - outerR < 0 || cy + outerR >= image.rows) {
-            // If outer samples would be out of bounds, skip contrast check
+        if (cx - outerR < 0 || cx + outerR >= image.cols || cy - outerR < 0 || cy + outerR >= image.rows) {
             return true;
         }
 
@@ -1209,7 +1238,7 @@ float BallDetector::Impl::calculateConfidenceOptimized(const cv::Mat& image, con
                 outerMean /= samples.size();
 
                 double contrastDiff = std::abs(innerMean[0] - outerMean);
-                scores[1] = contrastDiff < 20.0 ? contrastDiff / 40.0f : std::min(1.0f, static_cast<float>(contrastDiff / 100.0));
+                scores[1] = contrastDiff < 20.0f ? static_cast<float>(contrastDiff / 40.0f) : std::min(1.0f, static_cast<float>(contrastDiff / 100.0f));
             }
 
             // Brightness consistency
@@ -1419,8 +1448,7 @@ float BallDetector::Impl::calculateCircularityOptimized(const cv::Mat& image, co
 
     // Define ROI
     const int margin = 3;
-    cv::Rect roi(cx - radius - margin, cy - radius - margin,
-        (radius + margin) * 2, (radius + margin) * 2);
+    cv::Rect roi(cx - radius - margin, cy - radius - margin, (radius + margin) * 2, (radius + margin) * 2);
     roi &= cv::Rect(0, 0, image.cols, image.rows);
 
     if (roi.area() == 0) return 0.0f;
@@ -1445,8 +1473,7 @@ float BallDetector::Impl::calculateCircularityOptimized(const cv::Mat& image, co
     for (size_t i = 0; i < contours.size(); ++i) {
         cv::Moments M = cv::moments(contours[i]);
         if (M.m00 > 0) {
-            cv::Point centroid(static_cast<int>(M.m10 / M.m00),
-                static_cast<int>(M.m01 / M.m00));
+            cv::Point centroid(static_cast<int>(M.m10 / M.m00), static_cast<int>(M.m01 / M.m00));
             double dist = cv::norm(centroid - roiCenter);
             if (dist < minDist) {
                 minDist = dist;
@@ -1559,7 +1586,7 @@ float BallDetector::calculateMotionConsistency(const BallInfo& ball, const Track
         return 0.0f;
     }
 
-    float distance = cv::norm(ball.center - track.predictedCenter);
+    float distance = static_cast<float>(cv::norm(ball.center - track.predictedCenter));
     float maxDist = m_params.maxTrackingDistance;
     float distanceScore = 1.0f - std::min(1.0f, distance / maxDist);
 
@@ -1577,8 +1604,8 @@ float BallDetector::calculateMotionConsistency(const BallInfo& ball, const Track
         cv::Point2f v2 = h2.center - h3.center;
         cv::Point2f currentVel = ball.center - h1.center;
 
-        float velChange1 = cv::norm(currentVel - v1);
-        float velChange2 = cv::norm(v1 - v2);
+        float velChange1 = static_cast<float>(cv::norm(currentVel - v1));
+        float velChange2 = static_cast<float>(cv::norm(v1 - v2));
         float avgVelChange = (velChange1 + velChange2) / 2.0f;
 
         velocityScore = 1.0f - std::min(1.0f, avgVelChange / 20.0f);
@@ -1765,31 +1792,8 @@ bool BallDetector::CalibrateForBallSize(const std::vector<cv::Mat>& sampleImages
     return true;
 }
 
-// Utility functions
-double BallDetector::EstimateProcessingTime(int width, int height) const {
-    double pixels = width * height;
-    double scaledPixels = pixels;
 
-    if (m_params.useROI) {
-        scaledPixels *= (m_params.roiScale * m_params.roiScale);
-    }
-    if (m_params.downscaleFactor > 1) {
-        scaledPixels /= (m_params.downscaleFactor * m_params.downscaleFactor);
-    }
-
-    double baseTime = scaledPixels / 50000.0;
-
-    if (m_params.fastMode) {
-        baseTime *= 0.5;
-    }
-    if (m_params.useParallel) {
-        baseTime /= std::min(4.0, static_cast<double>(m_params.processingThreads));
-    }
-
-    return baseTime;
-}
-
-// Visualization function
+// Visualization
 bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int width, int height,
     const BallDetectionResult& result, const std::string& outputPath, bool saveAsColor) {
     if (!originalImage || width <= 0 || height <= 0) {
@@ -1804,8 +1808,7 @@ bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int wi
 
         // Draw header
         cv::rectangle(colorImg, cv::Point(0, 0), cv::Point(width, 50), cv::Scalar(40, 40, 40), cv::FILLED);
-        cv::putText(colorImg, "Ball Detection Result", cv::Point(10, 30),
-            cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
+        cv::putText(colorImg, "Ball Detection Result", cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
 
         if (result.found && !result.balls.empty()) {
             int infoY = 70;
@@ -1832,26 +1835,22 @@ bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int wi
 
                 std::ostringstream info;
                 info << "Ball " << (i + 1) << ":";
-                cv::putText(colorImg, info.str(), cv::Point(15, infoY),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255), 2);
+                cv::putText(colorImg, info.str(), cv::Point(15, infoY), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255), 2);
 
                 info.str("");
                 info << "  Center: (" << cvRound(ball.center.x) << ", " << cvRound(ball.center.y) << ")";
-                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 20),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
                 info.str("");
                 info << "  Radius: " << radius << " pixels";
-                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 40),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 40), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
                 info.str("");
                 info << "  Confidence: " << std::fixed << std::setprecision(1) << (ball.confidence * 100) << "%";
                 cv::Scalar confColor = (ball.confidence > 0.8) ? cv::Scalar(0, 255, 0) :
-                    (ball.confidence > 0.6) ? cv::Scalar(0, 255, 255) :
-                    cv::Scalar(0, 165, 255);
-                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 60),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, confColor, 1);
+                                       (ball.confidence > 0.6) ? cv::Scalar(0, 255, 255) :
+                                                                 cv::Scalar(0, 165, 255);
+                cv::putText(colorImg, info.str(), cv::Point(15, infoY + 60), cv::FONT_HERSHEY_SIMPLEX, 0.5, confColor, 1);
 
                 infoY += 100;
             }
@@ -1868,8 +1867,7 @@ bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int wi
             // No ball detected
             cv::Rect msgBg(10, 60, 200, 40);
             cv::rectangle(colorImg, msgBg, cv::Scalar(0, 0, 100), cv::FILLED);
-            cv::putText(colorImg, "No ball detected", cv::Point(15, 85),
-                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+            cv::putText(colorImg, "No ball detected", cv::Point(15, 85), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
         }
 
         // Add timestamp
@@ -1880,8 +1878,7 @@ bool BallDetector::SaveDetectionImage(const unsigned char* originalImage, int wi
 
         std::ostringstream timestamp;
         timestamp << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S");
-        cv::putText(colorImg, timestamp.str(), cv::Point(width - 180, height - 10),
-            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+        cv::putText(colorImg, timestamp.str(), cv::Point(width - 180, height - 10), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
         // Save image
         bool success = false;

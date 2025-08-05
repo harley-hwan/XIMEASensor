@@ -109,23 +109,53 @@ public:
         DetectionParams();
     };
 
-    // Performance metrics
+    // Performance metrics - UPDATED with all preprocessing steps
     struct PerformanceMetrics {
+        // Overall timing
         double totalDetectionTime_ms;
+
+        // Initialization and setup
+        double contextInitTime_ms;
+        double parameterCopyTime_ms;
+        double matCreationTime_ms;
+
+        // Image preparation
         double roiExtractionTime_ms;
         double downscaleTime_ms;
-        double preprocessingTime_ms;
-        double claheTime_ms;
-        double normalizationTime_ms;
+
+        // Preprocessing - DETAILED
+        double preprocessingTime_ms;          // Total preprocessing time
+        double filterTime_ms;                 // Bilateral or Gaussian filter
+        double claheTime_ms;                  // CLAHE enhancement
+        double shadowEnhancementTime_ms;      // Shadow enhancement
+        double sharpenTime_ms;                // Sharpening
+        double normalizationTime_ms;          // Normalization
+
+        // Detection preparation
+        double edgeDetectionTime_ms;
         double thresholdingTime_ms;
         double morphologyTime_ms;
+
+        // Detection methods
         double contourDetectionTime_ms;
         double houghDetectionTime_ms;
         double templateMatchingTime_ms;
+
+        // Post-processing
         double candidateEvaluationTime_ms;
         double trackingTime_ms;
         double selectionTime_ms;
+        double resultFilteringTime_ms;
+        double confidenceCalculationTime_ms;
+
+        // I/O and debugging
         double imagesSavingTime_ms;
+
+        // Synchronization overhead
+        double synchronizationTime_ms;
+        double metricsUpdateTime_ms;
+
+        // Detection statistics
         int candidatesFound;
         int candidatesEvaluated;
         int candidatesRejected;
@@ -254,8 +284,6 @@ public:
         std::lock_guard<std::mutex> lock(m_metricsMutex);
         return m_lastMetrics;
     }
-
-    double EstimateProcessingTime(int width, int height) const;
 
     // Calibration
     bool CalibrateForBallSize(const std::vector<cv::Mat>& sampleImages,

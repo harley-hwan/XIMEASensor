@@ -68,15 +68,20 @@ struct XIMEASENSOR_API ContinuousCaptureConfig {
     int jpgQuality;                   // JPEG compression quality (1-100)
     bool createMetadata;              // Create metadata file after capture
     bool useAsyncSave;                // Use asynchronous image saving
-    std::string baseFolder;           // Base folder for captured images
+    //std::string baseFolder;         // Base folder for captured images
 
     // Ball detection specific settings
     bool enableBallDetection;         // Enable ball detection during capture
     bool saveOriginalImages;          // Save original captured images
     bool saveDetectionImages;         // Save images with detection overlays
     bool saveBallDetectorDebugImages; // Save intermediate processing images
-    std::string debugImagePath;       // Custom path for debug images
+    //std::string debugImagePath;     // Custom path for debug images
 
+private:
+    char m_baseFolder[260];           // for std::string baseFolder;
+    char m_debugImagePath[260];       // for std::string debugImagePath;
+
+public:
     // Default constructor with standard values
     ContinuousCaptureConfig()
         : durationSeconds(1.0)
@@ -84,31 +89,55 @@ struct XIMEASENSOR_API ContinuousCaptureConfig {
         , jpgQuality(90)
         , createMetadata(true)
         , useAsyncSave(true)
-        , baseFolder(".")
+        //, baseFolder(".")
         , enableBallDetection(true)
         , saveOriginalImages(true)
         , saveDetectionImages(true)
         , saveBallDetectorDebugImages(true)
-        , debugImagePath("") {
+        //, debugImagePath("") 
+    {
+        strcpy_s(m_baseFolder, ".");
+        strcpy_s(m_debugImagePath, "");
     }
+
+    // Getter/Setter for string members
+    const char* getBaseFolder() const { return m_baseFolder; }
+    void setBaseFolder(const char* folder) {
+        if (folder) {
+            strcpy_s(m_baseFolder, folder);
+        }
+    }
+
+    const char* getDebugImagePath() const { return m_debugImagePath; }
+    void setDebugImagePath(const char* path) {
+        if (path) {
+            strcpy_s(m_debugImagePath, path);
+        }
+    }
+
+    std::string baseFolderStr() const { return std::string(m_baseFolder); }
+    std::string debugImagePathStr() const { return std::string(m_debugImagePath); }
 
     // Parameterized constructor for custom configuration
     ContinuousCaptureConfig(double duration, int format, int quality, bool metadata,
-        bool asyncSave, const std::string& folder,
+        bool asyncSave, const char* folder,
         bool ballDetection, bool saveOriginal,
         bool saveDetection, bool saveDebug,
-        const std::string& debugPath = "")
+        const char* debugPath = "")
         : durationSeconds(duration)
         , imageFormat(format)
         , jpgQuality(quality)
         , createMetadata(metadata)
         , useAsyncSave(asyncSave)
-        , baseFolder(folder)
+        //, baseFolder(folder)
         , enableBallDetection(ballDetection)
         , saveOriginalImages(saveOriginal)
         , saveDetectionImages(saveDetection)
         , saveBallDetectorDebugImages(saveDebug)
-        , debugImagePath(debugPath) {
+        //, debugImagePath(debugPath) 
+    {
+        setBaseFolder(folder);
+        setDebugImagePath(debugPath);
     }
 
     // Factory method to create default configuration

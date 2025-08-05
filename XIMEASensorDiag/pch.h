@@ -8,6 +8,10 @@
 #define PCH_H
 #define _CRT_SECURE_NO_WARNINGS
 
+#ifdef _MSC_VER
+#pragma warning(disable: 4819)
+#endif
+
 // add headers that you want to pre-compile here
 #define NOMINMAX
 #include "framework.h"

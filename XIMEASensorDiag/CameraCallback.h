@@ -37,7 +37,7 @@ public:
             onStateChanged(newState, oldState);
         }
     }
-
+    
     virtual void OnError(CameraError error, const std::string& errorMessage) override {
         if (onError) {
             onError(error, errorMessage);

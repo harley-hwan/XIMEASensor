@@ -96,6 +96,7 @@ bool Camera_Initialize(const char* logPath, int logLevel) {
     }
     catch (const std::exception& e) {
         // Silent failure - can't log if logger failed to initialize
+        LOG_ERROR("Exception in Camera_Initialize: " + std::string(e.what()));
         return false;
     }
 }
@@ -461,6 +462,7 @@ void Camera_SetLogLevel(int level) {
     }
     catch (const std::exception& e) {
         // Silent fail - can't log if logger is broken
+        LOG_ERROR("Exception in Camera_SetLogLevel: " + std::string(e.what()));
     }
 }
 
@@ -471,6 +473,7 @@ void Camera_FlushLog() {
     }
     catch (const std::exception& e) {
         // Silent fail - can't log if logger is broken
+        LOG_ERROR("Exception in Camera_FlushLog: " + std::string(e.what()));
     }
 }
 
@@ -498,7 +501,7 @@ bool Camera_SaveSnapshot(const char* filename, int format, int quality) {
         std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufferSize]);
 
         // Get current frame
-        bool result = controller.GetFrame(buffer.get(), bufferSize, width, height);
+        bool result = controller.GetFrame(buffer.get(), static_cast<int>(bufferSize), width, height);
 
         // Save to file if frame was retrieved successfully
         if (result) {

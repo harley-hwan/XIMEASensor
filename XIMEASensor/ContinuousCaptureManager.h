@@ -45,7 +45,7 @@ struct ContinuousCaptureDetectionResult {
 
 class ContinuousCaptureManager {
 private:
-    // Performance report struct
+    // Performance report struct 내부에 추가
     struct SessionPerformanceData {
         struct FrameTimingData {
             int frameIndex = 0;
@@ -66,8 +66,14 @@ private:
             double roiExtractionTime_ms = 0;
             double downscaleTime_ms = 0;
             double preprocessingTime_ms = 0;
+
+            // Preprocessing 세부 시간 추가
+            double filterTime_ms = 0;
             double claheTime_ms = 0;
+            double shadowEnhancementTime_ms = 0;
+            double sharpenTime_ms = 0;
             double normalizationTime_ms = 0;
+
             double thresholdingTime_ms = 0;
             double morphologyTime_ms = 0;
             double contourDetectionTime_ms = 0;
@@ -105,8 +111,14 @@ private:
         double totalROIExtractionTime_ms = 0.0;
         double totalDownscaleTime_ms = 0.0;
         double totalPreprocessingTime_ms = 0.0;
+
+        // Preprocessing 세부 누적 시간 추가
+        double totalFilterTime_ms = 0.0;
         double totalCLAHETime_ms = 0.0;
+        double totalShadowEnhancementTime_ms = 0.0;
+        double totalSharpenTime_ms = 0.0;
         double totalNormalizationTime_ms = 0.0;
+
         double totalThresholdingTime_ms = 0.0;
         double totalMorphologyTime_ms = 0.0;
         double totalContourDetectionTime_ms = 0.0;
@@ -121,6 +133,15 @@ private:
         double totalOtherOperationsTime_ms = 0.0;
         double totalQueueOperationsTime_ms = 0.0;
         double totalMemoryOperationsTime_ms = 0.0;
+
+        // 새로 추가된 누적 시간 필드들
+        double totalContextInitTime_ms = 0.0;
+        double totalParameterCopyTime_ms = 0.0;
+        double totalMatCreationTime_ms = 0.0;
+        double totalEdgeDetectionTime_ms = 0.0;
+        double totalResultFilteringTime_ms = 0.0;
+        double totalConfidenceCalculationTime_ms = 0.0;
+        double totalSynchronizationTime_ms = 0.0;
 
         void Reset() {
             frameTimings.clear();
@@ -138,8 +159,14 @@ private:
             totalROIExtractionTime_ms = 0.0;
             totalDownscaleTime_ms = 0.0;
             totalPreprocessingTime_ms = 0.0;
+
+            // Reset preprocessing detail times
+            totalFilterTime_ms = 0.0;
             totalCLAHETime_ms = 0.0;
+            totalShadowEnhancementTime_ms = 0.0;
+            totalSharpenTime_ms = 0.0;
             totalNormalizationTime_ms = 0.0;
+
             totalThresholdingTime_ms = 0.0;
             totalMorphologyTime_ms = 0.0;
             totalContourDetectionTime_ms = 0.0;
@@ -154,6 +181,15 @@ private:
             totalOtherOperationsTime_ms = 0.0;
             totalQueueOperationsTime_ms = 0.0;
             totalMemoryOperationsTime_ms = 0.0;
+
+            // Reset new fields
+            totalContextInitTime_ms = 0.0;
+            totalParameterCopyTime_ms = 0.0;
+            totalMatCreationTime_ms = 0.0;
+            totalEdgeDetectionTime_ms = 0.0;
+            totalResultFilteringTime_ms = 0.0;
+            totalConfidenceCalculationTime_ms = 0.0;
+            totalSynchronizationTime_ms = 0.0;
         }
     };
 
