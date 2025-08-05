@@ -17,9 +17,7 @@ namespace cv {
     class Mat;
 }
 
-/**
- * @brief Ball information structure containing detection results
- */
+// Ball information structure
 struct BallInfo {
     cv::Point2f center;       // Ball center in image coordinates
     float radius;             // Ball radius in pixels
@@ -27,17 +25,15 @@ struct BallInfo {
     int frameIndex;          // Frame number where ball was detected
     float circularity;       // Shape circularity measure (0.0 ~ 1.0)
     float brightness;        // Average brightness inside ball region (0 ~ 255)
-    float edgeStrength;      // Edge response strength (added)
-    float motionScore;       // Motion consistency score for tracking (added)
+    float edgeStrength;      // Edge response strength
+    float motionScore;       // Motion consistency score for tracking
 
     BallInfo() : radius(0.0f), confidence(0.0f), frameIndex(0),
         circularity(1.0f), brightness(0.0f), edgeStrength(0.0f), motionScore(0.0f) {
     }
 };
 
-/**
- * @brief Detection result containing all found balls and status
- */
+// Detection result structure
 struct BallDetectionResult {
     bool found;                      // Whether any ball was detected
     std::vector<BallInfo> balls;     // List of detected balls
@@ -46,206 +42,222 @@ struct BallDetectionResult {
     BallDetectionResult() : found(false) {}
 };
 
-/**
- * @brief Main ball detection class using computer vision techniques
- */
+// Thread-safe ball detector
 class BallDetector {
 public:
-    /**
-     * @brief Detection parameters for fine-tuning the algorithm
-     */
+    // Detection parameters
     struct DetectionParams {
-        // === Circle Detection Parameters ===
-        int minRadius;                      // Minimum ball radius in pixels
-        int maxRadius;                      // Maximum ball radius in pixels
-        float minCircularity;               // Minimum circularity threshold (0.0 ~ 1.0)
+        // Circle Detection Parameters
+        int minRadius;
+        int maxRadius;
+        float minCircularity;
 
-        // === Hough Circle Parameters (Fallback Method) ===
-        double dp;                          // Inverse accumulator resolution ratio
-        double minDist;                     // Minimum distance between detected centers
-        double param1;                      // Canny edge upper threshold
-        double param2;                      // Circle detection threshold
+        // Hough Circle Parameters
+        double dp;
+        double minDist;
+        double param1;
+        double param2;
 
-        // === Image Thresholding Parameters ===
-        int brightnessThreshold;            // Global threshold value (0 = Otsu's method)
-        bool useAdaptiveThreshold;          // Enable adaptive thresholding
-        int adaptiveBlockSize;              // Block size for adaptive threshold (added)
-        double adaptiveConstant;            // Constant for adaptive threshold (added)
+        // Image Thresholding Parameters
+        int brightnessThreshold;
+        bool useAdaptiveThreshold;
+        int adaptiveBlockSize;
+        double adaptiveConstant;
 
-        // === Validation Parameters ===
-        bool useColorFilter;                // Enable brightness-based filtering
-        bool useCircularityCheck;           // Enable circularity validation
-        float contrastThreshold;            // Minimum contrast threshold
-        bool detectMultiple;                // Enable multi-ball detection
-        float edgeThreshold;                // Minimum edge strength (added)
+        // Validation Parameters
+        bool useColorFilter;
+        bool useCircularityCheck;
+        float contrastThreshold;
+        bool detectMultiple;
+        float edgeThreshold;
 
-        // === Preprocessing Parameters ===
-        bool skipPreprocessing;             // Skip all preprocessing steps
-        float shadowEnhanceFactor;          // Shadow enhancement factor (0.0 ~ 1.0)
-        bool useEnhanceShadows;             // Enable shadow region enhancement
-        bool useMorphology;                 // Enable morphological operations
-        bool useNormalization;              // Enable histogram normalization
-        bool useCLAHE;                      // Enable CLAHE for contrast (added)
-        double claheClipLimit;              // CLAHE clip limit (added)
+        // Preprocessing Parameters
+        bool skipPreprocessing;
+        float shadowEnhanceFactor;
+        bool useEnhanceShadows;
+        bool useMorphology;
+        bool useNormalization;
+        bool useCLAHE;
+        double claheClipLimit;
 
-        // === Detection Method Control ===
-        bool useContourDetection;           // Enable contour-based detection
-        bool useHoughDetection;             // Enable Hough circle detection
-        bool useThresholding;               // Enable binary thresholding
-        bool useTemplateMatching;           // Enable template matching (added)
+        // Detection Method Control
+        bool useContourDetection;
+        bool useHoughDetection;
+        bool useThresholding;
+        bool useTemplateMatching;
 
-        // === Performance Parameters ===
-        bool fastMode;                      // Enable fast processing mode
-        bool useROI;                        // Enable region of interest
-        float roiScale;                     // ROI scale factor (0.5 ~ 1.0)
-        int downscaleFactor;                // Image downscale factor (1 ~ 4)
-        bool useParallel;                   // Enable TBB parallel processing
-        int maxCandidates;                  // Maximum candidate circles
-        int processingThreads;              // Number of processing threads
-        bool useGPU;                        // Enable GPU acceleration if available (added)
+        // Performance Parameters
+        bool fastMode;
+        bool useROI;
+        float roiScale;
+        int downscaleFactor;
+        bool useParallel;
+        int maxCandidates;
+        int processingThreads;
+        bool useGPU;
 
-        // === Debug Parameters ===
-        bool saveIntermediateImages;        // Save intermediate processing images
-        std::string debugOutputDir;         // Debug output directory path
-        bool enableProfiling;               // Enable detailed profiling (added)
+        // Debug Parameters
+        bool saveIntermediateImages;
+        std::string debugOutputDir;
+        bool enableProfiling;
 
-        // === Tracking Parameters (added) ===
-        bool enableTracking;                // Enable temporal consistency
-        float maxTrackingDistance;          // Maximum tracking distance
-        int trackingHistorySize;            // Number of frames to track
+        // Tracking Parameters
+        bool enableTracking;
+        float maxTrackingDistance;
+        int trackingHistorySize;
 
         DetectionParams();
     };
 
-    /**
-     * @brief Performance metrics for profiling
-     */
+    // Performance metrics
     struct PerformanceMetrics {
-        // Overall timing
         double totalDetectionTime_ms;
-
-        // Preprocessing stage timings
         double roiExtractionTime_ms;
         double downscaleTime_ms;
         double preprocessingTime_ms;
-        double claheTime_ms;                // Added
-
-        // Detection stage timings
+        double claheTime_ms;
+        double normalizationTime_ms;
         double thresholdingTime_ms;
         double morphologyTime_ms;
         double contourDetectionTime_ms;
         double houghDetectionTime_ms;
-        double templateMatchingTime_ms;      // Added
+        double templateMatchingTime_ms;
         double candidateEvaluationTime_ms;
-
-        // Post-processing timings
-        double trackingTime_ms;              // Added
+        double trackingTime_ms;
+        double selectionTime_ms;
         double imagesSavingTime_ms;
-
-        // Statistics
         int candidatesFound;
         int candidatesEvaluated;
-        int candidatesRejected;              // Added
+        int candidatesRejected;
         bool ballDetected;
-        float averageConfidence;             // Added
+        float averageConfidence;
 
         void Reset();
     };
 
-    /**
-     * @brief Ball tracking information for temporal consistency
-     */
+    // Tracking information
     struct TrackingInfo {
-        std::vector<BallInfo> history;       // Historical ball positions
-        cv::Point2f predictedCenter;         // Predicted center for next frame
-        float predictedRadius;               // Predicted radius for next frame
-        int consecutiveDetections;           // Number of consecutive detections
-        int trackId;                         // Unique track identifier
+        std::vector<BallInfo> history;
+        cv::Point2f predictedCenter;
+        float predictedRadius;
+        int consecutiveDetections;
+        int trackId;
 
         TrackingInfo() : predictedRadius(0.0f), consecutiveDetections(0), trackId(-1) {}
     };
 
 private:
+    // Thread safety
+    mutable std::mutex m_paramsMutex;
+    mutable std::mutex m_metricsMutex;
     DetectionParams m_params;
+    mutable PerformanceMetrics m_lastMetrics;
+
+    // Thread-local context for detection
+    struct DetectionContext {
+        PerformanceMetrics metrics;
+        cv::Mat tempMat1, tempMat2, tempMat3;
+        std::vector<cv::Vec3f> tempCandidates;
+
+        DetectionContext() {
+            metrics.Reset();
+        }
+    };
+
+    static thread_local std::unique_ptr<DetectionContext> t_context;
+
+    // Implementation
     class Impl;
     std::unique_ptr<Impl> pImpl;
-    mutable PerformanceMetrics m_lastMetrics;
     bool m_performanceProfilingEnabled;
 
     // Tracking state
     std::unordered_map<int, TrackingInfo> m_tracks;
     int m_nextTrackId;
 
-    // Template matching cache
+    // Template matching
     cv::Mat m_ballTemplate;
     bool m_templateInitialized;
 
+    // Private methods
     void InitializeDefaultParams();
-
-    // Core detection methods
     std::vector<cv::Vec3f> detectByContours(const cv::Mat& binary,
-        const cv::Mat& grayImage,
-        float downscaleFactor);
+        const cv::Mat& grayImage, float downscaleFactor);
+    std::vector<cv::Vec3f> detectByContoursOptimized(const cv::Mat& binary,
+        const cv::Mat& grayImage, float downscaleFactor);
     std::vector<cv::Vec3f> detectByTemplate(const cv::Mat& image,
         float downscaleFactor);
-
-    // Helper functions
+    std::vector<cv::Vec3f> detectByTemplateOptimized(const cv::Mat& image,
+        float downscaleFactor);
     void selectBestBalls(const std::vector<BallInfo>& validBalls,
         BallDetectionResult& result);
+    void selectBestBallsOptimized(const std::vector<BallInfo>& validBalls,
+        BallDetectionResult& result);
     void updateTracking(const BallDetectionResult& result);
+    void updateTrackingOptimized(std::vector<BallInfo>& validBalls);
     void predictNextPosition(TrackingInfo& track);
     float calculateMotionConsistency(const BallInfo& ball, const TrackingInfo& track);
-
-    // Debug and visualization
     void saveDebugImages(const unsigned char* imageData, int width, int height,
         int frameIndex, const BallDetectionResult& result);
-    void logPerformanceMetrics(int frameIndex) const;
+    void saveDebugImagesAsync(const unsigned char* imageData, int width, int height,
+        int frameIndex, const BallDetectionResult& result);
 
 public:
     BallDetector();
     ~BallDetector();
 
-    // Prevent copying and moving
+    // Prevent copying
     BallDetector(const BallDetector&) = delete;
     BallDetector& operator=(const BallDetector&) = delete;
     BallDetector(BallDetector&&) = delete;
     BallDetector& operator=(BallDetector&&) = delete;
 
-    // === Configuration Methods ===
-    void SetParameters(const DetectionParams& params) { m_params = params; }
-    DetectionParams GetParameters() const { return m_params; }
+    // Thread-safe parameter access
+    void SetParameters(const DetectionParams& params) {
+        std::lock_guard<std::mutex> lock(m_paramsMutex);
+        m_params = params;
+    }
+
+    DetectionParams GetParameters() const {
+        std::lock_guard<std::mutex> lock(m_paramsMutex);
+        return m_params;
+    }
+
     void ResetToDefaults();
 
-    // === Performance Control ===
+    // Performance control
     void EnablePerformanceProfiling(bool enable);
     bool IsPerformanceProfilingEnabled() const { return m_performanceProfilingEnabled; }
 
-    // === Detection Interface ===
+    // Thread-safe detection
     void SetCurrentCaptureFolder(const std::string& folder);
     BallDetectionResult DetectBall(const unsigned char* imageData,
-        int width, int height,
-        int frameIndex = 0);
+        int width, int height, int frameIndex = 0);
 
-    // === Template Management ===
+    // Template management
     bool InitializeTemplate(const cv::Mat& templateImage);
     void ClearTemplate();
 
-    // === Tracking Interface ===
+    // Tracking interface
     void ResetTracking();
     std::vector<TrackingInfo> GetActiveTracks() const;
 
-    // === Visualization ===
+    // Visualization
     bool SaveDetectionImage(const unsigned char* originalImage,
         int width, int height,
         const BallDetectionResult& result,
         const std::string& outputPath,
         bool saveAsColor = false);
 
-    // === Performance Analysis ===
-    PerformanceMetrics GetLastPerformanceMetrics() const { return m_lastMetrics; }
+    // Thread-safe performance metrics
+    PerformanceMetrics GetLastPerformanceMetrics() const {
+        std::lock_guard<std::mutex> lock(m_metricsMutex);
+        return m_lastMetrics;
+    }
+
     double EstimateProcessingTime(int width, int height) const;
 
-    // === Calibration Support ===
+    // Calibration
     bool CalibrateForBallSize(const std::vector<cv::Mat>& sampleImages,
         float knownBallDiameter_mm);
 };

@@ -50,30 +50,49 @@ private:
         struct FrameTimingData {
             int frameIndex = 0;
 
+            // 전체 프레임 처리 시간
             double totalFrameProcessingTime_ms = 0;
-            double imageLoadTime_ms = 0;
-            double ballDetectionTime_ms = 0;
-            double saveDetectionImageTime_ms = 0;
-            double otherOperationsTime_ms = 0;
 
-            // 상세 알고리즘 시간
+            // I/O 관련 시간
+            double imageLoadTime_ms = 0;
+            double saveOriginalImageTime_ms = 0;
+            double saveDetectionImageTime_ms = 0;
+            double debugImagesSavingTime_ms = 0;
+
+            // Ball Detection 전체 시간
+            double ballDetectionTime_ms = 0;
+
+            // Ball Detection 세부 시간 - 모든 메트릭 포함
             double roiExtractionTime_ms = 0;
             double downscaleTime_ms = 0;
             double preprocessingTime_ms = 0;
+            double claheTime_ms = 0;
+            double normalizationTime_ms = 0;
             double thresholdingTime_ms = 0;
             double morphologyTime_ms = 0;
             double contourDetectionTime_ms = 0;
             double houghDetectionTime_ms = 0;
+            double templateMatchingTime_ms = 0;
             double candidateEvaluationTime_ms = 0;
-            double debugImagesSavingTime_ms = 0;
+            double trackingTime_ms = 0;
+            double selectionTime_ms = 0;
 
+            // 기타 작업 시간
+            double otherOperationsTime_ms = 0;
+            double queueOperationsTime_ms = 0;
+            double memoryOperationsTime_ms = 0;
+
+            // Detection 통계
             int candidatesFound = 0;
             int candidatesEvaluated = 0;
+            int candidatesRejected = 0;
             bool ballDetected = false;
+            float averageConfidence = 0.0f;
         };
 
         std::vector<FrameTimingData> frameTimings;
 
+        // 전체 세션 통계
         int totalFramesProcessed = 0;
         int framesWithBallDetected = 0;
         double totalProcessingTime_ms = 0.0;
@@ -81,43 +100,60 @@ private:
         double maxFrameTime_ms = 0.0;
         double avgFrameTime_ms = 0.0;
 
-        // 알고리즘별 누적 시간
-        double totalPreprocessingTime_ms = 0.0;
-        double totalHoughDetectionTime_ms = 0.0;
-        double totalContourDetectionTime_ms = 0.0;
-        double totalCandidateEvaluationTime_ms = 0.0;
-        double totalDebugImagesSavingTime_ms = 0.0;
-
-        // I/O 누적 시간 추가
-        double totalDetectionImageSavingTime_ms = 0.0;
-        double totalOtherOperationsTime_ms = 0.0;
-
-        // SessionPerformanceData에도 누적 시간 추가
+        // 각 단계별 누적 시간
+        double totalImageLoadTime_ms = 0.0;
         double totalROIExtractionTime_ms = 0.0;
         double totalDownscaleTime_ms = 0.0;
+        double totalPreprocessingTime_ms = 0.0;
+        double totalCLAHETime_ms = 0.0;
+        double totalNormalizationTime_ms = 0.0;
         double totalThresholdingTime_ms = 0.0;
         double totalMorphologyTime_ms = 0.0;
+        double totalContourDetectionTime_ms = 0.0;
+        double totalHoughDetectionTime_ms = 0.0;
+        double totalTemplateMatchingTime_ms = 0.0;
+        double totalCandidateEvaluationTime_ms = 0.0;
+        double totalTrackingTime_ms = 0.0;
+        double totalSelectionTime_ms = 0.0;
+        double totalDebugImagesSavingTime_ms = 0.0;
+        double totalDetectionImageSavingTime_ms = 0.0;
+        double totalOriginalImageSavingTime_ms = 0.0;
+        double totalOtherOperationsTime_ms = 0.0;
+        double totalQueueOperationsTime_ms = 0.0;
+        double totalMemoryOperationsTime_ms = 0.0;
 
         void Reset() {
             frameTimings.clear();
+            frameTimings.reserve(100); // Pre-allocate for performance
+
             totalFramesProcessed = 0;
             framesWithBallDetected = 0;
             totalProcessingTime_ms = 0.0;
             minFrameTime_ms = std::numeric_limits<double>::max();
             maxFrameTime_ms = 0.0;
             avgFrameTime_ms = 0.0;
-            totalPreprocessingTime_ms = 0.0;
-            totalHoughDetectionTime_ms = 0.0;
-            totalContourDetectionTime_ms = 0.0;
-            totalCandidateEvaluationTime_ms = 0.0;
-            totalDebugImagesSavingTime_ms = 0.0;
-            totalDetectionImageSavingTime_ms = 0.0;
-            totalOtherOperationsTime_ms = 0.0;
 
+            // Reset all accumulated times
+            totalImageLoadTime_ms = 0.0;
             totalROIExtractionTime_ms = 0.0;
             totalDownscaleTime_ms = 0.0;
+            totalPreprocessingTime_ms = 0.0;
+            totalCLAHETime_ms = 0.0;
+            totalNormalizationTime_ms = 0.0;
             totalThresholdingTime_ms = 0.0;
             totalMorphologyTime_ms = 0.0;
+            totalContourDetectionTime_ms = 0.0;
+            totalHoughDetectionTime_ms = 0.0;
+            totalTemplateMatchingTime_ms = 0.0;
+            totalCandidateEvaluationTime_ms = 0.0;
+            totalTrackingTime_ms = 0.0;
+            totalSelectionTime_ms = 0.0;
+            totalDebugImagesSavingTime_ms = 0.0;
+            totalDetectionImageSavingTime_ms = 0.0;
+            totalOriginalImageSavingTime_ms = 0.0;
+            totalOtherOperationsTime_ms = 0.0;
+            totalQueueOperationsTime_ms = 0.0;
+            totalMemoryOperationsTime_ms = 0.0;
         }
     };
 

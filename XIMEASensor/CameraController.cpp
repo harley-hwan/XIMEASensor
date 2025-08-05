@@ -562,7 +562,7 @@ bool CameraController::GetFrame(unsigned char* buffer, int bufferSize, int& outW
 
     // 새로운 더블 버퍼링 방식 사용
     auto& readBuffer = buffers[readIndex.load()];
-    
+
     if (!readBuffer.ready.load()) {
         // 폴백: 기존 방식 사용
         std::lock_guard<std::mutex> lock(frameMutex);
@@ -590,17 +590,17 @@ bool CameraController::GetFrame(unsigned char* buffer, int bufferSize, int& outW
 
         return true;
     }
-    
+
     int frameSize = readBuffer.width * readBuffer.height;
     if (bufferSize < frameSize) {
         LOG_ERROR("Buffer size too small");
         return false;
     }
-    
+
     memcpy(buffer, readBuffer.data.get(), frameSize);
     outWidth = readBuffer.width;
     outHeight = readBuffer.height;
-    
+
     return true;
 }
 
