@@ -1461,7 +1461,7 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
             if (m_ballTracking.currentState == BallState::READY &&
                 m_ballTracking.missedDetectionCount > 0) {
 
-                // 타임아웃 내에 복구되었는지 확인
+                // 타임아웃 내에 다시 탐지되었는지 확인
                 auto missedDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - m_ballTracking.lastMissedTime).count();
 
@@ -1470,7 +1470,7 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
                     m_ballTracking.missedDetectionCount = 0;
                 }
                 else {
-                    // 타임아웃 초과 - 재추적 시작
+                    // 타임아웃 초과 - 재탐지 시작
                     LOG_INFO("Ball detection recovered but timeout exceeded - restarting tracking");
                     m_ballTracking.previousState = m_ballTracking.currentState;
                     m_ballTracking.currentState = BallState::MOVING;

@@ -530,6 +530,30 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 {
     CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
 
+    // ROI Multiplier 슬라이더 처리 추가
+    if (pSlider == m_sliderROIMultiplier) {
+        float multiplier = m_sliderROIMultiplier->GetPos() / 10.0f;
+
+        // Edit 컨트롤 업데이트
+        if (m_editROIMultiplier) {
+            CString str;
+            str.Format(_T("%.1f"), multiplier);
+            m_editROIMultiplier->SetWindowText(str);
+        }
+
+        // Dynamic ROI가 활성화되어 있으면 설정 적용
+        if (Camera_IsDynamicROIEnabled()) {
+            DynamicROIConfig config;
+            if (Camera_GetDynamicROIConfig(&config)) {
+                config.roiSizeMultiplier = multiplier;
+                Camera_SetDynamicROIConfig(&config);
+            }
+        }
+
+        CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
+        return;
+    }
+
     if (!m_isStreaming) {
         if (pSlider == m_sliderExposure && m_editExposure) {
             int exposure = m_sliderExposure->GetPos();
@@ -554,6 +578,7 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
         return;
     }
 
+    // 기존 코드 유지 (exposure, gain, framerate 처리)
     if (pSlider == m_sliderExposure) {
         int exposure = m_sliderExposure->GetPos();
 

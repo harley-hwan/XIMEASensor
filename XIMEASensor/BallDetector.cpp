@@ -419,7 +419,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         cv::Mat edgeMap;
         if (localParams.edgeThreshold > 0) {
             MEASURE_TIME("Edge detection",
-                edgeMap = pImpl->computeEdgeMapOptimized(processed, 0);
+                edgeMap = pImpl->computeEdgeMapOptimized(processed, 1);
                 , context.metrics.edgeDetectionTime_ms);
         }
 

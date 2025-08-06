@@ -70,7 +70,7 @@ struct XIMEASENSOR_API DynamicROIConfig {
         : enabled(false)
         , roiSizeMultiplier(8.0f)    // ±âº»°ª 8.0
         , minROISize(100.0f)
-        , maxROISize(400.0f)
+        , maxROISize(600.0f)
         , showROIOverlay(true) {
     }
 };

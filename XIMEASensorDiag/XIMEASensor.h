@@ -26,17 +26,23 @@ enum class XIMEASENSOR_API BallState {
 struct XIMEASENSOR_API BallStateConfig {
     float positionTolerance;      // Position tolerance in pixels (default: 5.0)
     float movementThreshold;      // Movement detection threshold in pixels (default: 10.0)
-    int stableTimeMs;            // Time required for READY state in ms (default: 3000)
+    int stableTimeMs;            // Time required for READY state in ms (default: 2000)
+    int stabilizingTimeMs;       // Time required for STABILIZING state in ms (default: 1000)
     int minConsecutiveDetections; // Minimum consecutive detections required (default: 5)
     bool enableStateCallback;     // Enable state change callbacks (default: true)
+    int maxMissedDetections;     // Maximum missed detections in READY state (default: 2)  // 추가
+    int missedDetectionTimeoutMs; // Timeout for missed detection recovery (default: 500)  // 추가
 
     // Default constructor with standard values
     BallStateConfig()
         : positionTolerance(5.0f)
         , movementThreshold(10.0f)
-        , stableTimeMs(3000)
+        , stableTimeMs(2000)
+        , stabilizingTimeMs(1000)
         , minConsecutiveDetections(5)
-        , enableStateCallback(true) {
+        , enableStateCallback(true)
+        , maxMissedDetections(2)      // 2회까지 실패 허용
+        , missedDetectionTimeoutMs(500) {  // 500ms 이내 복구 시 카운터 리셋
     }
 };
 
@@ -62,9 +68,9 @@ struct XIMEASENSOR_API DynamicROIConfig {
 
     DynamicROIConfig()
         : enabled(false)
-        , roiSizeMultiplier(4.0f)
+        , roiSizeMultiplier(8.0f)    // 기본값 8.0
         , minROISize(100.0f)
-        , maxROISize(400.0f)
+        , maxROISize(600.0f)
         , showROIOverlay(true) {
     }
 };
