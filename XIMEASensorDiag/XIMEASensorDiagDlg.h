@@ -16,6 +16,7 @@
 #define WM_CONTINUOUS_CAPTURE_COMPLETE (WM_USER + 104)
 #define WM_UPDATE_BALL_DETECTION (WM_USER + 105)
 #define WM_UPDATE_BALL_STATE (WM_USER + 106)
+#define WM_UPDATE_DYNAMIC_ROI (WM_USER + 107)
 
 class CXIMEASensorDiagDlg : public CDialogEx
 {
@@ -52,6 +53,16 @@ private:
     CStatic* m_staticStableTime = nullptr;
     CButton* m_btnResetTracking = nullptr;
     CButton* m_btnConfigureTracking = nullptr;
+
+    // Dynamic ROI 컨트롤들
+    CButton* m_checkEnableDynamicROI = nullptr;
+    CButton* m_checkShowROIOverlay = nullptr;
+    CStatic* m_staticROIStatus = nullptr;
+    CStatic* m_staticROISize = nullptr;
+    CStatic* m_staticROIReduction = nullptr;
+    CSliderCtrl* m_sliderROIMultiplier = nullptr;
+    CEdit* m_editROIMultiplier = nullptr;
+    CButton* m_btnResetROI = nullptr;
 
     CSliderCtrl* m_sliderExposure = nullptr;
     CSliderCtrl* m_sliderGain = nullptr;
@@ -117,8 +128,14 @@ private:
     std::mutex m_detectionMutex;
     std::chrono::steady_clock::time_point m_lastDetectionStatsUpdate;
 
+    // Dynamic ROI 관련
+    DynamicROIInfo m_lastROIInfo;
+    std::mutex m_roiMutex;
+    std::chrono::steady_clock::time_point m_lastROIUpdate;
+
     // 볼 상태 업데이트 타이머
     static constexpr UINT_PTR TIMER_BALL_STATE_UPDATE = 1003;
+    static constexpr UINT_PTR TIMER_DYNAMIC_ROI_UPDATE = 1004;
 
     // USB 상태 모니터링
     std::atomic<int> m_usbErrorCount;
@@ -137,6 +154,7 @@ private:
     void UpdateUI(bool isStreaming);
     void DrawFrame();
     void DrawDetectionOverlay(CDC& dc, const CRect& rect);
+    void DrawDynamicROIOverlay(CDC& dc, const CRect& rect);
     void ShowError(const CString& message);
     void SyncSlidersWithCamera();
     void LoadDefaultSettings();
@@ -146,6 +164,7 @@ private:
     void HandleUSBError();
     void ResetUSBErrorCount();
     void UpdateBallStateDisplay();
+    void UpdateDynamicROIDisplay();
     CString GetBallStateDisplayString(BallState state);
     COLORREF GetBallStateColor(BallState state);
 
@@ -168,8 +187,12 @@ public:
     afx_msg void OnBnClickedCheckRealtimeDetection();
     afx_msg void OnBnClickedButtonResetTracking();
     afx_msg void OnBnClickedButtonConfigureTracking();
+    afx_msg void OnBnClickedCheckEnableDynamicROI();
+    afx_msg void OnBnClickedCheckShowROIOverlay();
+    afx_msg void OnBnClickedButtonResetROI();
     afx_msg void OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar);
     afx_msg void OnCbnSelchangeComboDevices();
+    afx_msg void OnEnChangeEditROIMultiplier();
 
     afx_msg LRESULT OnUpdateFrame(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnUpdateStatus(WPARAM wParam, LPARAM lParam);
@@ -177,6 +200,7 @@ public:
     afx_msg LRESULT OnUpdateFPS(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnUpdateBallDetection(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnUpdateBallState(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnUpdateDynamicROI(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnContinuousCaptureComplete(WPARAM wParam, LPARAM lParam);
 
     afx_msg void OnDestroy();

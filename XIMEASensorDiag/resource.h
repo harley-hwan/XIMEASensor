@@ -26,19 +26,25 @@
 #define IDC_EDIT_EXPOSURE               1022
 #define IDC_EDIT_GAIN                   1023
 #define IDC_EDIT_FRAMERATE              1024
-
 #define IDC_CHECK_REALTIME_DETECTION    1025
 #define IDC_STATIC_BALL_POSITION        1026
 #define IDC_STATIC_BALL_INFO            1027
 #define IDC_STATIC_DETECTION_FPS        1028
-
 #define IDC_STATIC_BALL_STATE           1050
 #define IDC_STATIC_STATE_TIME           1051
 #define IDC_STATIC_STABLE_TIME          1052
 #define IDC_BUTTON_RESET_TRACKING       1053
 #define IDC_BUTTON_CONFIGURE_TRACKING   1054
-
 #define IDC_CHECK_DEBUG_IMAGES          1055
+#define IDC_GROUPBOX_DYNAMIC_ROI        1060
+#define IDC_CHECK_ENABLE_DYNAMIC_ROI    1061
+#define IDC_STATIC_ROI_STATUS           1062
+#define IDC_STATIC_ROI_SIZE             1063
+#define IDC_STATIC_ROI_REDUCTION        1064
+#define IDC_SLIDER_ROI_MULTIPLIER       1065
+#define IDC_EDIT_ROI_MULTIPLIER         1066
+#define IDC_CHECK_SHOW_ROI_OVERLAY      1067
+#define IDC_BUTTON_RESET_ROI            1068
 
 // Next default values for new objects
 // 

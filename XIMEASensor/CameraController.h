@@ -124,6 +124,8 @@ private:
         std::chrono::steady_clock::time_point lastStateChangeTime;
         int consecutiveDetections;
         bool isTracking;
+        int missedDetectionCount;  // 탐지 실패 카운터
+        std::chrono::steady_clock::time_point lastMissedTime;  // 마지막 실패 시간
 
         BallTrackingData()
             : currentState(BallState::NOT_DETECTED)
@@ -131,7 +133,8 @@ private:
             , lastPositionX(0.0f)
             , lastPositionY(0.0f)
             , consecutiveDetections(0)
-            , isTracking(false) {
+            , isTracking(false)
+            , missedDetectionCount(0) { 
         }
     };
 
@@ -142,6 +145,15 @@ private:
     BallStateChangeCallback m_ballStateCallback;
     void* m_ballStateCallbackContext;
     mutable std::mutex m_ballStateMutex;
+
+    // Dynamic ROI members
+    std::atomic<bool> m_dynamicROIEnabled;
+    DynamicROIConfig m_dynamicROIConfig;
+    DynamicROIInfo m_dynamicROIInfo;
+    mutable std::mutex m_dynamicROIMutex;
+    std::chrono::steady_clock::time_point m_lastROIUpdateTime;
+    cv::Rect m_currentROI;
+    bool m_usingDynamicROI;
 
     CameraController();
 
@@ -163,6 +175,12 @@ private:
     float CalculateDistance(float x1, float y1, float x2, float y2);
     void NotifyBallStateChanged(BallState newState, BallState oldState, const BallStateInfo& info);
     void ResetBallTracking();
+
+    // Dynamic ROI methods
+    void UpdateDynamicROI(const RealtimeDetectionResult* result);
+    cv::Rect CalculateDynamicROI(float centerX, float centerY, float radius);
+    void ApplyDynamicROI(const cv::Rect& roi);
+    void ClearDynamicROI();
 
 public:
     ~CameraController();
@@ -236,4 +254,16 @@ public:
     void ResetBallStateTracking();
     int GetTimeInCurrentState() const;
     bool IsBallStable() const;
+
+    // Dynamic ROI
+    bool EnableDynamicROI(bool enable);
+    bool IsDynamicROIEnabled() const { return m_dynamicROIEnabled.load(); }
+    bool SetDynamicROIConfig(const DynamicROIConfig& config);
+    DynamicROIConfig GetDynamicROIConfig() const;
+    bool GetDynamicROIInfo(DynamicROIInfo* info) const;
+    void ResetDynamicROI();
+    cv::Rect GetCurrentROI() const {
+        std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
+        return m_currentROI;
+    }
 };

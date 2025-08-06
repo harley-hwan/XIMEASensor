@@ -1282,4 +1282,92 @@ bool Camera_GetBallDetectorDebugImages() {
     }
 }
 
+
+// ============================================================================
+// DYNAMIC ROI FUNCTIONS
+// ============================================================================
+
+bool Camera_EnableDynamicROI(bool enable) {
+    try {
+        return CameraController::GetInstance().EnableDynamicROI(enable);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_EnableDynamicROI: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_IsDynamicROIEnabled() {
+    try {
+        return CameraController::GetInstance().IsDynamicROIEnabled();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_IsDynamicROIEnabled: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_SetDynamicROIConfig(const DynamicROIConfig* config) {
+    try {
+        if (!config) {
+            LOG_ERROR("Invalid parameter: config is nullptr");
+            return false;
+        }
+
+        // Validate configuration
+        if (config->roiSizeMultiplier <= 0 || config->minROISize <= 0 ||
+            config->maxROISize <= 0 || config->minROISize > config->maxROISize) {
+            LOG_ERROR("Invalid dynamic ROI configuration");
+            return false;
+        }
+
+        return CameraController::GetInstance().SetDynamicROIConfig(*config);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetDynamicROIConfig: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_GetDynamicROIConfig(DynamicROIConfig* config) {
+    try {
+        if (!config) {
+            LOG_ERROR("Invalid parameter: config is nullptr");
+            return false;
+        }
+
+        *config = CameraController::GetInstance().GetDynamicROIConfig();
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetDynamicROIConfig: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_GetDynamicROIInfo(DynamicROIInfo* info) {
+    try {
+        if (!info) {
+            LOG_ERROR("Invalid parameter: info is nullptr");
+            return false;
+        }
+
+        return CameraController::GetInstance().GetDynamicROIInfo(info);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetDynamicROIInfo: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void Camera_ResetDynamicROI() {
+    try {
+        CameraController::GetInstance().ResetDynamicROI();
+        LOG_INFO("Dynamic ROI reset");
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_ResetDynamicROI: " + std::string(e.what()));
+    }
+}
+
 #endif // ENABLE_CONTINUOUS_CAPTURE

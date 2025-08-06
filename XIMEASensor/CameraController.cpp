@@ -1191,8 +1191,59 @@ void CameraController::RealtimeDetectionWorker() {
 void CameraController::ProcessRealtimeDetection(const unsigned char* data, int width, int height, int frameIndex) {
     if (!m_realtimeBallDetector) return;
 
-    auto result = m_realtimeBallDetector->DetectBall(data, width, height, frameIndex);
+    // Apply ROI if active
+    const unsigned char* processData = data;
+    int processWidth = width;
+    int processHeight = height;
+    std::vector<unsigned char> roiData;
 
+    // ROI offset for coordinate transformation
+    int roiOffsetX = 0;
+    int roiOffsetY = 0;
+
+    if (m_usingDynamicROI && m_dynamicROIEnabled.load()) {
+        std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
+
+        // Store ROI offset for coordinate transformation
+        roiOffsetX = m_currentROI.x;
+        roiOffsetY = m_currentROI.y;
+
+        // Extract ROI data
+        roiData.resize(m_currentROI.width * m_currentROI.height);
+        for (int y = 0; y < m_currentROI.height; y++) {
+            const unsigned char* srcRow = data + (m_currentROI.y + y) * width + m_currentROI.x;
+            unsigned char* dstRow = roiData.data() + y * m_currentROI.width;
+            memcpy(dstRow, srcRow, m_currentROI.width);
+        }
+
+        processData = roiData.data();
+        processWidth = m_currentROI.width;
+        processHeight = m_currentROI.height;
+
+        LOG_DEBUG("Processing ROI: offset(" + std::to_string(roiOffsetX) + "," +
+            std::to_string(roiOffsetY) + "), size(" +
+            std::to_string(processWidth) + "x" + std::to_string(processHeight) + ")");
+    }
+
+    // Detect ball in ROI or full frame
+    auto result = m_realtimeBallDetector->DetectBall(processData, processWidth, processHeight, frameIndex);
+
+    // Convert ROI coordinates to full frame coordinates
+    if (m_usingDynamicROI && result.found) {
+        for (auto& ball : result.balls) {
+            // Transform coordinates from ROI space to full frame space
+            ball.center.x += roiOffsetX;
+            ball.center.y += roiOffsetY;
+
+            LOG_DEBUG("Ball coordinates transformed: ROI(" +
+                std::to_string(ball.center.x - roiOffsetX) + "," +
+                std::to_string(ball.center.y - roiOffsetY) + ") -> Frame(" +
+                std::to_string(ball.center.x) + "," +
+                std::to_string(ball.center.y) + ")");
+        }
+    }
+
+    // Convert to RealtimeDetectionResult
     RealtimeDetectionResult detectionResult;
     memset(&detectionResult, 0, sizeof(detectionResult));
 
@@ -1201,6 +1252,7 @@ void CameraController::ProcessRealtimeDetection(const unsigned char* data, int w
     detectionResult.detectionTimeMs = m_realtimeBallDetector->GetLastPerformanceMetrics().totalDetectionTime_ms;
 
     for (int i = 0; i < detectionResult.ballCount; i++) {
+        // These coordinates are now in full frame space
         detectionResult.balls[i].centerX = result.balls[i].center.x;
         detectionResult.balls[i].centerY = result.balls[i].center.y;
         detectionResult.balls[i].radius = result.balls[i].radius;
@@ -1218,11 +1270,17 @@ void CameraController::ProcessRealtimeDetection(const unsigned char* data, int w
         UpdateBallState(&detectionResult);
     }
 
+    // Update dynamic ROI if enabled
+    if (m_dynamicROIEnabled.load()) {
+        UpdateDynamicROI(&detectionResult);
+    }
+
     // Call real-time detection callback
     if (m_realtimeCallback) {
         m_realtimeCallback(&detectionResult, m_realtimeCallbackContext);
     }
 }
+
 
 void CameraController::SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* context) {
     m_realtimeCallback = callback;
@@ -1319,6 +1377,7 @@ void CameraController::ResetBallStateTracking() {
 void CameraController::ResetBallTracking() {
     // mutex는 이미 잠겨있다고 가정
     m_ballTracking = BallTrackingData();
+    LOG_INFO("Ball tracking reset - all counters cleared");
 }
 
 void CameraController::NotifyBallStateChanged(BallState newState, BallState oldState, const BallStateInfo& info) {
@@ -1343,7 +1402,7 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
     BallState previousState;
     BallState newState;
     bool stateChanged = false;
-    BallStateInfo stateInfo;  // 미리 정보 복사
+    BallStateInfo stateInfo;
 
     {
         std::lock_guard<std::mutex> lock(m_ballStateMutex);
@@ -1351,20 +1410,75 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
         auto now = std::chrono::steady_clock::now();
         previousState = m_ballTracking.currentState;
 
+        // 탐지 실패 처리
         if (!result || !result->ballFound || result->ballCount == 0) {
-            // No ball detected
-            if (m_ballTracking.isTracking) {
+            // READY 상태에서의 특별 처리
+            if (m_ballTracking.currentState == BallState::READY) {
+                m_ballTracking.missedDetectionCount++;
+
+                // 첫 실패 시 시간 기록
+                if (m_ballTracking.missedDetectionCount == 1) {
+                    m_ballTracking.lastMissedTime = now;
+                }
+
+                // 허용된 실패 횟수를 초과한 경우에만 상태 변경
+                if (m_ballTracking.missedDetectionCount > m_ballStateConfig.maxMissedDetections) {
+                    LOG_INFO("Ball detection lost after " +
+                        std::to_string(m_ballTracking.missedDetectionCount) +
+                        " missed detections in READY state");
+
+                    m_ballTracking.consecutiveDetections = 0;
+                    m_ballTracking.isTracking = false;
+                    m_ballTracking.previousState = m_ballTracking.currentState;
+                    m_ballTracking.currentState = BallState::NOT_DETECTED;
+                    m_ballTracking.lastStateChangeTime = now;
+                    m_ballTracking.missedDetectionCount = 0;
+                }
+                else {
+                    // 아직 허용 범위 내 - READY 상태 유지
+                    LOG_DEBUG("Missed detection " +
+                        std::to_string(m_ballTracking.missedDetectionCount) +
+                        "/" + std::to_string(m_ballStateConfig.maxMissedDetections) +
+                        " in READY state - maintaining state");
+                }
+            }
+            else if (m_ballTracking.isTracking) {
+                // READY가 아닌 다른 상태에서는 기존 로직 유지
                 m_ballTracking.consecutiveDetections = 0;
                 m_ballTracking.isTracking = false;
                 m_ballTracking.previousState = m_ballTracking.currentState;
                 m_ballTracking.currentState = BallState::NOT_DETECTED;
                 m_ballTracking.lastStateChangeTime = now;
+                m_ballTracking.missedDetectionCount = 0;
             }
         }
         else {
             // Ball detected
             float currentX = result->balls[0].centerX;
             float currentY = result->balls[0].centerY;
+
+            // READY 상태에서 탐지 성공 시 실패 카운터 리셋
+            if (m_ballTracking.currentState == BallState::READY &&
+                m_ballTracking.missedDetectionCount > 0) {
+
+                // 타임아웃 내에 복구되었는지 확인
+                auto missedDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - m_ballTracking.lastMissedTime).count();
+
+                if (missedDuration <= m_ballStateConfig.missedDetectionTimeoutMs) {
+                    LOG_DEBUG("Ball detection recovered within timeout - resetting missed counter");
+                    m_ballTracking.missedDetectionCount = 0;
+                }
+                else {
+                    // 타임아웃 초과 - 재추적 시작
+                    LOG_INFO("Ball detection recovered but timeout exceeded - restarting tracking");
+                    m_ballTracking.previousState = m_ballTracking.currentState;
+                    m_ballTracking.currentState = BallState::MOVING;
+                    m_ballTracking.lastStateChangeTime = now;
+                    m_ballTracking.missedDetectionCount = 0;
+                    m_ballTracking.stableStartTime = now;
+                }
+            }
 
             if (!m_ballTracking.isTracking) {
                 // Start new tracking
@@ -1377,6 +1491,7 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
                 m_ballTracking.previousState = m_ballTracking.currentState;
                 m_ballTracking.currentState = BallState::MOVING;
                 m_ballTracking.lastStateChangeTime = now;
+                m_ballTracking.missedDetectionCount = 0;
             }
             else {
                 // Continue tracking
@@ -1389,7 +1504,8 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
 
                 m_ballTracking.consecutiveDetections++;
 
-                if (distance > m_ballStateConfig.movementThreshold) {
+                // 움직임 감지
+                if (distance > m_ballStateConfig.positionTolerance) {
                     // Ball is moving
                     if (m_ballTracking.currentState != BallState::MOVING) {
                         m_ballTracking.previousState = m_ballTracking.currentState;
@@ -1399,52 +1515,44 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
                     m_ballTracking.stableStartTime = now;
                     m_ballTracking.lastPositionX = currentX;
                     m_ballTracking.lastPositionY = currentY;
+                    m_ballTracking.missedDetectionCount = 0;
                 }
-                else if (distance <= m_ballStateConfig.positionTolerance) {
-                    // Ball is at same position
-                    auto stableDuration = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.stableStartTime).count();
+                else {
+                    // Ball is stationary
+                    auto stableDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - m_ballTracking.stableStartTime).count();
 
                     if (m_ballTracking.currentState == BallState::MOVING) {
-                        // Transition from moving to stabilizing
-                        m_ballTracking.previousState = m_ballTracking.currentState;
-                        m_ballTracking.currentState = BallState::STABILIZING;
-                        m_ballTracking.stableStartTime = now;
-                        m_ballTracking.lastStateChangeTime = now;
+                        // 움직임이 멈춘 경우
+                        m_ballTracking.lastPositionX = currentX;
+                        m_ballTracking.lastPositionY = currentY;
+
+                        // 1초 후에 STABILIZING으로 전환
+                        if (stableDuration >= m_ballStateConfig.stabilizingTimeMs) {
+                            m_ballTracking.previousState = m_ballTracking.currentState;
+                            m_ballTracking.currentState = BallState::STABILIZING;
+                            m_ballTracking.lastStateChangeTime = now;
+                        }
                     }
                     else if (m_ballTracking.currentState == BallState::STABILIZING) {
-                        // Check for READY transition
+                        // STABILIZING 상태에서 2초 경과 시 READY로 전환
                         if (stableDuration >= m_ballStateConfig.stableTimeMs &&
                             m_ballTracking.consecutiveDetections >= m_ballStateConfig.minConsecutiveDetections) {
                             m_ballTracking.previousState = m_ballTracking.currentState;
                             m_ballTracking.currentState = BallState::READY;
                             m_ballTracking.lastStateChangeTime = now;
+                            m_ballTracking.missedDetectionCount = 0;  // READY 진입 시 카운터 초기화
                         }
+                        // 위치 업데이트
+                        m_ballTracking.lastPositionX = currentX;
+                        m_ballTracking.lastPositionY = currentY;
                     }
                     else if (m_ballTracking.currentState == BallState::READY) {
-                        // READY state
+                        // READY 상태 유지 - 위치 업데이트
+                        m_ballTracking.lastPositionX = currentX;
+                        m_ballTracking.lastPositionY = currentY;
+                        // 탐지 성공 시 실패 카운터는 위에서 이미 처리됨
                     }
-
-                    // Update position with small changes
-                    m_ballTracking.lastPositionX = currentX;
-                    m_ballTracking.lastPositionY = currentY;
-                }
-                else {
-                    // Small movement detected
-                    if (m_ballTracking.currentState == BallState::READY ||
-                        m_ballTracking.currentState == BallState::STOPPED) {
-                        // Ball started moving again
-                        m_ballTracking.previousState = m_ballTracking.currentState;
-                        m_ballTracking.currentState = BallState::MOVING;
-                        m_ballTracking.stableStartTime = now;
-                        m_ballTracking.lastStateChangeTime = now;
-                    }
-                    else if (m_ballTracking.currentState == BallState::STABILIZING) {
-                        // Restart stabilization
-                        m_ballTracking.stableStartTime = now;
-                    }
-
-                    m_ballTracking.lastPositionX = currentX;
-                    m_ballTracking.lastPositionY = currentY;
                 }
 
                 m_ballTracking.lastDetectionTime = now;
@@ -1455,16 +1563,15 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
         stateChanged = (previousState != newState);
 
         if (stateChanged) {
-            // 락이 걸려있는 동안 정보 복사
             GetBallStateInfoInternal(&stateInfo);
         }
-    } // 여기서 mutex lock 해제됨
+    }
 
-    // 락 해제 후 콜백 호출
     if (stateChanged) {
         NotifyBallStateChanged(newState, previousState, stateInfo);
     }
 }
+
 
 // Ball state tracking public methods
 bool CameraController::EnableBallStateTracking(bool enable) {
@@ -1586,4 +1693,201 @@ bool CameraController::IsBallStable() const {
     std::lock_guard<std::mutex> lock(m_ballStateMutex);
     return (m_ballTracking.currentState == BallState::READY ||
         m_ballTracking.currentState == BallState::STOPPED);
+}
+
+
+// Dynamic ROI implementation
+void CameraController::UpdateDynamicROI(const RealtimeDetectionResult* result) {
+    if (!m_dynamicROIEnabled.load() || !result) return;
+
+    std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
+
+    // Only update ROI in READY state
+    if (m_ballTracking.currentState != BallState::READY) {
+        if (m_usingDynamicROI) {
+            ClearDynamicROI();
+        }
+        return;
+    }
+
+    // Check if we have a valid ball detection
+    if (!result->ballFound || result->ballCount == 0) {
+        if (m_usingDynamicROI) {
+            ClearDynamicROI();
+        }
+        return;
+    }
+
+    // Use the first detected ball (coordinates are already in full frame space)
+    const RealtimeBallInfo& ball = result->balls[0];
+
+    // Validate coordinates
+    if (ball.centerX < 0 || ball.centerX >= width ||
+        ball.centerY < 0 || ball.centerY >= height) {
+        LOG_ERROR("Invalid ball coordinates for ROI: (" +
+            std::to_string(ball.centerX) + "," +
+            std::to_string(ball.centerY) + ")");
+        return;
+    }
+
+    // Calculate new ROI
+    cv::Rect newROI = CalculateDynamicROI(ball.centerX, ball.centerY, ball.radius);
+
+    // Check if ROI needs update (with hysteresis to avoid jitter)
+    const int POSITION_THRESHOLD = 10;  // pixels
+    const int SIZE_THRESHOLD = 20;      // pixels
+
+    bool needsUpdate = !m_usingDynamicROI ||
+        std::abs(newROI.x - m_currentROI.x) > POSITION_THRESHOLD ||
+        std::abs(newROI.y - m_currentROI.y) > POSITION_THRESHOLD ||
+        std::abs(newROI.width - m_currentROI.width) > SIZE_THRESHOLD ||
+        std::abs(newROI.height - m_currentROI.height) > SIZE_THRESHOLD;
+
+    if (needsUpdate) {
+        ApplyDynamicROI(newROI);
+    }
+
+    // Update timing
+    m_lastROIUpdateTime = std::chrono::steady_clock::now();
+}
+
+cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, float radius) {
+    // Calculate ROI size based on ball radius and multiplier
+    float roiSize = radius * 2.0f * m_dynamicROIConfig.roiSizeMultiplier;
+
+    // Clamp to min/max sizes
+    roiSize = std::max(m_dynamicROIConfig.minROISize,
+        std::min(m_dynamicROIConfig.maxROISize, roiSize));
+
+    // Make sure ROI size is even for better alignment
+    int size = static_cast<int>(roiSize);
+    size = (size / 2) * 2;
+
+    // Calculate ROI position (centered on ball)
+    int halfSize = size / 2;
+    int x = static_cast<int>(centerX) - halfSize;
+    int y = static_cast<int>(centerY) - halfSize;
+
+    // Clamp to image boundaries
+    x = std::max(0, x);
+    y = std::max(0, y);
+
+    // Adjust size if ROI extends beyond image boundaries
+    if (x + size > width) {
+        size = width - x;
+    }
+    if (y + size > height) {
+        size = height - y;
+    }
+
+    // Ensure minimum size
+    const int MIN_ROI_SIZE = static_cast<int>(m_dynamicROIConfig.minROISize);
+    if (size < MIN_ROI_SIZE) {
+        // Try to expand ROI while keeping it within bounds
+        if (x > 0 && x + size < width) {
+            int expand = MIN_ROI_SIZE - size;
+            x = std::max(0, x - expand / 2);
+            size = MIN_ROI_SIZE;
+        }
+        if (y > 0 && y + size < height) {
+            int expand = MIN_ROI_SIZE - size;
+            y = std::max(0, y - expand / 2);
+            size = MIN_ROI_SIZE;
+        }
+    }
+
+    return cv::Rect(x, y, size, size);
+}
+
+void CameraController::ApplyDynamicROI(const cv::Rect& roi) {
+    // Update detection parameters
+    if (m_realtimeBallDetector) {
+        auto params = m_realtimeBallDetector->GetParameters();
+        params.useROI = true;
+        params.roiScale = 1.0f; // Full scale within ROI
+        m_realtimeBallDetector->SetParameters(params);
+    }
+
+    // Store ROI info
+    m_currentROI = roi;
+    m_usingDynamicROI = true;
+
+    // Update info structure
+    m_dynamicROIInfo.active = true;
+    m_dynamicROIInfo.centerX = roi.x + roi.width / 2;
+    m_dynamicROIInfo.centerY = roi.y + roi.height / 2;
+    m_dynamicROIInfo.width = roi.width;
+    m_dynamicROIInfo.height = roi.height;
+
+    // Calculate processing time reduction
+    float fullFramePixels = static_cast<float>(width * height);
+    float roiPixels = static_cast<float>(roi.width * roi.height);
+    m_dynamicROIInfo.processingTimeReduction = (1.0f - roiPixels / fullFramePixels) * 100.0f;
+
+    LOG_INFO("Dynamic ROI applied: " + std::to_string(roi.x) + "," +
+        std::to_string(roi.y) + " " + std::to_string(roi.width) + "x" +
+        std::to_string(roi.height) + " (reduction: " +
+        std::to_string(m_dynamicROIInfo.processingTimeReduction) + "%)");
+}
+
+void CameraController::ClearDynamicROI() {
+    if (m_realtimeBallDetector) {
+        auto params = m_realtimeBallDetector->GetParameters();
+        params.useROI = false;
+        params.roiScale = 0.75f; // Default
+        m_realtimeBallDetector->SetParameters(params);
+    }
+
+    m_currentROI = cv::Rect(0, 0, width, height);
+    m_usingDynamicROI = false;
+
+    m_dynamicROIInfo.active = false;
+    m_dynamicROIInfo.processingTimeReduction = 0.0f;
+
+    LOG_INFO("Dynamic ROI cleared - using full frame");
+}
+
+bool CameraController::EnableDynamicROI(bool enable) {
+    if (enable == m_dynamicROIEnabled.load()) {
+        return true;
+    }
+
+    m_dynamicROIEnabled = enable;
+
+    if (!enable) {
+        std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
+        ClearDynamicROI();
+    }
+
+    LOG_INFO("Dynamic ROI " + std::string(enable ? "enabled" : "disabled"));
+    return true;
+}
+
+bool CameraController::SetDynamicROIConfig(const DynamicROIConfig& config) {
+    std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
+    m_dynamicROIConfig = config;
+
+    LOG_INFO("Dynamic ROI config updated: multiplier=" +
+        std::to_string(config.roiSizeMultiplier) +
+        ", min=" + std::to_string(config.minROISize) +
+        ", max=" + std::to_string(config.maxROISize));
+    return true;
+}
+
+DynamicROIConfig CameraController::GetDynamicROIConfig() const {
+    std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
+    return m_dynamicROIConfig;
+}
+
+bool CameraController::GetDynamicROIInfo(DynamicROIInfo* info) const {
+    if (!info) return false;
+
+    std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
+    *info = m_dynamicROIInfo;
+    return true;
+}
+
+void CameraController::ResetDynamicROI() {
+    std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
+    ClearDynamicROI();
 }

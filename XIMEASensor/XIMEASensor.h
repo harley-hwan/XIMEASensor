@@ -9,7 +9,6 @@
 #include "IXIMEACallback.h"
 #include <string>
 
-
 // ============================================================================
 // BALL STATE TRACKING ENUMS AND STRUCTURES: 2025-07-30 Added
 // ============================================================================
@@ -27,17 +26,23 @@ enum class XIMEASENSOR_API BallState {
 struct XIMEASENSOR_API BallStateConfig {
     float positionTolerance;      // Position tolerance in pixels (default: 5.0)
     float movementThreshold;      // Movement detection threshold in pixels (default: 10.0)
-    int stableTimeMs;            // Time required for READY state in ms (default: 3000)
+    int stableTimeMs;            // Time required for READY state in ms (default: 2000)
+    int stabilizingTimeMs;       // Time required for STABILIZING state in ms (default: 1000)
     int minConsecutiveDetections; // Minimum consecutive detections required (default: 5)
     bool enableStateCallback;     // Enable state change callbacks (default: true)
+    int maxMissedDetections;     // Maximum missed detections in READY state (default: 2)  // 추가
+    int missedDetectionTimeoutMs; // Timeout for missed detection recovery (default: 500)  // 추가
 
     // Default constructor with standard values
     BallStateConfig()
         : positionTolerance(5.0f)
         , movementThreshold(10.0f)
-        , stableTimeMs(3000)
+        , stableTimeMs(2000)
+        , stabilizingTimeMs(1000)
         , minConsecutiveDetections(5)
-        , enableStateCallback(true) {
+        , enableStateCallback(true)
+        , maxMissedDetections(2)      // 2회까지 실패 허용
+        , missedDetectionTimeoutMs(500) {  // 500ms 이내 복구 시 카운터 리셋
     }
 };
 
@@ -53,6 +58,42 @@ struct XIMEASENSOR_API BallStateInfo {
     double lastStateChangeTime;     // Timestamp of last state change
 };
 
+// Dynamic ROI Configuration
+struct XIMEASENSOR_API DynamicROIConfig {
+    bool enabled;                    // Enable dynamic ROI (default: false)
+    float roiSizeMultiplier;        // ROI size as multiplier of ball radius (default: 4.0)
+    float minROISize;               // Minimum ROI size in pixels (default: 100)
+    float maxROISize;               // Maximum ROI size in pixels (default: 400)
+    bool showROIOverlay;            // Show ROI boundary in UI (default: true)
+
+    DynamicROIConfig()
+        : enabled(false)
+        , roiSizeMultiplier(8.0f)    // 기본값 8.0
+        , minROISize(100.0f)
+        , maxROISize(400.0f)
+        , showROIOverlay(true) {
+    }
+};
+
+// Dynamic ROI Information
+struct XIMEASENSOR_API DynamicROIInfo {
+    bool active;                     // ROI is currently active
+    int centerX;                     // ROI center X
+    int centerY;                     // ROI center Y
+    int width;                       // ROI width
+    int height;                      // ROI height
+    float processingTimeReduction;   // Processing time reduction percentage
+
+    DynamicROIInfo()
+        : active(false)
+        , centerX(0)
+        , centerY(0)
+        , width(0)
+        , height(0)
+        , processingTimeReduction(0.0f) {
+    }
+};
+
 // Callback for ball state changes
 typedef void(*BallStateChangeCallback)(BallState newState, BallState oldState, const BallStateInfo* info, void* userContext);
 
@@ -61,7 +102,7 @@ typedef void(*BallStateChangeCallback)(BallState newState, BallState oldState, c
 // Enable/Disable continuous capture functionality
 #ifdef ENABLE_CONTINUOUS_CAPTURE
 
- // Configuration structure for continuous capture operations
+// Configuration structure for continuous capture operations
 struct XIMEASENSOR_API ContinuousCaptureConfig {
     double durationSeconds;           // Capture duration in seconds
     int imageFormat;                  // Image format: 0=PNG, 1=JPG
@@ -496,4 +537,26 @@ extern "C" {
 
     // Check if ball is in stable state (READY or STOPPED)
     XIMEASENSOR_API bool Camera_IsBallStable();
+
+    // ------------------------------------------------------------------------
+    // Dynamic ROI Functions
+    // ------------------------------------------------------------------------
+
+    // Enable/disable dynamic ROI for READY state
+    XIMEASENSOR_API bool Camera_EnableDynamicROI(bool enable);
+
+    // Check if dynamic ROI is enabled
+    XIMEASENSOR_API bool Camera_IsDynamicROIEnabled();
+
+    // Set dynamic ROI configuration
+    XIMEASENSOR_API bool Camera_SetDynamicROIConfig(const DynamicROIConfig* config);
+
+    // Get dynamic ROI configuration
+    XIMEASENSOR_API bool Camera_GetDynamicROIConfig(DynamicROIConfig* config);
+
+    // Get current dynamic ROI information
+    XIMEASENSOR_API bool Camera_GetDynamicROIInfo(DynamicROIInfo* info);
+
+    // Reset dynamic ROI to full frame
+    XIMEASENSOR_API void Camera_ResetDynamicROI();
 }

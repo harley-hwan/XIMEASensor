@@ -79,6 +79,14 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_BN_CLICKED(IDC_BUTTON_RESET_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking)
     ON_BN_CLICKED(IDC_BUTTON_CONFIGURE_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking)
     ON_MESSAGE(WM_UPDATE_BALL_STATE, &CXIMEASensorDiagDlg::OnUpdateBallState)
+
+    // 2025-08-06
+    ON_BN_CLICKED(IDC_CHECK_ENABLE_DYNAMIC_ROI, &CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI)
+    ON_BN_CLICKED(IDC_CHECK_SHOW_ROI_OVERLAY, &CXIMEASensorDiagDlg::OnBnClickedCheckShowROIOverlay)
+    ON_BN_CLICKED(IDC_BUTTON_RESET_ROI, &CXIMEASensorDiagDlg::OnBnClickedButtonResetROI)
+    ON_EN_CHANGE(IDC_EDIT_ROI_MULTIPLIER, &CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier)
+    ON_MESSAGE(WM_UPDATE_DYNAMIC_ROI, &CXIMEASensorDiagDlg::OnUpdateDynamicROI)
+
 END_MESSAGE_MAP()
 
 void CXIMEASensorDiagDlg::LoadDefaultSettings()
@@ -133,9 +141,38 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     m_btnResetTracking = (CButton*)GetDlgItem(IDC_BUTTON_RESET_TRACKING);
     m_btnConfigureTracking = (CButton*)GetDlgItem(IDC_BUTTON_CONFIGURE_TRACKING);
 
+    // 2025-08-06: Dynamic ROI 컨트롤 초기화
+    m_checkEnableDynamicROI = (CButton*)GetDlgItem(IDC_CHECK_ENABLE_DYNAMIC_ROI);
+    m_checkShowROIOverlay = (CButton*)GetDlgItem(IDC_CHECK_SHOW_ROI_OVERLAY);
+    m_staticROIStatus = (CStatic*)GetDlgItem(IDC_STATIC_ROI_STATUS);
+    m_staticROISize = (CStatic*)GetDlgItem(IDC_STATIC_ROI_SIZE);
+    m_staticROIReduction = (CStatic*)GetDlgItem(IDC_STATIC_ROI_REDUCTION);
+    m_sliderROIMultiplier = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_ROI_MULTIPLIER);
+    m_editROIMultiplier = (CEdit*)GetDlgItem(IDC_EDIT_ROI_MULTIPLIER);
+    m_btnResetROI = (CButton*)GetDlgItem(IDC_BUTTON_RESET_ROI);
+
     if (m_staticBallState) { m_staticBallState->SetWindowText(_T("NOT DETECTED")); }
     if (m_btnResetTracking) { m_btnResetTracking->EnableWindow(FALSE); }
     if (m_btnConfigureTracking) { m_btnConfigureTracking->EnableWindow(TRUE); }
+
+    // 2025-08-06
+    if (m_checkEnableDynamicROI) {
+        m_checkEnableDynamicROI->SetCheck(BST_UNCHECKED);
+    }
+
+    if (m_checkShowROIOverlay) {
+        m_checkShowROIOverlay->SetCheck(BST_CHECKED);
+    }
+
+    if (m_sliderROIMultiplier) {
+        m_sliderROIMultiplier->SetRange(60, 100); // 8.0 ~ 10.0으로 변경 (기존: 20, 80)
+        m_sliderROIMultiplier->SetPos(80); // 8.0 default
+        m_sliderROIMultiplier->SetTicFreq(5);  // 더 세밀한 조정을 위해 변경
+    }
+
+    if (m_editROIMultiplier) {
+        m_editROIMultiplier->SetWindowText(_T("8.0")); // 기본값 8.0
+    }
 
     if (!Camera_Initialize("./logs/XIMEASensor.log", 1)) {
         AfxMessageBox(_T("Failed to initialize camera system!"));
@@ -621,6 +658,10 @@ void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
         // 볼 상태 표시 업데이트
         UpdateBallStateDisplay();
     }
+    else if (nIDEvent == TIMER_DYNAMIC_ROI_UPDATE) {
+        // Dynamic ROI 표시 업데이트
+        UpdateDynamicROIDisplay();
+    }
 
     CDialogEx::OnTimer(nIDEvent);
 }
@@ -919,6 +960,11 @@ void CXIMEASensorDiagDlg::DrawFrame()
     if (Camera_IsRealtimeDetectionEnabled()) {
         DrawDetectionOverlay(dc, rect);
     }
+
+    // Dynamic ROI overlay 그리기
+    if(Camera_IsDynamicROIEnabled()) {
+        DrawDynamicROIOverlay(dc, rect);
+    }
 }
 
 
@@ -1214,16 +1260,20 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
             y = (int)(result.balls[i].centerY * scaleY);
             radius = (int)(result.balls[i].radius * scaleX);
 
+            // 원만 그리고 십자가는 제거
             dc.Ellipse(x - radius, y - radius, x + radius, y + radius);
 
-            CPen yellowPen(PS_SOLID, 2, RGB(255, 255, 0));
+            // 연주황색 십자가 표시 제거 (주석 처리)
+            CPen yellowPen(PS_SOLID, 2, RGB(255, 200, 100));
             dc.SelectObject(&yellowPen);
             dc.MoveTo(x - 5, y);
             dc.LineTo(x + 5, y);
             dc.MoveTo(x, y - 5);
             dc.LineTo(x, y + 5);
             dc.SelectObject(&pen);
+            
 
+            // 신뢰도가 높을 때만 표시
             if (result.balls[i].confidence > 0.8f) {
                 CString confStr;
                 confStr.Format(_T("%.0f%%"), result.balls[i].confidence * 100);
@@ -1358,40 +1408,50 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
 void CXIMEASensorDiagDlg::UpdateBallStateDisplay()
 {
     if (!Camera_IsBallStateTrackingEnabled()) return;
-    
+
     BallStateInfo info;
     if (Camera_GetBallStateInfo(&info)) {
         // 현재 상태 표시
         if (m_staticBallState) {
             CString stateStr = GetBallStateDisplayString(info.currentState);
+
+            // READY 상태에서 실패 카운터 정보 추가 (디버그용)
+            if (info.currentState == BallState::READY) {
+                // 필요시 실패 카운터 정보도 표시 가능
+                // stateStr += _T(" (stable)");
+            }
+
             m_staticBallState->SetWindowText(stateStr);
         }
-        
+
         // 현재 상태 지속 시간
         int timeInState = Camera_GetTimeInCurrentState();
         if (m_staticStateTime) {
             CString timeStr;
             if (timeInState < 1000) {
                 timeStr.Format(_T("%d ms"), timeInState);
-            } else {
+            }
+            else {
                 timeStr.Format(_T("%.1f s"), timeInState / 1000.0f);
             }
             m_staticStateTime->SetWindowText(timeStr);
         }
-        
+
         // 안정화 시간 (STABILIZING, READY, STOPPED 상태에서만)
         if (m_staticStableTime) {
-            if (info.currentState == BallState::STABILIZING || 
-                info.currentState == BallState::READY || 
+            if (info.currentState == BallState::STABILIZING ||
+                info.currentState == BallState::READY ||
                 info.currentState == BallState::STOPPED) {
                 CString stableStr;
                 if (info.stableDurationMs < 1000) {
                     stableStr.Format(_T("%d ms"), info.stableDurationMs);
-                } else {
+                }
+                else {
                     stableStr.Format(_T("%.1f s"), info.stableDurationMs / 1000.0f);
                 }
                 m_staticStableTime->SetWindowText(stableStr);
-            } else {
+            }
+            else {
                 m_staticStableTime->SetWindowText(_T("0 ms"));
             }
         }
@@ -1490,4 +1550,170 @@ COLORREF CXIMEASensorDiagDlg::GetBallStateColor(BallState state)
     default:
         return RGB(255, 0, 0);      // 빨간색
     }
+}
+
+
+void CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI()
+{
+    if (!m_checkEnableDynamicROI || !m_isStreaming) return;
+
+    BOOL isChecked = (m_checkEnableDynamicROI->GetCheck() == BST_CHECKED);
+
+    if (isChecked) {
+        // 현재 설정 가져오기
+        DynamicROIConfig config;
+        Camera_GetDynamicROIConfig(&config);
+        
+        // UI에서 설정 읽기
+        config.enabled = true;
+        config.showROIOverlay = (m_checkShowROIOverlay && 
+                                m_checkShowROIOverlay->GetCheck() == BST_CHECKED);
+        
+        if (m_sliderROIMultiplier) {
+            config.roiSizeMultiplier = m_sliderROIMultiplier->GetPos() / 10.0f;
+        }
+        
+        // 설정 적용
+        Camera_SetDynamicROIConfig(&config);
+        Camera_EnableDynamicROI(true);
+        
+        // 타이머 시작
+        SetTimer(TIMER_DYNAMIC_ROI_UPDATE, 100, nullptr);
+        
+        TRACE(_T("Dynamic ROI enabled\n"));
+    }
+    else {
+        Camera_EnableDynamicROI(false);
+        KillTimer(TIMER_DYNAMIC_ROI_UPDATE);
+        
+        UpdateDynamicROIDisplay();
+        
+        TRACE(_T("Dynamic ROI disabled\n"));
+    }
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedCheckShowROIOverlay()
+{
+    if (!m_checkShowROIOverlay) return;
+    
+    DynamicROIConfig config;
+    if (Camera_GetDynamicROIConfig(&config)) {
+        config.showROIOverlay = (m_checkShowROIOverlay->GetCheck() == BST_CHECKED);
+        Camera_SetDynamicROIConfig(&config);
+    }
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedButtonResetROI()
+{
+    Camera_ResetDynamicROI();
+    UpdateDynamicROIDisplay();
+    
+    TRACE(_T("Dynamic ROI reset\n"));
+}
+
+void CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier()
+{
+    if (!m_editROIMultiplier || !m_sliderROIMultiplier) return;
+    
+    CString str;
+    m_editROIMultiplier->GetWindowText(str);
+    float multiplier = (float)_ttof(str);
+    
+    if (multiplier >= 6.0f && multiplier <= 10.0f) {
+        m_sliderROIMultiplier->SetPos((int)(multiplier * 10));
+        
+        if (Camera_IsDynamicROIEnabled()) {
+            DynamicROIConfig config;
+            if (Camera_GetDynamicROIConfig(&config)) {
+                config.roiSizeMultiplier = multiplier;
+                Camera_SetDynamicROIConfig(&config);
+            }
+        }
+    }
+}
+void CXIMEASensorDiagDlg::UpdateDynamicROIDisplay()
+{
+    DynamicROIInfo info;
+    if (Camera_GetDynamicROIInfo(&info)) {
+        if (m_staticROIStatus) {
+            m_staticROIStatus->SetWindowText(info.active ? _T("Active") : _T("Inactive"));
+        }
+        
+        if (m_staticROISize) {
+            if (info.active) {
+                CString sizeStr;
+                sizeStr.Format(_T("%dx%d"), info.width, info.height);
+                m_staticROISize->SetWindowText(sizeStr);
+            } else {
+                m_staticROISize->SetWindowText(_T("-"));
+            }
+        }
+        
+        if (m_staticROIReduction) {
+            if (info.active) {
+                CString reductionStr;
+                reductionStr.Format(_T("%.1f%%"), info.processingTimeReduction);
+                m_staticROIReduction->SetWindowText(reductionStr);
+            } else {
+                m_staticROIReduction->SetWindowText(_T("0%"));
+            }
+        }
+    }
+}
+
+void CXIMEASensorDiagDlg::DrawDynamicROIOverlay(CDC& dc, const CRect& rect)
+{
+    DynamicROIConfig config;
+    DynamicROIInfo info;
+    
+    if (!Camera_GetDynamicROIConfig(&config) || !config.showROIOverlay) {
+        return;
+    }
+    
+    if (!Camera_GetDynamicROIInfo(&info) || !info.active) {
+        return;
+    }
+    
+    // Get display buffer dimensions for proper scaling
+    int displayIdx = m_displayBufferIndex.load();
+    FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
+    
+    if (displayBuffer.width == 0 || displayBuffer.height == 0) {
+        return;
+    }
+    
+    float scaleX = (float)rect.Width() / displayBuffer.width;
+    float scaleY = (float)rect.Height() / displayBuffer.height;
+    
+    // Calculate ROI rectangle
+    int x = (int)((info.centerX - info.width / 2) * scaleX);
+    int y = (int)((info.centerY - info.height / 2) * scaleY);
+    int w = (int)(info.width * scaleX);
+    int h = (int)(info.height * scaleY);
+    
+    // Draw ROI boundary
+    CPen pen(PS_DASH, 2, RGB(255, 128, 0)); // Orange dashed line
+    CPen* pOldPen = dc.SelectObject(&pen);
+    CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
+    
+    dc.Rectangle(x, y, x + w, y + h);
+    
+    // Draw ROI info
+    dc.SetBkMode(TRANSPARENT);
+    dc.SetTextColor(RGB(255, 128, 0));
+    
+    CString roiText;
+    roiText.Format(_T("ROI: %dx%d (%.1f%% reduction)"), 
+                   info.width, info.height, info.processingTimeReduction);
+    dc.TextOut(x + 2, y + 2, roiText);
+    
+    dc.SelectObject(pOldPen);
+    dc.SelectObject(pOldBrush);
+}
+
+
+LRESULT CXIMEASensorDiagDlg::OnUpdateDynamicROI(WPARAM wParam, LPARAM lParam)
+{
+    UpdateDynamicROIDisplay();
+    return 0;
 }
