@@ -37,9 +37,6 @@ namespace {
     constexpr float TEMPLATE_MATCH_THRESHOLD = 0.7f;
     constexpr int TEMPLATE_SCALES = 5;
     constexpr float TEMPLATE_SCALE_STEP = 0.1f;
-
-    // Cache line size for optimal memory alignment
-    constexpr size_t CACHE_LINE_SIZE = 64;
 }
 
 #ifdef ENABLE_PERFORMANCE_PROFILING
