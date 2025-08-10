@@ -6,7 +6,7 @@
 #define XIMEASENSOR_API __declspec(dllimport)
 #endif
 
-#include "IXIMEACallback.h"
+#include "../XIMEASensor/IXIMEACallback.h"
 #include <string>
 
 // ============================================================================

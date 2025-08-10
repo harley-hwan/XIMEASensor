@@ -1,5 +1,5 @@
 #pragma once
-#include "IXIMEACallback.h"
+#include "../XIMEASensor/IXIMEACallback.h"
 #include <functional>
 
 class CameraCallback : public IXIMEACallback {

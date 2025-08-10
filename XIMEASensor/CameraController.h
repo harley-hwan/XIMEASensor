@@ -1,5 +1,4 @@
 #pragma once
-#include <xiApi.h>
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -10,6 +9,8 @@
 #include <queue>
 #include <condition_variable>
 #include <array>
+#include "CameraTypes.h"
+#include "ICameraInterface.h"
 #include "XIMEASensor.h" 
 #include "IXIMEACallback.h"
 #include "Logger.h"
@@ -46,8 +47,9 @@ private:
     static std::unique_ptr<CameraController> instance;
     static std::mutex instanceMutex;
 
-    // XIMEA handle
-    HANDLE xiH;
+    // Camera interface and handle
+    std::unique_ptr<Camera::ICameraInterface> cameraInterface;
+    void* cameraHandle;
 
     std::thread captureThread;
     std::atomic<bool> isRunning;
@@ -134,7 +136,7 @@ private:
             , lastPositionY(0.0f)
             , consecutiveDetections(0)
             , isTracking(false)
-            , missedDetectionCount(0) { 
+            , missedDetectionCount(0) {
         }
     };
 
@@ -165,7 +167,7 @@ private:
     void NotifyPropertyChanged(const std::string& property, const std::string& value);
 
     void UpdateStatistics(bool frameReceived);
-    std::string GetXiApiErrorString(XI_RETURN error);
+    std::string GetCameraErrorString(Camera::ReturnCode error);
 
     void RealtimeDetectionWorker();
     void ProcessRealtimeDetection(const unsigned char* data, int width, int height, int frameIndex);
@@ -182,12 +184,18 @@ private:
     void ApplyDynamicROI(const cv::Rect& roi);
     void ClearDynamicROI();
 
+    // Convert between Camera::ReturnCode and CameraError
+    CameraError ConvertReturnCodeToError(Camera::ReturnCode code);
+
 public:
     ~CameraController();
 
     // singleton
     static CameraController& GetInstance();
     static void Destroy();
+
+    // Set camera type (must be called before OpenCamera)
+    void SetCameraType(Camera::CameraFactory::CameraType type);
 
     // camera control
     bool OpenCamera(int deviceIndex);

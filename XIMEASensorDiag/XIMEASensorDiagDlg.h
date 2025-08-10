@@ -1,6 +1,6 @@
 #pragma once
 #include "XIMEASensor.h"
-#include "IXIMEACallback.h"
+#include "../XIMEASensor/IXIMEACallback.h"
 #include "CameraCallback.h"
 #include <memory>
 #include <chrono>

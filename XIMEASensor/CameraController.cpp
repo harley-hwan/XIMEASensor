@@ -13,7 +13,7 @@ std::unique_ptr<CameraController> CameraController::instance = nullptr;
 std::mutex CameraController::instanceMutex;
 
 CameraController::CameraController()
-    : xiH(nullptr),
+    : cameraHandle(nullptr),
     isRunning(false),
     isPaused(false),
     frameBuffer(nullptr),
@@ -104,15 +104,15 @@ CameraController::~CameraController() {
         }
 
         // 5. 카메라 하드웨어 정리
-        if (xiH != nullptr) {
-            XI_RETURN stat = xiStopAcquisition(xiH);
+        if (cameraHandle != nullptr && cameraInterface) {
+            Camera::ReturnCode stat = cameraInterface->StopAcquisition(cameraHandle);
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            stat = xiCloseDevice(xiH);
-            if (stat != XI_OK) {
-                LOG_ERROR("Error closing camera in destructor: " + GetXiApiErrorString(stat));
+            stat = cameraInterface->CloseDevice(cameraHandle);
+            if (stat != Camera::ReturnCode::OK) {
+                LOG_ERROR("Error closing camera in destructor: " + cameraInterface->GetErrorString(stat));
             }
-            xiH = nullptr;
+            cameraHandle = nullptr;
         }
 
         // 6. 메모리 정리
@@ -146,7 +146,6 @@ CameraController::~CameraController() {
     LOG_INFO("CameraController destroyed safely");
 }
 
-
 CameraController& CameraController::GetInstance() {
     std::lock_guard<std::mutex> lock(instanceMutex);
     if (!instance) {
@@ -162,18 +161,33 @@ void CameraController::Destroy() {
     }
 }
 
+void CameraController::SetCameraType(Camera::CameraFactory::CameraType type) {
+    if (cameraHandle) {
+        LOG_WARNING("Cannot change camera type while camera is open");
+        return;
+    }
+
+    cameraInterface = Camera::CameraFactory::CreateCamera(type);
+    LOG_INFO("Camera type set to: " + std::to_string(static_cast<int>(type)));
+}
+
 bool CameraController::OpenCamera(int deviceIndex) {
     LOG_INFO("Opening camera with index: " + std::to_string(deviceIndex));
 
-    if (xiH != nullptr) {
+    if (cameraHandle != nullptr) {
         LOG_WARNING("Camera already open");
         return true;
     }
 
-    XI_RETURN stat = xiOpenDevice(deviceIndex, &xiH);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to open camera: " + GetXiApiErrorString(stat));
-        NotifyError(static_cast<CameraError>(stat), "Failed to open camera");
+    // Create camera interface if not already created
+    if (!cameraInterface) {
+        SetCameraType(Camera::CameraFactory::CameraType::XIMEA);
+    }
+
+    Camera::ReturnCode stat = cameraInterface->OpenDevice(deviceIndex, &cameraHandle);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to open camera: " + cameraInterface->GetErrorString(stat));
+        NotifyError(ConvertReturnCodeToError(stat), "Failed to open camera");
         return false;
     }
 
@@ -181,46 +195,62 @@ bool CameraController::OpenCamera(int deviceIndex) {
     LOG_INFO("Configuring MQ013MG-ON camera");
 
     // pixel format
-    stat = xiSetParamInt(xiH, XI_PRM_IMAGE_DATA_FORMAT, XI_MONO8);
-    if (stat != XI_OK) {
-        LOG_WARNING("Failed to set image format: " + GetXiApiErrorString(stat));
+    stat = cameraInterface->SetParamInt(cameraHandle,
+        Camera::ParamType::IMAGE_DATA_FORMAT,
+        static_cast<int>(Camera::ImageFormat::MONO8));
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_WARNING("Failed to set image format: " + cameraInterface->GetErrorString(stat));
     }
 
     // camera settings
-    xiSetParamInt(xiH, XI_PRM_OUTPUT_DATA_BIT_DEPTH, XI_BPP_8);
-    xiSetParamInt(xiH, XI_PRM_SENSOR_DATA_BIT_DEPTH, XI_BPP_10);
-    xiSetParamInt(xiH, XI_PRM_WIDTH, PYTHON1300_WIDTH);
-    xiSetParamInt(xiH, XI_PRM_HEIGHT, PYTHON1300_HEIGHT);
-    xiSetParamInt(xiH, XI_PRM_EXPOSURE, CameraDefaults::EXPOSURE_US);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::OUTPUT_DATA_BIT_DEPTH, 8);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::SENSOR_DATA_BIT_DEPTH, 10);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::WIDTH, PYTHON1300_WIDTH);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::HEIGHT, PYTHON1300_HEIGHT);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::EXPOSURE, CameraDefaults::EXPOSURE_US);
     currentExposure = CameraDefaults::EXPOSURE_US;
 
-    xiSetParamFloat(xiH, XI_PRM_GAIN, CameraDefaults::GAIN_DB);
+    cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::GAIN, CameraDefaults::GAIN_DB);
     currentGain = CameraDefaults::GAIN_DB;
 
-    xiSetParamFloat(xiH, XI_PRM_FRAMERATE, CameraDefaults::FRAMERATE_FPS);
+    cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::FRAMERATE, CameraDefaults::FRAMERATE_FPS);
     currentFrameRate = CameraDefaults::FRAMERATE_FPS;
 
-    xiSetParamInt(xiH, XI_PRM_ACQ_TIMING_MODE, XI_ACQ_TIMING_MODE_FRAME_RATE);
-    xiSetParamInt(xiH, XI_PRM_BUFFER_POLICY, XI_BP_SAFE);
-    xiSetParamInt(xiH, XI_PRM_AUTO_BANDWIDTH_CALCULATION, XI_ON);
-    xiSetParamInt(xiH, XI_PRM_TRG_SOURCE, XI_TRG_OFF);
-    xiSetParamInt(xiH, XI_PRM_DOWNSAMPLING, XI_DWN_1x1);
-    xiSetParamInt(xiH, XI_PRM_DOWNSAMPLING_TYPE, XI_BINNING);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::ACQ_TIMING_MODE,
+        static_cast<int>(Camera::AcqTimingMode::FRAME_RATE));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::BUFFER_POLICY,
+        static_cast<int>(Camera::BufferPolicy::SAFE));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::AUTO_BANDWIDTH_CALCULATION,
+        static_cast<int>(Camera::OnOff::ON));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::TRG_SOURCE,
+        static_cast<int>(Camera::TriggerSource::OFF));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::DOWNSAMPLING,
+        static_cast<int>(Camera::Downsampling::DWN_1x1));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::DOWNSAMPLING_TYPE,
+        static_cast<int>(Camera::DownsamplingType::BINNING));
 
     // Advanced settings for high-speed capture
-    xiSetParamInt(xiH, XI_PRM_SENSOR_TAPS, XI_TAP_CNT_2);
-    xiSetParamInt(xiH, XI_PRM_BUFFERS_QUEUE_SIZE, 20);
-    xiSetParamInt(xiH, XI_PRM_RECENT_FRAME, XI_ON);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::SENSOR_TAPS,
+        static_cast<int>(Camera::SensorTaps::TAP_CNT_2));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::BUFFERS_QUEUE_SIZE, 20);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::RECENT_FRAME,
+        static_cast<int>(Camera::OnOff::ON));
 
     // Disable image enhancements for raw data
-    xiSetParamFloat(xiH, XI_PRM_GAMMAY, 1.0f);
-    xiSetParamFloat(xiH, XI_PRM_SHARPNESS, 0.0f);
-    xiSetParamInt(xiH, XI_PRM_HDR, XI_OFF);
-    xiSetParamInt(xiH, XI_PRM_AUTO_WB, XI_OFF);
-    xiSetParamInt(xiH, XI_PRM_MANUAL_WB, XI_OFF);
-    xiSetParamInt(xiH, XI_PRM_SENS_DEFECTS_CORR, XI_ON);
-    xiSetParamInt(xiH, XI_PRM_COLOR_FILTER_ARRAY, XI_CFA_NONE);
-    xiSetParamInt(xiH, XI_PRM_TRANSPORT_PIXEL_FORMAT, XI_GenTL_Image_Format_Mono8);
+    cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::GAMMAY, 1.0f);
+    cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::SHARPNESS, 0.0f);
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::HDR,
+        static_cast<int>(Camera::OnOff::OFF));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::AUTO_WB,
+        static_cast<int>(Camera::OnOff::OFF));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::MANUAL_WB,
+        static_cast<int>(Camera::OnOff::OFF));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::SENS_DEFECTS_CORR,
+        static_cast<int>(Camera::OnOff::ON));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::COLOR_FILTER_ARRAY,
+        static_cast<int>(Camera::ColorFilterArray::CFA_NONE));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::TRANSPORT_PIXEL_FORMAT,
+        static_cast<int>(Camera::GenTLImageFormat::Mono8));
 
     // RAII 패턴을 사용한 프레임 버퍼 할당
     {
@@ -244,8 +274,8 @@ bool CameraController::OpenCamera(int deviceIndex) {
 
         if (!tempFrame || !tempWorking) {
             LOG_ERROR("Failed to allocate frame buffers");
-            xiCloseDevice(xiH);
-            xiH = nullptr;
+            cameraInterface->CloseDevice(cameraHandle);
+            cameraHandle = nullptr;
             return false;
         }
 
@@ -265,11 +295,10 @@ bool CameraController::OpenCamera(int deviceIndex) {
     return true;
 }
 
-
 void CameraController::CloseCamera() {
     LOG_INFO("Closing camera");
 
-    if (!xiH) {
+    if (!cameraHandle || !cameraInterface) {
         LOG_WARNING("Camera already closed");
         return;
     }
@@ -278,12 +307,12 @@ void CameraController::CloseCamera() {
         StopCapture();
     }
 
-    XI_RETURN stat = xiCloseDevice(xiH);
-    if (stat != XI_OK) {
-        LOG_ERROR("Error closing camera: " + GetXiApiErrorString(stat));
+    Camera::ReturnCode stat = cameraInterface->CloseDevice(cameraHandle);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Error closing camera: " + cameraInterface->GetErrorString(stat));
     }
 
-    xiH = nullptr;
+    cameraHandle = nullptr;
 
     CameraState oldState = currentState.exchange(CameraState::DISCONNECTED);
     if (oldState != CameraState::DISCONNECTED) {
@@ -294,7 +323,7 @@ void CameraController::CloseCamera() {
 }
 
 bool CameraController::StartCapture() {
-    if (!xiH) {
+    if (!cameraHandle || !cameraInterface) {
         LOG_ERROR("Camera not opened");
         NotifyError(CameraError::START_FAILED, "Camera not opened");
         return false;
@@ -307,9 +336,9 @@ bool CameraController::StartCapture() {
 
     LOG_INFO("Starting capture");
 
-    XI_RETURN stat = xiStartAcquisition(xiH);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to start acquisition: " + GetXiApiErrorString(stat));
+    Camera::ReturnCode stat = cameraInterface->StartAcquisition(cameraHandle);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to start acquisition: " + cameraInterface->GetErrorString(stat));
         NotifyError(CameraError::START_FAILED, "Failed to start acquisition");
         return false;
     }
@@ -354,10 +383,10 @@ void CameraController::StopCapture() {
         }
     }
 
-    if (xiH) {
-        XI_RETURN stat = xiStopAcquisition(xiH);
-        if (stat != XI_OK) {
-            LOG_ERROR("Error stopping acquisition: " + GetXiApiErrorString(stat));
+    if (cameraHandle && cameraInterface) {
+        Camera::ReturnCode stat = cameraInterface->StopAcquisition(cameraHandle);
+        if (stat != Camera::ReturnCode::OK) {
+            LOG_ERROR("Error stopping acquisition: " + cameraInterface->GetErrorString(stat));
         }
     }
 
@@ -375,9 +404,7 @@ void CameraController::PauseCapture(bool pause) {
 }
 
 void CameraController::CaptureLoop() {
-    XI_IMG image;
-    memset(&image, 0, sizeof(image));
-    image.size = sizeof(XI_IMG);
+    Camera::ImageData image;
 
     LOG_INFO("Capture loop started");
 
@@ -401,9 +428,9 @@ void CameraController::CaptureLoop() {
         }
         nextFrameTime += frameInterval;
 
-        XI_RETURN stat = xiGetImage(xiH, IMAGE_TIMEOUT_MS, &image);
+        Camera::ReturnCode stat = cameraInterface->GetImage(cameraHandle, IMAGE_TIMEOUT_MS, &image);
 
-        if (stat == XI_OK) {
+        if (stat == Camera::ReturnCode::OK) {
             deviceNotReadyCount = 0;
             consecutiveTimeouts = 0;
 
@@ -413,8 +440,8 @@ void CameraController::CaptureLoop() {
             float currentFPS = duration > 0 ? 1000000.0f / duration : 0.0f;
             lastFrameTime = frameTime;
 
-            if (image.frm != XI_MONO8) {
-                LOG_ERROR("Unexpected image format: " + std::to_string(image.frm));
+            if (image.frm != Camera::ImageFormat::MONO8) {
+                LOG_ERROR("Unexpected image format: " + std::to_string(static_cast<int>(image.frm)));
                 continue;
             }
 
@@ -506,7 +533,7 @@ void CameraController::CaptureLoop() {
             NotifyFrameReceived(frameInfo);
             UpdateStatistics(true);
         }
-        else if (stat == XI_TIMEOUT) {
+        else if (stat == Camera::ReturnCode::TIMEOUT) {
             consecutiveTimeouts++;
 
             if (consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
@@ -518,9 +545,9 @@ void CameraController::CaptureLoop() {
             deviceNotReadyCount = 0;
             UpdateStatistics(false);
         }
-        else if (stat == XI_DEVICE_NOT_READY) {
+        else if (stat == Camera::ReturnCode::DEVICE_NOT_READY) {
             deviceNotReadyCount++;
-            LOG_ERROR("Frame grab error: " + GetXiApiErrorString(stat) +
+            LOG_ERROR("Frame grab error: " + cameraInterface->GetErrorString(stat) +
                 " (count: " + std::to_string(deviceNotReadyCount.load()) + ")");
 
             if (deviceNotReadyCount >= MAX_DEVICE_NOT_READY_ERRORS) {
@@ -541,9 +568,9 @@ void CameraController::CaptureLoop() {
             UpdateStatistics(false);
         }
         else {
-            LOG_ERROR("Frame grab error: " + GetXiApiErrorString(stat));
-            NotifyError(static_cast<CameraError>(stat),
-                "Frame grab error: " + GetXiApiErrorString(stat));
+            LOG_ERROR("Frame grab error: " + cameraInterface->GetErrorString(stat));
+            NotifyError(ConvertReturnCodeToError(stat),
+                "Frame grab error: " + cameraInterface->GetErrorString(stat));
             UpdateStatistics(false);
 
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -552,7 +579,6 @@ void CameraController::CaptureLoop() {
 
     LOG_INFO("Capture loop ended");
 }
-
 
 bool CameraController::GetFrame(unsigned char* buffer, int bufferSize, int& outWidth, int& outHeight) {
     if (!buffer || bufferSize <= 0) {
@@ -605,7 +631,7 @@ bool CameraController::GetFrame(unsigned char* buffer, int bufferSize, int& outW
 }
 
 bool CameraController::SetExposure(int microsec) {
-    if (!xiH) {
+    if (!cameraHandle || !cameraInterface) {
         LOG_ERROR("Camera not opened");
         return false;
     }
@@ -622,9 +648,10 @@ bool CameraController::SetExposure(int microsec) {
         LOG_WARNING("Exposure clamped to maximum: " + std::to_string(maxExposure) + " us");
     }
 
-    XI_RETURN stat = xiSetParamInt(xiH, XI_PRM_EXPOSURE, microsec);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to set exposure: " + GetXiApiErrorString(stat));
+    Camera::ReturnCode stat = cameraInterface->SetParamInt(
+        cameraHandle, Camera::ParamType::EXPOSURE, microsec);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to set exposure: " + cameraInterface->GetErrorString(stat));
         return false;
     }
 
@@ -644,7 +671,7 @@ bool CameraController::SetExposure(int microsec) {
 }
 
 bool CameraController::SetGain(float gain) {
-    if (!xiH) {
+    if (!cameraHandle || !cameraInterface) {
         LOG_ERROR("Camera not opened");
         return false;
     }
@@ -661,9 +688,10 @@ bool CameraController::SetGain(float gain) {
         LOG_WARNING("Gain clamped to maximum: " + std::to_string(maxGain) + " dB");
     }
 
-    XI_RETURN stat = xiSetParamFloat(xiH, XI_PRM_GAIN, gain);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to set gain: " + GetXiApiErrorString(stat));
+    Camera::ReturnCode stat = cameraInterface->SetParamFloat(
+        cameraHandle, Camera::ParamType::GAIN, gain);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to set gain: " + cameraInterface->GetErrorString(stat));
         return false;
     }
 
@@ -673,9 +701,8 @@ bool CameraController::SetGain(float gain) {
     return true;
 }
 
-
 bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
-    if (!xiH) {
+    if (!cameraHandle || !cameraInterface) {
         LOG_ERROR("Camera not opened");
         return false;
     }
@@ -708,31 +735,31 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
     }
 
     // Set ROI
-    XI_RETURN stat;
-    stat = xiSetParamInt(xiH, XI_PRM_OFFSET_X, offsetX);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to set X offset: " + GetXiApiErrorString(stat));
+    Camera::ReturnCode stat;
+    stat = cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::OFFSET_X, offsetX);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to set X offset: " + cameraInterface->GetErrorString(stat));
         if (wasCapturing) PauseCapture(false);
         return false;
     }
 
-    stat = xiSetParamInt(xiH, XI_PRM_OFFSET_Y, offsetY);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to set Y offset: " + GetXiApiErrorString(stat));
+    stat = cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::OFFSET_Y, offsetY);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to set Y offset: " + cameraInterface->GetErrorString(stat));
         if (wasCapturing) PauseCapture(false);
         return false;
     }
 
-    stat = xiSetParamInt(xiH, XI_PRM_WIDTH, w);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to set width: " + GetXiApiErrorString(stat));
+    stat = cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::WIDTH, w);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to set width: " + cameraInterface->GetErrorString(stat));
         if (wasCapturing) PauseCapture(false);
         return false;
     }
 
-    stat = xiSetParamInt(xiH, XI_PRM_HEIGHT, h);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to set height: " + GetXiApiErrorString(stat));
+    stat = cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::HEIGHT, h);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to set height: " + cameraInterface->GetErrorString(stat));
         if (wasCapturing) PauseCapture(false);
         return false;
     }
@@ -773,9 +800,8 @@ bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
     return true;
 }
 
-
 bool CameraController::SetFrameRate(float fps) {
-    if (!xiH) {
+    if (!cameraHandle || !cameraInterface) {
         LOG_ERROR("Camera not opened");
         return false;
     }
@@ -801,13 +827,14 @@ bool CameraController::SetFrameRate(float fps) {
         fps = maxPossibleFPS * 0.95f; // Set to 95% of max
     }
 
-    XI_RETURN stat = xiSetParamFloat(xiH, XI_PRM_FRAMERATE, fps);
-    if (stat != XI_OK) {
-        LOG_WARNING("Failed to set frame rate: " + GetXiApiErrorString(stat));
+    Camera::ReturnCode stat = cameraInterface->SetParamFloat(
+        cameraHandle, Camera::ParamType::FRAMERATE, fps);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_WARNING("Failed to set frame rate: " + cameraInterface->GetErrorString(stat));
 
         // get actual frame rate
         float actualFPS = 0.0f;
-        if (xiGetParamFloat(xiH, XI_PRM_FRAMERATE, &actualFPS) == XI_OK) {
+        if (cameraInterface->GetParamFloat(cameraHandle, Camera::ParamType::FRAMERATE, &actualFPS) == Camera::ReturnCode::OK) {
             LOG_INFO("Camera reported actual frame rate: " + std::to_string(actualFPS) + " FPS");
             NotifyPropertyChanged("FrameRate", std::to_string(actualFPS) + " FPS");
         }
@@ -820,17 +847,16 @@ bool CameraController::SetFrameRate(float fps) {
     return true;
 }
 
-
 bool CameraController::SetTriggerMode(bool enabled) {
-    if (!xiH) {
+    if (!cameraHandle || !cameraInterface) {
         LOG_ERROR("Camera not opened");
         return false;
     }
 
-    XI_RETURN stat = xiSetParamInt(xiH, XI_PRM_TRG_SOURCE,
-        enabled ? XI_TRG_SOFTWARE : XI_TRG_OFF);
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to set trigger mode: " + GetXiApiErrorString(stat));
+    Camera::ReturnCode stat = cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::TRG_SOURCE,
+        enabled ? static_cast<int>(Camera::TriggerSource::SOFTWARE) : static_cast<int>(Camera::TriggerSource::OFF));
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to set trigger mode: " + cameraInterface->GetErrorString(stat));
         return false;
     }
 
@@ -840,11 +866,11 @@ bool CameraController::SetTriggerMode(bool enabled) {
 }
 
 float CameraController::GetFrameRate() {
-    if (!xiH) return 0.0f;
+    if (!cameraHandle || !cameraInterface) return 0.0f;
 
     float fps = 0.0f;
-    XI_RETURN stat = xiGetParamFloat(xiH, XI_PRM_FRAMERATE, &fps);
-    if (stat == XI_OK) {
+    Camera::ReturnCode stat = cameraInterface->GetParamFloat(cameraHandle, Camera::ParamType::FRAMERATE, &fps);
+    if (stat == Camera::ReturnCode::OK) {
         return fps;
     }
     return currentFrameRate;
@@ -971,26 +997,34 @@ void CameraController::NotifyPropertyChanged(const std::string& property, const 
 }
 
 int CameraController::GetConnectedDeviceCount() {
-    DWORD deviceCount = 0;
-    xiGetNumberDevices(&deviceCount);
+    if (!cameraInterface) {
+        SetCameraType(Camera::CameraFactory::CameraType::XIMEA);
+    }
+
+    uint32_t deviceCount = 0;
+    cameraInterface->GetNumberDevices(&deviceCount);
     return static_cast<int>(deviceCount);
 }
 
 bool CameraController::GetDeviceInfo(int index, std::string& name, std::string& serial) {
+    if (!cameraInterface) {
+        SetCameraType(Camera::CameraFactory::CameraType::XIMEA);
+    }
+
     char deviceName[256] = { 0 };
     char serialNumber[256] = { 0 };
 
-    XI_RETURN stat = xiGetDeviceInfoString(index, XI_PRM_DEVICE_NAME,
-        deviceName, sizeof(deviceName));
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to get device name: " + GetXiApiErrorString(stat));
+    Camera::ReturnCode stat = cameraInterface->GetDeviceInfoString(
+        index, Camera::ParamType::DEVICE_NAME, deviceName, sizeof(deviceName));
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to get device name: " + cameraInterface->GetErrorString(stat));
         return false;
     }
 
-    stat = xiGetDeviceInfoString(index, XI_PRM_DEVICE_SN,
-        serialNumber, sizeof(serialNumber));
-    if (stat != XI_OK) {
-        LOG_ERROR("Failed to get device serial: " + GetXiApiErrorString(stat));
+    stat = cameraInterface->GetDeviceInfoString(
+        index, Camera::ParamType::DEVICE_SN, serialNumber, sizeof(serialNumber));
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_ERROR("Failed to get device serial: " + cameraInterface->GetErrorString(stat));
         return false;
     }
 
@@ -999,98 +1033,35 @@ bool CameraController::GetDeviceInfo(int index, std::string& name, std::string& 
     return true;
 }
 
-std::string CameraController::GetXiApiErrorString(XI_RETURN error) {
-    switch (error) {
-    case XI_OK: return "Success";
-    case XI_INVALID_HANDLE: return "Invalid handle";
-    case XI_READREG: return "Register read error";
-    case XI_WRITEREG: return "Register write error";
-    case XI_FREE_RESOURCES: return "Free resources error";
-    case XI_FREE_CHANNEL: return "Free channel error";
-    case XI_FREE_BANDWIDTH: return "Free bandwidth error";
-    case XI_READBLK: return "Read block error";
-    case XI_WRITEBLK: return "Write block error";
-    case XI_NO_IMAGE: return "No image";
-    case XI_TIMEOUT: return "Timeout";
-    case XI_INVALID_ARG: return "Invalid argument";
-    case XI_NOT_SUPPORTED: return "Not supported";
-    case XI_ISOCH_ATTACH_BUFFERS: return "Isochronous attach buffers error";
-    case XI_GET_OVERLAPPED_RESULT: return "Get overlapped result error";
-    case XI_MEMORY_ALLOCATION: return "Memory allocation error";
-    case XI_DLLCONTEXTISNULL: return "DLL context is null";
-    case XI_DLLCONTEXTISNONZERO: return "DLL context is non-zero";
-    case XI_DLLCONTEXTEXIST: return "DLL context exists";
-    case XI_TOOMANYDEVICES: return "Too many devices";
-    case XI_ERRORCAMCONTEXT: return "Camera context error";
-    case XI_UNKNOWN_HARDWARE: return "Unknown hardware";
-    case XI_INVALID_TM_FILE: return "Invalid TM file";
-    case XI_INVALID_TM_TAG: return "Invalid TM tag";
-    case XI_INCOMPLETE_TM: return "Incomplete TM";
-    case XI_BUS_RESET_FAILED: return "Bus reset failed";
-    case XI_NOT_IMPLEMENTED: return "Not implemented";
-    case XI_SHADING_TOOBRIGHT: return "Shading too bright";
-    case XI_SHADING_TOODARK: return "Shading too dark";
-    case XI_TOO_LOW_GAIN: return "Too low gain";
-    case XI_INVALID_BPL: return "Invalid BPL";
-    case XI_BPL_REALLOC: return "BPL reallocation error";
-    case XI_INVALID_PIXEL_LIST: return "Invalid pixel list";
-    case XI_INVALID_FFS: return "Invalid FFS";
-    case XI_INVALID_PROFILE: return "Invalid profile";
-    case XI_INVALID_CALIBRATION: return "Invalid calibration";
-    case XI_INVALID_BUFFER: return "Invalid buffer";
-    case XI_INVALID_DATA: return "Invalid data";
-    case XI_TGBUSY: return "Timing generator busy";
-    case XI_IO_WRONG: return "Wrong I/O direction";
-    case XI_ACQUISITION_ALREADY_UP: return "Acquisition already up";
-    case XI_OLD_DRIVER_VERSION: return "Old driver version";
-    case XI_GET_LAST_ERROR: return "Get last error";
-    case XI_CANT_PROCESS: return "Can't process";
-    case XI_ACQUISITION_STOPED: return "Acquisition stopped";
-    case XI_ACQUISITION_STOPED_WERR: return "Acquisition stopped with error";
-    case XI_INVALID_INPUT_ICC_PROFILE: return "Invalid input ICC profile";
-    case XI_INVALID_OUTPUT_ICC_PROFILE: return "Invalid output ICC profile";
-    case XI_DEVICE_NOT_READY: return "Device not ready";
-    case XI_SHADING_TOOCONTRAST: return "Shading too contrast";
-    case XI_ALREADY_INITIALIZED: return "Already initialized";
-    case XI_NOT_ENOUGH_PRIVILEGES: return "Not enough privileges";
-    case XI_NOT_COMPATIBLE_DRIVER: return "Not compatible driver";
-    case XI_TM_INVALID_RESOURCE: return "TM invalid resource";
-    case XI_DEVICE_HAS_BEEN_RESETED: return "Device has been reset";
-    case XI_NO_DEVICES_FOUND: return "No devices found";
-    case XI_RESOURCE_OR_FUNCTION_LOCKED: return "Resource or function locked";
-    case XI_BUFFER_SIZE_TOO_SMALL: return "Buffer size too small";
-    case XI_COULDNT_INIT_PROCESSOR: return "Couldn't initialize processor";
-    case XI_NOT_INITIALIZED: return "Not initialized";
-    case XI_RESOURCE_NOT_FOUND: return "Resource not found";
-    case XI_UNKNOWN_PARAM: return "Unknown parameter";
-    case XI_WRONG_PARAM_VALUE: return "Wrong parameter value";
-    case XI_WRONG_PARAM_TYPE: return "Wrong parameter type";
-    case XI_WRONG_PARAM_SIZE: return "Wrong parameter size";
-    case XI_BUFFER_TOO_SMALL: return "Buffer too small";
-    case XI_NOT_SUPPORTED_PARAM: return "Parameter not supported";
-    case XI_NOT_SUPPORTED_PARAM_INFO: return "Parameter info not supported";
-    case XI_NOT_SUPPORTED_DATA_FORMAT: return "Data format not supported";
-    case XI_READ_ONLY_PARAM: return "Read-only parameter";
-    case XI_BANDWIDTH_NOT_SUPPORTED: return "Bandwidth not supported";
-    case XI_INVALID_FFS_FILE_NAME: return "Invalid FFS file name";
-    case XI_FFS_FILE_NOT_FOUND: return "FFS file not found";
-    case XI_PARAM_NOT_SETTABLE: return "Parameter not settable";
-    case XI_SAFE_POLICY_NOT_SUPPORTED: return "Safe buffer policy not supported";
-    case XI_GPUDIRECT_NOT_AVAILABLE: return "GPUDirect not available";
-    case XI_INCORRECT_SENS_ID_CHECK: return "Incorrect sensor ID checksum";
-    case XI_INCORRECT_FPGA_TYPE: return "Incorrect FPGA type";
-    case XI_PARAM_CONDITIONALLY_NOT_AVAILABLE: return "Parameter conditionally not available";
-    case XI_ERR_FRAME_BUFFER_RAM_INIT: return "Frame buffer RAM initialization error";
-    case XI_PROC_OTHER_ERROR: return "Processing error - other";
-    case XI_PROC_PROCESSING_ERROR: return "Error while image processing";
-    case XI_PROC_INPUT_FORMAT_UNSUPPORTED: return "Input format not supported";
-    case XI_PROC_OUTPUT_FORMAT_UNSUPPORTED: return "Output format not supported";
-    case XI_OUT_OF_RANGE: return "Parameter value out of range";
-    default: return "Unknown error (" + std::to_string(error) + ")";
+std::string CameraController::GetCameraErrorString(Camera::ReturnCode error) {
+    if (cameraInterface) {
+        return cameraInterface->GetErrorString(error);
     }
+    return "Unknown error (" + std::to_string(static_cast<int>(error)) + ")";
 }
 
-
+CameraError CameraController::ConvertReturnCodeToError(Camera::ReturnCode code) {
+    switch (code) {
+    case Camera::ReturnCode::OK:
+        return CameraError::NONE;
+    case Camera::ReturnCode::NO_DEVICES_FOUND:
+        return CameraError::DEVICE_NOT_FOUND;
+    case Camera::ReturnCode::INVALID_HANDLE:
+        return CameraError::OPEN_FAILED;
+    case Camera::ReturnCode::ACQUISITION_STOPED:
+        return CameraError::START_FAILED;
+    case Camera::ReturnCode::WRONG_PARAM_VALUE:
+        return CameraError::PARAMETER_ERROR;
+    case Camera::ReturnCode::TIMEOUT:
+        return CameraError::TIMEOUT;
+    case Camera::ReturnCode::MEMORY_ALLOCATION:
+        return CameraError::MEMORY_ERROR;
+    case Camera::ReturnCode::DEVICE_NOT_READY:
+        return CameraError::DEVICE_NOT_READY;
+    default:
+        return CameraError::UNKNOWN;
+    }
+}
 
 bool CameraController::EnableRealtimeDetection(bool enable) {
     if (enable == m_realtimeDetectionEnabled.load()) {
@@ -1281,7 +1252,6 @@ void CameraController::ProcessRealtimeDetection(const unsigned char* data, int w
     }
 }
 
-
 void CameraController::SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* context) {
     m_realtimeCallback = callback;
     m_realtimeCallbackContext = context;
@@ -1353,8 +1323,6 @@ void CameraController::GetRealtimeDetectionStats(int* processedFrames, double* a
     }
 }
 
-
-
 //========================================================
 // Ball state tracking methods : 2025-07-30
 //========================================================
@@ -1396,7 +1364,6 @@ void CameraController::NotifyBallStateChanged(BallState newState, BallState oldS
     LOG_INFO("Ball state changed: " + std::string(Camera_GetBallStateString(oldState)) +
         " -> " + std::string(Camera_GetBallStateString(newState)));
 }
-
 
 void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
     BallState previousState;
@@ -1572,7 +1539,6 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
     }
 }
 
-
 // Ball state tracking public methods
 bool CameraController::EnableBallStateTracking(bool enable) {
     if (enable == m_ballStateTrackingEnabled.load()) {
@@ -1694,7 +1660,6 @@ bool CameraController::IsBallStable() const {
     return (m_ballTracking.currentState == BallState::READY ||
         m_ballTracking.currentState == BallState::STOPPED);
 }
-
 
 // Dynamic ROI implementation
 void CameraController::UpdateDynamicROI(const RealtimeDetectionResult* result) {

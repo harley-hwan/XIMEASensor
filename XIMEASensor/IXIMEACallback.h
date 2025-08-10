@@ -1,21 +1,21 @@
 #pragma once
-#include <xiApi.h>
 #include <string>
+#include "CameraTypes.h"
 
-// FrameInfo - from XI_IMG struct
+// FrameInfo - platform independent
 struct FrameInfo {
-    unsigned char* data;          // 프레임 데이터 (XI_IMG.bp)
-    int width;                    // 프레임 너비 (XI_IMG.width)
-    int height;                   // 프레임 높이 (XI_IMG.height)
-    unsigned long frameNumber;    // 프레임 번호 (XI_IMG.nframe)
-    unsigned long acqFrameNumber; // 획득 프레임 번호 (XI_IMG.acq_nframe)
-    double timestamp;             // 타임스탬프 (XI_IMG.tsSec + tsUSec/1000000.0)
+    unsigned char* data;          // 프레임 데이터
+    int width;                    // 프레임 너비
+    int height;                   // 프레임 높이
+    unsigned long frameNumber;    // 프레임 번호
+    unsigned long acqFrameNumber; // 획득 프레임 번호
+    double timestamp;             // 타임스탬프
     float currentFPS;             // 현재 FPS (계산값)
-    unsigned int blackLevel;      // 블랙 레벨 (XI_IMG.black_level)
-    unsigned int GPI_level;       // GPI 레벨 (XI_IMG.GPI_level)
-    float exposureTime_ms;        // 노출 시간 (XI_IMG.exposure_time_us / 1000.0)
-    float gain_db;                // 게인 (XI_IMG.gain_db)
-    XI_IMG_FORMAT format;         // 이미지 포맷 (XI_IMG.frm)
+    unsigned int blackLevel;      // 블랙 레벨
+    unsigned int GPI_level;       // GPI 레벨
+    float exposureTime_ms;        // 노출 시간 (ms)
+    float gain_db;                // 게인 (dB)
+    Camera::ImageFormat format;   // 이미지 포맷
 };
 
 enum class CameraState {
@@ -25,17 +25,17 @@ enum class CameraState {
     kERROR
 };
 
-// Camera Error Code - from XI_RETURN of xiApi
+// Camera Error Code - platform independent
 enum class CameraError {
-    NONE = XI_OK,
-    DEVICE_NOT_FOUND = XI_NO_DEVICES_FOUND,
-    OPEN_FAILED = XI_INVALID_HANDLE,
-    START_FAILED = XI_ACQUISITION_STOPED,
-    PARAMETER_ERROR = XI_WRONG_PARAM_VALUE,
-    FRAME_GRAB_ERROR = XI_TIMEOUT,
-    TIMEOUT = XI_TIMEOUT,
-    MEMORY_ERROR = XI_MEMORY_ALLOCATION,
-    DEVICE_NOT_READY = XI_DEVICE_NOT_READY,
+    NONE = 0,
+    DEVICE_NOT_FOUND,
+    OPEN_FAILED,
+    START_FAILED,
+    PARAMETER_ERROR,
+    FRAME_GRAB_ERROR,
+    TIMEOUT,
+    MEMORY_ERROR,
+    DEVICE_NOT_READY,
     UNKNOWN = -1
 };
 
@@ -46,5 +46,5 @@ public:
     virtual void OnFrameReceived(const FrameInfo& frameInfo) = 0;
     virtual void OnCameraStateChanged(CameraState newState, CameraState oldState) = 0;
     virtual void OnError(CameraError error, const std::string& errorMessage) = 0;
-    virtual void OnPropertyChanged(const std::string& propertyName, const std::string& value) { }
+    virtual void OnPropertyChanged(const std::string& propertyName, const std::string& value) {}
 };
