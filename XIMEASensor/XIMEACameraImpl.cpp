@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "XIMEACameraImpl.h"
-#include <xiApi.h>  // Only included in implementation file
+//#include <xiApi.h>  // Only included in implementation file
 #include <map>
 #include <cstring>
 
