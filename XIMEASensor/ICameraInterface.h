@@ -38,8 +38,7 @@ namespace Camera {
     public:
         enum class CameraType {
             XIMEA,
-            MOCK,  // For testing
-            // Future camera types...
+            HIKVISION, 
         };
 
         static std::unique_ptr<ICameraInterface> CreateCamera(CameraType type);

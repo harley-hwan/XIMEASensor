@@ -155,7 +155,6 @@ xcopy /y "$(TargetDir)$(TargetName).lib" "$(SolutionDir)XIMEASensorDiag\"
     <ClInclude Include="framework.h" />
     <ClInclude Include="BallDetector.h" />
     <ClInclude Include="ImageSaver.h" />
-    <ClInclude Include="IXIMEACallback.h" />
     <ClInclude Include="Logger.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="XIMEACameraImpl.h" />

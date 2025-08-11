@@ -1,19 +1,10 @@
 #pragma once
 #include <cstdint>
 #include <xiApi.h>
+#include "XIMEASensor.h"
+
 // Camera-independent type definitions
 namespace Camera {
-
-    // Image format enum (replaces XI_IMG_FORMAT)
-    enum class ImageFormat {
-        MONO8 = 0,
-        MONO16 = 1,
-        RGB24 = 2,
-        RGB32 = 3,
-        RAW8 = 4,
-        RAW16 = 5,
-        FRM_TRANSPORT_DATA = 6
-    };
 
     // Return codes (replaces XI_RETURN)
     enum class ReturnCode {

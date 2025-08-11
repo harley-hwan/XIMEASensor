@@ -759,8 +759,7 @@ void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
     // Update FPS display
     m_frameCount++;
     auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - m_lastFPSUpdate).count();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastFPSUpdate).count();
 
     if (elapsed >= 500) {  // Update every 500ms
         m_currentFPS = (m_frameCount * 1000.0) / elapsed;

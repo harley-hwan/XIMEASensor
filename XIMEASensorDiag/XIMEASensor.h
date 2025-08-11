@@ -6,8 +6,125 @@
 #define XIMEASENSOR_API __declspec(dllimport)
 #endif
 
-#include "../XIMEASensor/IXIMEACallback.h"
 #include <string>
+#include <functional>
+
+// ============================================================================
+// CAMERA::IMAGEFORMAT DEFINITION FOR FRAMEINFO
+// ============================================================================
+
+namespace Camera {
+    // Image format enum (replaces XI_IMG_FORMAT)
+    enum class ImageFormat {
+        MONO8 = 0,
+        MONO16 = 1,
+        RGB24 = 2,
+        RGB32 = 3,
+        RAW8 = 4,
+        RAW16 = 5,
+        FRM_TRANSPORT_DATA = 6
+    };
+}
+
+// FrameInfo - platform independent
+struct FrameInfo {
+    unsigned char* data;          // 프레임 데이터
+    int width;                    // 프레임 너비
+    int height;                   // 프레임 높이
+    unsigned long frameNumber;    // 프레임 번호
+    unsigned long acqFrameNumber; // 획득 프레임 번호
+    double timestamp;             // 타임스탬프
+    float currentFPS;             // 현재 FPS (계산값)
+    unsigned int blackLevel;      // 블랙 레벨
+    unsigned int GPI_level;       // GPI 레벨
+    float exposureTime_ms;        // 노출 시간 (ms)
+    float gain_db;                // 게인 (dB)
+    Camera::ImageFormat format;   // 이미지 포맷
+};
+
+enum class CameraState {
+    DISCONNECTED = 0,
+    CONNECTED,
+    CAPTURING,
+    kERROR
+};
+
+// Camera Error Code - platform independent
+enum class CameraError {
+    NONE = 0,
+    DEVICE_NOT_FOUND,
+    OPEN_FAILED,
+    START_FAILED,
+    PARAMETER_ERROR,
+    FRAME_GRAB_ERROR,
+    TIMEOUT,
+    MEMORY_ERROR,
+    DEVICE_NOT_READY,
+    UNKNOWN = -1
+};
+
+// callback interface
+class IXIMEACallback {
+public:
+    virtual ~IXIMEACallback() = default;
+    virtual void OnFrameReceived(const FrameInfo& frameInfo) = 0;
+    virtual void OnCameraStateChanged(CameraState newState, CameraState oldState) = 0;
+    virtual void OnError(CameraError error, const std::string& errorMessage) = 0;
+    virtual void OnPropertyChanged(const std::string& propertyName, const std::string& value) {}
+};
+
+// ============================================================================
+// CAMERA CALLBACK IMPLEMENTATION EXAMPLE (from CameraCallback.h)
+// ============================================================================
+
+class CameraCallback : public IXIMEACallback {
+private:
+    std::function<void(const FrameInfo&)> onFrameReceived;
+    std::function<void(CameraState, CameraState)> onStateChanged;
+    std::function<void(CameraError, const std::string&)> onError;
+    std::function<void(const std::string&, const std::string&)> onPropertyChanged;
+
+public:
+    void SetFrameCallback(std::function<void(const FrameInfo&)> callback) {
+        onFrameReceived = callback;
+    }
+
+    void SetStateCallback(std::function<void(CameraState, CameraState)> callback) {
+        onStateChanged = callback;
+    }
+
+    void SetErrorCallback(std::function<void(CameraError, const std::string&)> callback) {
+        onError = callback;
+    }
+
+    void SetPropertyCallback(std::function<void(const std::string&, const std::string&)> callback) {
+        onPropertyChanged = callback;
+    }
+
+    virtual void OnFrameReceived(const FrameInfo& frameInfo) override {
+        if (onFrameReceived) {
+            onFrameReceived(frameInfo);
+        }
+    }
+
+    virtual void OnCameraStateChanged(CameraState newState, CameraState oldState) override {
+        if (onStateChanged) {
+            onStateChanged(newState, oldState);
+        }
+    }
+
+    virtual void OnError(CameraError error, const std::string& errorMessage) override {
+        if (onError) {
+            onError(error, errorMessage);
+        }
+    }
+
+    virtual void OnPropertyChanged(const std::string& propertyName, const std::string& value) override {
+        if (onPropertyChanged) {
+            onPropertyChanged(propertyName, value);
+        }
+    }
+};
 
 // ============================================================================
 // BALL STATE TRACKING ENUMS AND STRUCTURES: 2025-07-30 Added
@@ -30,8 +147,8 @@ struct XIMEASENSOR_API BallStateConfig {
     int stabilizingTimeMs;       // Time required for STABILIZING state in ms (default: 1000)
     int minConsecutiveDetections; // Minimum consecutive detections required (default: 5)
     bool enableStateCallback;     // Enable state change callbacks (default: true)
-    int maxMissedDetections;     // Maximum missed detections in READY state (default: 2)  // 추가
-    int missedDetectionTimeoutMs; // Timeout for missed detection recovery (default: 500)  // 추가
+    int maxMissedDetections;     // Maximum missed detections in READY state (default: 2)
+    int missedDetectionTimeoutMs; // Timeout for missed detection recovery (default: 500)
 
     // Default constructor with standard values
     BallStateConfig()
@@ -130,12 +247,10 @@ public:
         , jpgQuality(90)
         , createMetadata(true)
         , useAsyncSave(true)
-        //, baseFolder(".")
         , enableBallDetection(true)
         , saveOriginalImages(true)
         , saveDetectionImages(true)
         , saveBallDetectorDebugImages(true)
-        //, debugImagePath("") 
     {
         strcpy_s(m_baseFolder, ".");
         strcpy_s(m_debugImagePath, "");
@@ -170,12 +285,10 @@ public:
         , jpgQuality(quality)
         , createMetadata(metadata)
         , useAsyncSave(asyncSave)
-        //, baseFolder(folder)
         , enableBallDetection(ballDetection)
         , saveOriginalImages(saveOriginal)
         , saveDetectionImages(saveDetection)
         , saveBallDetectorDebugImages(saveDebug)
-        //, debugImagePath(debugPath) 
     {
         setBaseFolder(folder);
         setDebugImagePath(debugPath);
@@ -270,9 +383,7 @@ extern "C" {
     // Get number of connected XIMEA cameras
     XIMEASENSOR_API int Camera_GetDeviceCount();
 
-
     // Get information about a specific camera device
-
     XIMEASENSOR_API bool Camera_GetDeviceInfo(int index, char* name, int nameSize, char* serial, int serialSize);
 
 
@@ -448,7 +559,7 @@ extern "C" {
     // Default Settings Management
     // ------------------------------------------------------------------------
 
-    /// Get default camera settings
+    // Get default camera settings
     XIMEASENSOR_API void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps);
 
     // Get default snapshot settings
@@ -496,9 +607,8 @@ extern "C" {
     // Set maximum candidates for real-time detection
     XIMEASENSOR_API bool Camera_SetRealtimeDetectionMaxCandidates(int maxCandidates);
 
-    /// Get real-time detection statistics
+    // Get real-time detection statistics
     XIMEASENSOR_API void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS);
-
 
 
     // ------------------------------------------------------------------------

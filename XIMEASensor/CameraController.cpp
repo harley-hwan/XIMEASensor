@@ -6,7 +6,6 @@
 #include <iomanip>
 #include <algorithm>
 #include <future>
-#include "XIMEASensor.h"
 #include "BallDetector.h"
 
 std::unique_ptr<CameraController> CameraController::instance = nullptr;

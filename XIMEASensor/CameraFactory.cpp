@@ -1,5 +1,4 @@
 #include "pch.h"
-#include "ICameraInterface.h"
 #include "XIMEACameraImpl.h"
 #include <stdexcept>
 
@@ -10,10 +9,9 @@ namespace Camera {
         case CameraType::XIMEA:
             return std::make_unique<XIMEACameraImpl>();
 
-        case CameraType::MOCK:
-            // Return mock implementation for testing
-            // return std::make_unique<MockCameraImpl>();
-            throw std::runtime_error("Mock camera not implemented yet");
+        case CameraType::HIKVISION:
+            // return std::make_unique<HIKVISIONCameraImpl>();
+            throw std::runtime_error("HIKVISION camera not implemented yet");
 
         default:
             throw std::runtime_error("Unknown camera type");

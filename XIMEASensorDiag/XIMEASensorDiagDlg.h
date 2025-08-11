@@ -1,7 +1,5 @@
 #pragma once
 #include "XIMEASensor.h"
-#include "../XIMEASensor/IXIMEACallback.h"
-#include "CameraCallback.h"
 #include <memory>
 #include <chrono>
 #include <atomic>

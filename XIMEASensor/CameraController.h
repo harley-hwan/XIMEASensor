@@ -9,10 +9,7 @@
 #include <queue>
 #include <condition_variable>
 #include <array>
-#include "CameraTypes.h"
 #include "ICameraInterface.h"
-#include "XIMEASensor.h" 
-#include "IXIMEACallback.h"
 #include "Logger.h"
 #include "BallDetector.h"
 #ifdef ENABLE_CONTINUOUS_CAPTURE
