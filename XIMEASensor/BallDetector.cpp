@@ -171,7 +171,7 @@ public:
     std::vector<float> m_floatBuffer;
 
     // Lookup tables for common operations
-    std::array<unsigned char, 256> m_shadowLUT;
+    std::array<unsigned char, 256> m_shadowLUT = {};
     bool m_shadowLUTInitialized = false;
 
     Impl() : m_currentCaptureFolder(""), m_paramsPtr(nullptr) {
@@ -182,6 +182,8 @@ public:
         // Pre-allocate buffers
         m_tempBuffer.reserve(2048 * 2048);
         m_floatBuffer.reserve(2048 * 2048);
+
+        m_shadowLUT.fill(0);
     }
 
     ~Impl() {
