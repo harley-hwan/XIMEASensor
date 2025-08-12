@@ -30,7 +30,10 @@ CameraController::CameraController()
     m_realtimeTotalProcessingTime(0.0),
     m_ballStateTrackingEnabled(false),
     m_ballStateCallback(nullptr),
-    m_ballStateCallbackContext(nullptr) {
+    m_ballStateCallbackContext(nullptr),
+    m_usingDynamicROI(false),
+    currentFrameRate(0.0f)
+{
 
     size_t bufferSize = width * height;
     frameBuffer = new unsigned char[bufferSize];
@@ -884,13 +887,13 @@ void CameraController::UpdateStatistics(bool frameReceived) {
             now - stats.startTime).count();
 
         if (elapsed > 0) {
-            stats.averageFPS = static_cast<double>(stats.totalFrames) / elapsed;
+            stats.averageFPS = static_cast<float>(stats.totalFrames) / elapsed;
         }
 
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
             now - lastFrameTime).count();
         if (duration > 0) {
-            double currentFPS = 1000000.0 / duration;
+            float currentFPS = 1000000.0f / duration;
             stats.minFPS = std::min(stats.minFPS, currentFPS);
             stats.maxFPS = std::max(stats.maxFPS, currentFPS);
         }

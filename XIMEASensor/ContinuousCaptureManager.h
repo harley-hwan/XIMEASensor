@@ -239,9 +239,9 @@ private:
     struct SaveItem {
         std::vector<unsigned char> data;
         std::string filename;
-        int width;
-        int height;
-        int frameIndex;
+        int width = 0;
+        int height = 0;
+        int frameIndex = 0;
     };
 
     std::thread m_saveThread;

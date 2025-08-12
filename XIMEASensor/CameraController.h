@@ -21,19 +21,19 @@
 #define PYTHON1300_MAX_FPS  210
 
 struct CameraStatistics {
-    unsigned long totalFrames;
-    unsigned long droppedFrames;
-    double averageFPS;
-    double minFPS;
-    double maxFPS;
+    int totalFrames;
+    int droppedFrames;
+    float averageFPS;
+    float minFPS;
+    float maxFPS;
     std::chrono::steady_clock::time_point startTime;
 
     void Reset() {
         totalFrames = 0;
         droppedFrames = 0;
-        averageFPS = 0.0;
-        minFPS = 9999.0;
-        maxFPS = 0.0;
+        averageFPS = 0.0f;
+        minFPS = 9999.0f;
+        maxFPS = 0.0f;
         startTime = std::chrono::steady_clock::now();
     }
 };
