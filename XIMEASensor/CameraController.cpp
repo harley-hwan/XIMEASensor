@@ -1351,6 +1351,36 @@ void CameraController::ResetBallTracking() {
 }
 
 void CameraController::NotifyBallStateChanged(BallState newState, BallState oldState, const BallStateInfo& info) {
+    // Adjust frame rate based on state
+    if (newState == BallState::READY && oldState != BallState::READY) {
+        // Increase frame rate to 80 FPS when entering READY state
+        float targetFPS = 80.0f;
+
+        // Check if current exposure time allows this frame rate
+        float maxPossibleFPS = 1000000.0f / currentExposure;
+        if (targetFPS > maxPossibleFPS) {
+            LOG_WARNING("Cannot set FPS to " + std::to_string(targetFPS) +
+                " with current exposure time. Max possible: " +
+                std::to_string(maxPossibleFPS));
+            targetFPS = maxPossibleFPS * 0.95f; // Set to 95% of max
+        }
+
+        if (SetFrameRate(targetFPS)) {
+            LOG_INFO("Frame rate increased to " + std::to_string(targetFPS) +
+                " FPS for ball tracking in READY state");
+        }
+    }
+    else if ((oldState == BallState::READY || oldState == BallState::MOVING ||
+        oldState == BallState::STABILIZING) &&
+        (newState == BallState::NOT_DETECTED || newState == BallState::STOPPED)) {
+        // Return to normal frame rate when ball tracking ends
+        float normalFPS = CameraDefaults::FRAMERATE_FPS; // 60 FPS
+        if (SetFrameRate(normalFPS)) {
+            LOG_INFO("Frame rate returned to normal " + std::to_string(normalFPS) + " FPS");
+        }
+    }
+
+    // Call registered callback
     if (m_ballStateCallback && m_ballStateConfig.enableStateCallback) {
         try {
             m_ballStateCallback(newState, oldState, &info, m_ballStateCallbackContext);
@@ -1364,7 +1394,9 @@ void CameraController::NotifyBallStateChanged(BallState newState, BallState oldS
     }
 
     LOG_INFO("Ball state changed: " + std::string(Camera_GetBallStateString(oldState)) +
-        " -> " + std::string(Camera_GetBallStateString(newState)));
+        " -> " + std::string(Camera_GetBallStateString(newState)) +
+        " (Position: " + std::to_string(info.lastPositionX) + ", " +
+        std::to_string(info.lastPositionY) + ")");
 }
 
 void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
@@ -1664,13 +1696,16 @@ bool CameraController::IsBallStable() const {
 }
 
 // Dynamic ROI implementation
+// Dynamic ROI implementation
 void CameraController::UpdateDynamicROI(const RealtimeDetectionResult* result) {
     if (!m_dynamicROIEnabled.load() || !result) return;
 
     std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
 
-    // Only update ROI in READY state
-    if (m_ballTracking.currentState != BallState::READY) {
+    // Update ROI in READY, MOVING, and STABILIZING states
+    if (m_ballTracking.currentState != BallState::READY &&
+        m_ballTracking.currentState != BallState::MOVING &&
+        m_ballTracking.currentState != BallState::STABILIZING) {
         if (m_usingDynamicROI) {
             ClearDynamicROI();
         }
@@ -1679,6 +1714,14 @@ void CameraController::UpdateDynamicROI(const RealtimeDetectionResult* result) {
 
     // Check if we have a valid ball detection
     if (!result->ballFound || result->ballCount == 0) {
+        // Keep existing ROI during brief detection losses in these states
+        if (m_ballTracking.currentState == BallState::READY ||
+            m_ballTracking.currentState == BallState::MOVING ||
+            m_ballTracking.currentState == BallState::STABILIZING) {
+            // Don't clear ROI immediately - wait for missed detection timeout
+            return;
+        }
+
         if (m_usingDynamicROI) {
             ClearDynamicROI();
         }
@@ -1697,8 +1740,18 @@ void CameraController::UpdateDynamicROI(const RealtimeDetectionResult* result) {
         return;
     }
 
-    // Calculate new ROI
-    cv::Rect newROI = CalculateDynamicROI(ball.centerX, ball.centerY, ball.radius);
+    // Calculate new ROI with dynamic size based on state
+    cv::Rect newROI;
+
+    if (m_ballTracking.currentState == BallState::MOVING) {
+        // Larger ROI during movement to account for motion
+        float dynamicMultiplier = m_dynamicROIConfig.roiSizeMultiplier * 1.5f;
+        newROI = CalculateDynamicROI(ball.centerX, ball.centerY, ball.radius, dynamicMultiplier);
+    }
+    else {
+        // Normal ROI for READY and STABILIZING states
+        newROI = CalculateDynamicROI(ball.centerX, ball.centerY, ball.radius);
+    }
 
     // Check if ROI needs update (with hysteresis to avoid jitter)
     const int POSITION_THRESHOLD = 10;  // pixels
@@ -1719,8 +1772,12 @@ void CameraController::UpdateDynamicROI(const RealtimeDetectionResult* result) {
 }
 
 cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, float radius) {
+    return CalculateDynamicROI(centerX, centerY, radius, m_dynamicROIConfig.roiSizeMultiplier);
+}
+
+cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, float radius, float multiplier) {
     // Calculate ROI size based on ball radius and multiplier
-    float roiSize = radius * 2.0f * m_dynamicROIConfig.roiSizeMultiplier;
+    float roiSize = radius * 2.0f * multiplier;
 
     // Clamp to min/max sizes
     roiSize = std::max(m_dynamicROIConfig.minROISize,

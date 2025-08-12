@@ -178,6 +178,7 @@ private:
     // Dynamic ROI methods
     void UpdateDynamicROI(const RealtimeDetectionResult* result);
     cv::Rect CalculateDynamicROI(float centerX, float centerY, float radius);
+    cv::Rect CalculateDynamicROI(float centerX, float centerY, float radius, float multiplier); // overload
     void ApplyDynamicROI(const cv::Rect& roi);
     void ClearDynamicROI();
 
