@@ -118,3 +118,4 @@ out/
 Capture_*/
 /opencv
 /XIMEASensorDiag/logs
+/XIMEASensorDiag/trajectory_data

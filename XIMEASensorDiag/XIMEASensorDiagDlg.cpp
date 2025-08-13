@@ -1,3 +1,6 @@
+// XIMEASensorDiagDlg.cpp : 구현 파일
+//
+
 #include "pch.h"
 #include "framework.h"
 #include "XIMEASensorDiag.h"
@@ -27,7 +30,12 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
     m_readBufferIndex(1),
     m_displayBufferIndex(2),
     m_pendingFrameUpdates(0),
-    m_usbErrorCount(0)
+    m_usbErrorCount(0),
+    m_isRecordingTrajectory(false),
+    m_showTrajectory(false),
+    m_trajectoryAlpha(255),
+    m_lastScaleX(1.0f),
+    m_lastScaleY(1.0f)
 {
     m_cameraCallback = std::make_unique<CameraCallback>();
     memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
@@ -79,14 +87,14 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_BN_CLICKED(IDC_BUTTON_RESET_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking)
     ON_BN_CLICKED(IDC_BUTTON_CONFIGURE_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking)
     ON_MESSAGE(WM_UPDATE_BALL_STATE, &CXIMEASensorDiagDlg::OnUpdateBallState)
-
     // 2025-08-06
     ON_BN_CLICKED(IDC_CHECK_ENABLE_DYNAMIC_ROI, &CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI)
     ON_BN_CLICKED(IDC_CHECK_SHOW_ROI_OVERLAY, &CXIMEASensorDiagDlg::OnBnClickedCheckShowROIOverlay)
     ON_BN_CLICKED(IDC_BUTTON_RESET_ROI, &CXIMEASensorDiagDlg::OnBnClickedButtonResetROI)
     ON_EN_CHANGE(IDC_EDIT_ROI_MULTIPLIER, &CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier)
     ON_MESSAGE(WM_UPDATE_DYNAMIC_ROI, &CXIMEASensorDiagDlg::OnUpdateDynamicROI)
-
+    // 궤적 시각화
+    ON_MESSAGE(WM_UPDATE_SHOT_COMPLETED, &CXIMEASensorDiagDlg::OnUpdateShotCompleted)
 END_MESSAGE_MAP()
 
 void CXIMEASensorDiagDlg::LoadDefaultSettings()
@@ -239,6 +247,16 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
 
     Camera_RegisterCallback(m_cameraCallback.get());
 
+    // 퍼팅 궤적 시각화 초기화
+    m_isRecordingTrajectory = false;
+    m_showTrajectory = false;
+    m_trajectoryAlpha = 255;
+    m_lastScaleX = 1.0f;
+    m_lastScaleY = 1.0f;
+
+    // Shot completed 콜백 등록
+    Camera_SetShotCompletedCallback(ShotCompletedCallback, this);
+
     InitializeFrameBuffers();
 
     UpdateDeviceList();
@@ -252,6 +270,12 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
 void CXIMEASensorDiagDlg::OnDestroy()
 {
     CDialogEx::OnDestroy();
+
+    // Shot completed 콜백 해제
+    Camera_SetShotCompletedCallback(nullptr, nullptr);
+
+    // 페이드 아웃 타이머 정지
+    KillTimer(TIMER_TRAJECTORY_FADE);
 
     // 볼 상태 추적 비활성화
     if (Camera_IsBallStateTrackingEnabled()) {
@@ -687,6 +711,27 @@ void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
         // Dynamic ROI 표시 업데이트
         UpdateDynamicROIDisplay();
     }
+    else if (nIDEvent == TIMER_TRAJECTORY_FADE) {
+        // 페이드 아웃 처리
+        int currentAlpha = m_trajectoryAlpha.load();
+        int fadeStep = 255 / FADE_STEPS;
+        
+        currentAlpha -= fadeStep;
+        
+        if (currentAlpha <= 0) {
+            m_trajectoryAlpha = 0;
+            m_showTrajectory = false;
+            ClearTrajectory();
+            KillTimer(TIMER_TRAJECTORY_FADE);
+            
+            TRACE(_T("Trajectory fade out completed\n"));
+        } else {
+            m_trajectoryAlpha = currentAlpha;
+        }
+        
+        // 화면 갱신
+        Invalidate(FALSE);
+    }
 
     CDialogEx::OnTimer(nIDEvent);
 }
@@ -716,6 +761,306 @@ void CXIMEASensorDiagDlg::SwapBuffers()
     m_displayBufferIndex = oldRead;
     m_readBufferIndex = oldWrite;
     m_writeBufferIndex = oldDisplay;
+}
+
+// 궤적 포인트 추가
+void CXIMEASensorDiagDlg::AddTrajectoryPoint(float x, float y, float confidence)
+{
+    if (!m_isRecordingTrajectory) return;
+
+    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+
+    // 최대 포인트 수 제한 (메모리 관리)
+    const size_t MAX_TRAJECTORY_POINTS = 1000;
+    if (m_trajectoryPoints.size() >= MAX_TRAJECTORY_POINTS) {
+        m_trajectoryPoints.pop_front();
+    }
+
+    m_trajectoryPoints.emplace_back(cv::Point2f(x, y), GetTickCount(), confidence);
+}
+
+
+// 궤적 그리기 메인 함수 - 수정 버전
+void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
+{
+    if (!m_showTrajectory || m_trajectoryAlpha == 0) return;
+
+    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+
+    if (m_trajectoryPoints.size() < 2) return;
+
+    // 화면 좌표로 변환
+    std::vector<CPoint> screenPoints;
+    screenPoints.reserve(m_trajectoryPoints.size());
+
+    for (const auto& point : m_trajectoryPoints) {
+        screenPoints.push_back(ConvertToScreenCoordinates(point.position, rect));
+    }
+
+    // 페이드 아웃을 위한 알파값 계산
+    int alpha = m_trajectoryAlpha.load();
+
+    // 직접 화면 DC에 그리기 (알파 블렌딩 없이)
+    if (alpha == 255) {
+        // 완전 불투명일 때는 직접 그리기
+        if (m_trajectoryStyle.useGradient) {
+            DrawTrajectoryWithGradient(dc, screenPoints);
+        }
+        else {
+            DrawTrajectoryLine(dc, screenPoints);
+        }
+
+        if (m_trajectoryStyle.showPoints) {
+            DrawTrajectoryPoints(dc, screenPoints);
+        }
+    }
+    else {
+        // 페이드 아웃 중일 때는 GDI+ 사용하여 반투명 그리기
+        Graphics graphics(dc.GetSafeHdc());
+        graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+
+        // 알파값이 적용된 펜 생성
+        if (m_trajectoryStyle.useGradient) {
+            DrawTrajectoryWithGradientGDIPlus(graphics, screenPoints, alpha);
+        }
+        else {
+            Color lineColor(alpha, GetRValue(m_trajectoryStyle.startColor),
+                GetGValue(m_trajectoryStyle.startColor),
+                GetBValue(m_trajectoryStyle.startColor));
+            Pen pen(lineColor, static_cast<REAL>(m_trajectoryStyle.lineWidth));
+
+            // 선 그리기
+            if (screenPoints.size() >= 2) {
+                std::vector<Point> gdiPoints;
+                for (const auto& pt : screenPoints) {
+                    gdiPoints.push_back(Point(pt.x, pt.y));
+                }
+                graphics.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
+            }
+        }
+
+        if (m_trajectoryStyle.showPoints) {
+            DrawTrajectoryPointsGDIPlus(graphics, screenPoints, alpha);
+        }
+    }
+
+    // 시작점과 끝점 표시
+    if (screenPoints.size() > 0) {
+        // 시작점 - 초록색 원
+        CBrush startBrush(RGB(0, 255, 0));
+        CBrush* pOldBrush = dc.SelectObject(&startBrush);
+        dc.Ellipse(screenPoints.front().x - 8, screenPoints.front().y - 8,
+            screenPoints.front().x + 8, screenPoints.front().y + 8);
+
+        // 끝점 - 빨간색 원
+        CBrush endBrush(RGB(255, 0, 0));
+        dc.SelectObject(&endBrush);
+        dc.Ellipse(screenPoints.back().x - 8, screenPoints.back().y - 8,
+            screenPoints.back().x + 8, screenPoints.back().y + 8);
+
+        dc.SelectObject(pOldBrush);
+
+        // 궤적 정보 텍스트
+        if (m_trajectoryAlpha > 128) {
+            dc.SetBkMode(TRANSPARENT);
+            dc.SetTextColor(RGB(255, 255, 0));
+
+            CString info;
+            info.Format(_T("Points: %zu"), m_trajectoryPoints.size());
+            dc.TextOut(10, rect.bottom - 40, info);
+        }
+    }
+}
+
+
+// GDI+ 그라데이션 그리기
+void CXIMEASensorDiagDlg::DrawTrajectoryWithGradientGDIPlus(Graphics& graphics,
+    const std::vector<CPoint>& screenPoints,
+    int alpha)
+{
+    if (screenPoints.size() < 2) return;
+
+    for (size_t i = 1; i < screenPoints.size(); ++i) {
+        float t = static_cast<float>(i) / (screenPoints.size() - 1);
+        COLORREF color = InterpolateColor(m_trajectoryStyle.startColor,
+            m_trajectoryStyle.endColor, t);
+
+        Color lineColor(alpha, GetRValue(color), GetGValue(color), GetBValue(color));
+
+        int lineWidth = m_trajectoryStyle.lineWidth;
+        if (i > screenPoints.size() * 0.8) {
+            lineWidth = std::max(1, lineWidth - 1);
+        }
+
+        Pen pen(lineColor, static_cast<REAL>(lineWidth));
+
+        graphics.DrawLine(&pen,
+            Point(screenPoints[i - 1].x, screenPoints[i - 1].y),
+            Point(screenPoints[i].x, screenPoints[i].y));
+    }
+}
+
+// GDI+ 포인트 그리기
+void CXIMEASensorDiagDlg::DrawTrajectoryPointsGDIPlus(Graphics& graphics,
+    const std::vector<CPoint>& screenPoints,
+    int alpha)
+{
+    const int POINT_INTERVAL = std::max(1, static_cast<int>(screenPoints.size() / 20));
+
+    for (size_t i = 0; i < screenPoints.size(); i += POINT_INTERVAL) {
+        float t = static_cast<float>(i) / (screenPoints.size() - 1);
+        COLORREF color = InterpolateColor(m_trajectoryStyle.startColor,
+            m_trajectoryStyle.endColor, t);
+
+        Color fillColor(alpha, GetRValue(color), GetGValue(color), GetBValue(color));
+        SolidBrush brush(fillColor);
+
+        int size = m_trajectoryStyle.pointSize;
+        graphics.FillEllipse(&brush,
+            screenPoints[i].x - size,
+            screenPoints[i].y - size,
+            size * 2, size * 2);
+    }
+}
+
+
+// 단순 선 그리기
+void CXIMEASensorDiagDlg::DrawTrajectoryLine(CDC& dc, const std::vector<CPoint>& screenPoints)
+{
+    if (screenPoints.size() < 2) return;
+
+    CPen pen(PS_SOLID, m_trajectoryStyle.lineWidth, m_trajectoryStyle.startColor);
+    CPen* pOldPen = dc.SelectObject(&pen);
+
+    dc.MoveTo(screenPoints[0]);
+    for (size_t i = 1; i < screenPoints.size(); ++i) {
+        dc.LineTo(screenPoints[i]);
+    }
+
+    dc.SelectObject(pOldPen);
+}
+
+// 개별 포인트 그리기
+void CXIMEASensorDiagDlg::DrawTrajectoryPoints(CDC& dc, const std::vector<CPoint>& screenPoints)
+{
+    // 일정 간격으로 포인트 표시
+    const int POINT_INTERVAL = std::max(1, static_cast<int>(screenPoints.size() / 20));
+
+    for (size_t i = 0; i < screenPoints.size(); i += POINT_INTERVAL) {
+        float t = static_cast<float>(i) / (screenPoints.size() - 1);
+        COLORREF color = InterpolateColor(m_trajectoryStyle.startColor,
+            m_trajectoryStyle.endColor, t);
+
+        CBrush brush(color);
+        CBrush* pOldBrush = dc.SelectObject(&brush);
+
+        int size = m_trajectoryStyle.pointSize;
+        dc.Ellipse(screenPoints[i].x - size, screenPoints[i].y - size,
+            screenPoints[i].x + size, screenPoints[i].y + size);
+
+        dc.SelectObject(pOldBrush);
+    }
+}
+
+void CXIMEASensorDiagDlg::DrawTrajectoryWithGradient(CDC& dc, const std::vector<CPoint>& screenPoints)
+{
+    if (screenPoints.size() < 2) return;
+
+    // 각 세그먼트를 다른 색상으로 그리기
+    for (size_t i = 1; i < screenPoints.size(); ++i) {
+        float t = static_cast<float>(i) / (screenPoints.size() - 1);
+        COLORREF color = InterpolateColor(m_trajectoryStyle.startColor,
+            m_trajectoryStyle.endColor, t);
+
+        // 선 두께도 변화시킬 수 있음
+        int lineWidth = m_trajectoryStyle.lineWidth;
+        if (i > screenPoints.size() * 0.8) {
+            lineWidth = std::max(1, lineWidth - 1);
+        }
+
+        CPen pen(PS_SOLID, lineWidth, color);
+        CPen* pOldPen = dc.SelectObject(&pen);
+
+        dc.MoveTo(screenPoints[i - 1]);
+        dc.LineTo(screenPoints[i]);
+
+        dc.SelectObject(pOldPen);
+    }
+}
+
+// 페이드 아웃 시작
+void CXIMEASensorDiagDlg::StartTrajectoryFadeOut()
+{
+    m_trajectoryAlpha = 255;
+    SetTimer(TIMER_TRAJECTORY_FADE, FADE_DURATION_MS / FADE_STEPS, nullptr);
+
+    TRACE(_T("Started trajectory fade out\n"));
+}
+
+void CXIMEASensorDiagDlg::StopTrajectoryFadeOut()
+{
+    KillTimer(TIMER_TRAJECTORY_FADE);
+    m_trajectoryAlpha = 255;
+}
+
+// 좌표 변환
+CPoint CXIMEASensorDiagDlg::ConvertToScreenCoordinates(const cv::Point2f& point, const CRect& displayRect)
+{
+    // 현재 디스플레이 버퍼의 크기 가져오기
+    int displayIdx = m_displayBufferIndex.load();
+    FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
+
+    if (displayBuffer.width == 0 || displayBuffer.height == 0) {
+        return CPoint(0, 0);
+    }
+
+    float scaleX = static_cast<float>(displayRect.Width()) / displayBuffer.width;
+    float scaleY = static_cast<float>(displayRect.Height()) / displayBuffer.height;
+
+    int x = static_cast<int>(point.x * scaleX);
+    int y = static_cast<int>(point.y * scaleY);
+
+    return CPoint(x, y);
+}
+
+// 색상 보간
+COLORREF CXIMEASensorDiagDlg::InterpolateColor(COLORREF color1, COLORREF color2, float t)
+{
+    t = std::max(0.0f, std::min(1.0f, t));
+
+    int r1 = GetRValue(color1);
+    int g1 = GetGValue(color1);
+    int b1 = GetBValue(color1);
+
+    int r2 = GetRValue(color2);
+    int g2 = GetGValue(color2);
+    int b2 = GetBValue(color2);
+
+    int r = static_cast<int>(r1 + (r2 - r1) * t);
+    int g = static_cast<int>(g1 + (g2 - g1) * t);
+    int b = static_cast<int>(b1 + (b2 - b1) * t);
+
+    return RGB(r, g, b);
+}
+
+void CXIMEASensorDiagDlg::OnShotCompleted(const ShotCompletedInfo* info)
+{
+    // 궤적 기록 중지
+    StopTrajectoryRecording();
+
+    // 페이드 아웃 시작
+    StartTrajectoryFadeOut();
+
+    // 상태 표시
+    CString msg;
+    msg.Format(_T("Shot Completed! Distance: %.1f px, Avg Speed: %.1f px/s"),
+        info->totalDistance, info->avgVelocity);
+
+    if (m_staticStatus) {
+        m_staticStatus->SetWindowText(msg);
+    }
+
+    TRACE(_T("Shot completed - Total distance: %.1f pixels\n"), info->totalDistance);
 }
 
 void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
@@ -980,18 +1325,21 @@ void CXIMEASensorDiagDlg::DrawFrame()
     // 스트레칭 모드 복원
     SetStretchBltMode(hdc, oldStretchMode);
 
+    // 궤적 그리기 (Detection overlay 전에)
+    if (m_showTrajectory && m_trajectoryAlpha > 0) {
+        DrawTrajectory(dc, rect);
+    }
+
     // Detection overlay 그리기
     if (Camera_IsRealtimeDetectionEnabled()) {
         DrawDetectionOverlay(dc, rect);
     }
 
     // Dynamic ROI overlay 그리기
-    if(Camera_IsDynamicROIEnabled()) {
+    if (Camera_IsDynamicROIEnabled()) {
         DrawDynamicROIOverlay(dc, rect);
     }
 }
-
-
 void CXIMEASensorDiagDlg::ShowError(const CString& message)
 {
     // Avoid showing message box if it's a recoverable USB error
@@ -1183,7 +1531,17 @@ void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResul
         std::lock_guard<std::mutex> lock(m_detectionMutex);
         m_lastDetectionResult = *result;
     }
-    
+
+    // 공이 움직이는 중이고 검출되었다면 궤적에 추가
+    if (m_isRecordingTrajectory && result && result->ballFound && result->ballCount > 0) {
+        BallState currentState = Camera_GetBallState();
+        if (currentState == BallState::MOVING || currentState == BallState::STABILIZING) {
+            AddTrajectoryPoint(result->balls[0].centerX,
+                result->balls[0].centerY,
+                result->balls[0].confidence);
+        }
+    }
+
     PostMessage(WM_UPDATE_BALL_DETECTION);
 }
 
@@ -1247,6 +1605,7 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
+
 void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
 {
     RealtimeDetectionResult result;
@@ -1295,7 +1654,7 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
             dc.MoveTo(x, y - 5);
             dc.LineTo(x, y + 5);
             dc.SelectObject(&pen);
-            
+
 
             // 신뢰도가 높을 때만 표시
             if (result.balls[i].confidence > 0.8f) {
@@ -1328,8 +1687,8 @@ void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
 }
 
 // 볼 상태 변경 콜백 (static)
-void CXIMEASensorDiagDlg::BallStateChangeCallback(BallState newState, BallState oldState, 
-                                                  const BallStateInfo* info, void* userContext)
+void CXIMEASensorDiagDlg::BallStateChangeCallback(BallState newState, BallState oldState,
+    const BallStateInfo* info, void* userContext)
 {
     CXIMEASensorDiagDlg* pDlg = static_cast<CXIMEASensorDiagDlg*>(userContext);
     if (pDlg && info) {
@@ -1337,14 +1696,23 @@ void CXIMEASensorDiagDlg::BallStateChangeCallback(BallState newState, BallState 
     }
 }
 
+// Shot completed 콜백
+void CXIMEASensorDiagDlg::ShotCompletedCallback(const ShotCompletedInfo* info, void* userContext)
+{
+    CXIMEASensorDiagDlg* pDlg = static_cast<CXIMEASensorDiagDlg*>(userContext);
+    if (pDlg && info) {
+        pDlg->PostMessage(WM_UPDATE_SHOT_COMPLETED, 0, reinterpret_cast<LPARAM>(info));
+    }
+}
+
 // 볼 상태 변경 핸들러
-void CXIMEASensorDiagDlg::OnBallStateChanged(BallState newState, BallState oldState, 
-                                              const BallStateInfo* info)
+void CXIMEASensorDiagDlg::OnBallStateChanged(BallState newState, BallState oldState,
+    const BallStateInfo* info)
 {
     // UI 업데이트를 위해 메시지 포스트
-    PostMessage(WM_UPDATE_BALL_STATE, static_cast<WPARAM>(newState), 
-                reinterpret_cast<LPARAM>(info));
-    
+    PostMessage(WM_UPDATE_BALL_STATE, static_cast<WPARAM>(newState),
+        reinterpret_cast<LPARAM>(info));
+
     // READY 상태 전환 시 알림
     if (newState == BallState::READY && oldState != BallState::READY) {
         MessageBeep(MB_OK);
@@ -1369,10 +1737,10 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
             // 볼 상태 추적 활성화
             Camera_SetBallStateChangeCallback(BallStateChangeCallback, this);
             Camera_EnableBallStateTracking(true);
-            
+
             // 볼 상태 업데이트 타이머 시작
             SetTimer(TIMER_BALL_STATE_UPDATE, 100, nullptr);  // 100ms 간격
-            
+
             if (m_btnResetTracking) {
                 m_btnResetTracking->EnableWindow(TRUE);
             }
@@ -1395,12 +1763,12 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
         // 볼 상태 추적 비활성화
         Camera_EnableBallStateTracking(false);
         Camera_SetBallStateChangeCallback(nullptr, nullptr);
-        
+
         Camera_EnableRealtimeDetection(false);
         Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
-        
+
         KillTimer(TIMER_BALL_STATE_UPDATE);
-        
+
         if (m_btnResetTracking) {
             m_btnResetTracking->EnableWindow(FALSE);
         }
@@ -1486,10 +1854,22 @@ void CXIMEASensorDiagDlg::UpdateBallStateDisplay()
 LRESULT CXIMEASensorDiagDlg::OnUpdateBallState(WPARAM wParam, LPARAM lParam)
 {
     BallState newState = static_cast<BallState>(wParam);
-    
+
+    // 현재 상태 가져오기 - Camera_GetBallState()는 현재 상태를 반환
+    static BallState previousState = BallState::NOT_DETECTED;
+
+    // READY에서 MOVING으로 전환 시 궤적 기록 시작
+    if (previousState == BallState::READY && newState == BallState::MOVING) {
+        StartTrajectoryRecording();
+        TRACE(_T("Ball started moving - trajectory recording started\n"));
+    }
+
+    // 상태 저장
+    previousState = newState;
+
     // 즉시 상태 업데이트
     UpdateBallStateDisplay();
-    
+
     // 상태별 추가 동작
     switch (newState) {
     case BallState::READY:
@@ -1499,19 +1879,20 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallState(WPARAM wParam, LPARAM lParam)
         TRACE(_T("Ball started moving\n"));
         break;
     }
-    
+
     return 0;
 }
+
 
 // 볼 추적 리셋 버튼 핸들러
 void CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking()
 {
     Camera_ResetBallStateTracking();
     UpdateBallStateDisplay();
-    
+
     CString msg = _T("Ball state tracking has been reset.");
     SetDlgItemText(IDC_STATIC_STATUS, msg);
-    
+
     TRACE(_T("Ball state tracking reset\n"));
 }
 
@@ -1521,20 +1902,20 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking()
     // 현재 설정 가져오기
     BallStateConfig config;
     Camera_GetBallStateConfig(&config);
-    
+
     // 간단한 설정 다이얼로그 (실제로는 별도 다이얼로그 클래스 생성 권장)
     CString msg;
     msg.Format(_T("Ball State Tracking Configuration:\n\n")
-               _T("Position Tolerance: %.1f pixels\n")
-               _T("Movement Threshold: %.1f pixels\n")
-               _T("Stable Time: %d ms\n")
-               _T("Min Consecutive Detections: %d\n\n")
-               _T("Default values are optimized for most cases."),
-               config.positionTolerance,
-               config.movementThreshold,
-               config.stableTimeMs,
-               config.minConsecutiveDetections);
-    
+        _T("Position Tolerance: %.1f pixels\n")
+        _T("Movement Threshold: %.1f pixels\n")
+        _T("Stable Time: %d ms\n")
+        _T("Min Consecutive Detections: %d\n\n")
+        _T("Default values are optimized for most cases."),
+        config.positionTolerance,
+        config.movementThreshold,
+        config.stableTimeMs,
+        config.minConsecutiveDetections);
+
     AfxMessageBox(msg, MB_OK | MB_ICONINFORMATION);
 }
 
@@ -1587,31 +1968,31 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI()
         // 현재 설정 가져오기
         DynamicROIConfig config;
         Camera_GetDynamicROIConfig(&config);
-        
+
         // UI에서 설정 읽기
         config.enabled = true;
-        config.showROIOverlay = (m_checkShowROIOverlay && 
-                                m_checkShowROIOverlay->GetCheck() == BST_CHECKED);
-        
+        config.showROIOverlay = (m_checkShowROIOverlay &&
+            m_checkShowROIOverlay->GetCheck() == BST_CHECKED);
+
         if (m_sliderROIMultiplier) {
             config.roiSizeMultiplier = m_sliderROIMultiplier->GetPos() / 10.0f;
         }
-        
+
         // 설정 적용
         Camera_SetDynamicROIConfig(&config);
         Camera_EnableDynamicROI(true);
-        
+
         // 타이머 시작
         SetTimer(TIMER_DYNAMIC_ROI_UPDATE, 100, nullptr);
-        
+
         TRACE(_T("Dynamic ROI enabled\n"));
     }
     else {
         Camera_EnableDynamicROI(false);
         KillTimer(TIMER_DYNAMIC_ROI_UPDATE);
-        
+
         UpdateDynamicROIDisplay();
-        
+
         TRACE(_T("Dynamic ROI disabled\n"));
     }
 }
@@ -1619,7 +2000,7 @@ void CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI()
 void CXIMEASensorDiagDlg::OnBnClickedCheckShowROIOverlay()
 {
     if (!m_checkShowROIOverlay) return;
-    
+
     DynamicROIConfig config;
     if (Camera_GetDynamicROIConfig(&config)) {
         config.showROIOverlay = (m_checkShowROIOverlay->GetCheck() == BST_CHECKED);
@@ -1631,21 +2012,21 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonResetROI()
 {
     Camera_ResetDynamicROI();
     UpdateDynamicROIDisplay();
-    
+
     TRACE(_T("Dynamic ROI reset\n"));
 }
 
 void CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier()
 {
     if (!m_editROIMultiplier || !m_sliderROIMultiplier) return;
-    
+
     CString str;
     m_editROIMultiplier->GetWindowText(str);
     float multiplier = (float)_ttof(str);
-    
+
     if (multiplier >= 6.0f && multiplier <= 10.0f) {
         m_sliderROIMultiplier->SetPos((int)(multiplier * 10));
-        
+
         if (Camera_IsDynamicROIEnabled()) {
             DynamicROIConfig config;
             if (Camera_GetDynamicROIConfig(&config)) {
@@ -1655,6 +2036,7 @@ void CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier()
         }
     }
 }
+
 void CXIMEASensorDiagDlg::UpdateDynamicROIDisplay()
 {
     DynamicROIInfo info;
@@ -1689,48 +2071,48 @@ void CXIMEASensorDiagDlg::DrawDynamicROIOverlay(CDC& dc, const CRect& rect)
 {
     DynamicROIConfig config;
     DynamicROIInfo info;
-    
+
     if (!Camera_GetDynamicROIConfig(&config) || !config.showROIOverlay) {
         return;
     }
-    
+
     if (!Camera_GetDynamicROIInfo(&info) || !info.active) {
         return;
     }
-    
+
     // Get display buffer dimensions for proper scaling
     int displayIdx = m_displayBufferIndex.load();
     FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
-    
+
     if (displayBuffer.width == 0 || displayBuffer.height == 0) {
         return;
     }
-    
+
     float scaleX = (float)rect.Width() / displayBuffer.width;
     float scaleY = (float)rect.Height() / displayBuffer.height;
-    
+
     // Calculate ROI rectangle
     int x = (int)((info.centerX - info.width / 2) * scaleX);
     int y = (int)((info.centerY - info.height / 2) * scaleY);
     int w = (int)(info.width * scaleX);
     int h = (int)(info.height * scaleY);
-    
+
     // Draw ROI boundary
     CPen pen(PS_DASH, 2, RGB(255, 128, 0)); // Orange dashed line
     CPen* pOldPen = dc.SelectObject(&pen);
     CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
-    
+
     dc.Rectangle(x, y, x + w, y + h);
-    
+
     // Draw ROI info
     dc.SetBkMode(TRANSPARENT);
     dc.SetTextColor(RGB(255, 128, 0));
-    
+
     CString roiText;
-    roiText.Format(_T("ROI: %dx%d (%.1f%% reduction)"), 
-                   info.width, info.height, info.processingTimeReduction);
+    roiText.Format(_T("ROI: %dx%d (%.1f%% reduction)"),
+        info.width, info.height, info.processingTimeReduction);
     dc.TextOut(x + 2, y + 2, roiText);
-    
+
     dc.SelectObject(pOldPen);
     dc.SelectObject(pOldBrush);
 }
@@ -1740,4 +2122,54 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateDynamicROI(WPARAM wParam, LPARAM lParam)
 {
     UpdateDynamicROIDisplay();
     return 0;
+}
+
+// Shot completed 메시지 핸들러
+LRESULT CXIMEASensorDiagDlg::OnUpdateShotCompleted(WPARAM wParam, LPARAM lParam)
+{
+    const ShotCompletedInfo* info = reinterpret_cast<const ShotCompletedInfo*>(lParam);
+    if (info) {
+        OnShotCompleted(info);
+    }
+    return 0;
+}
+
+// 궤적 기록 시작
+void CXIMEASensorDiagDlg::StartTrajectoryRecording()
+{
+    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+
+    m_trajectoryPoints.clear();
+    m_isRecordingTrajectory = true;
+    m_showTrajectory = true;
+    m_trajectoryAlpha = 255;
+
+    // 페이드 아웃 타이머가 실행 중이면 중지
+    KillTimer(TIMER_TRAJECTORY_FADE);
+
+    TRACE(_T("Started trajectory recording\n"));
+}
+
+// 궤적 기록 중지
+void CXIMEASensorDiagDlg::StopTrajectoryRecording()
+{
+    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+
+    m_isRecordingTrajectory = false;
+
+    TRACE(_T("Stopped trajectory recording - %zu points recorded\n"),
+        m_trajectoryPoints.size());
+}
+
+// 궤적 지우기
+void CXIMEASensorDiagDlg::ClearTrajectory()
+{
+    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+
+    m_trajectoryPoints.clear();
+    m_isRecordingTrajectory = false;
+    m_showTrajectory = false;
+    m_trajectoryAlpha = 255;
+
+    KillTimer(TIMER_TRAJECTORY_FADE);
 }

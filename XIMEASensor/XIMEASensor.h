@@ -360,6 +360,22 @@ struct XIMEASENSOR_API RealtimeDetectionResult {
 typedef void(*RealtimeDetectionCallback)(const RealtimeDetectionResult* result, void* userContext);
 
 
+// Shot completed notification structure
+struct XIMEASENSOR_API ShotCompletedInfo {
+    float startX, startY;           // Starting position
+    float endX, endY;               // Ending position
+    float totalDistance;            // Total distance traveled
+    float avgVelocity;              // Average velocity
+    float maxVelocity;              // Maximum velocity
+    double shotDuration;            // Duration in seconds
+    int trajectoryPointCount;       // Number of trajectory points
+    bool dataAvailable;             // Whether full trajectory data is available
+};
+
+// Shot completed callback
+typedef void(*ShotCompletedCallback)(const ShotCompletedInfo* info, void* userContext);
+
+
 // ============================================================================
 // C API FUNCTIONS
 // ============================================================================
@@ -669,4 +685,20 @@ extern "C" {
 
     // Reset dynamic ROI to full frame
     XIMEASENSOR_API void Camera_ResetDynamicROI();
+
+    // Set callback for shot completion notifications
+    XIMEASENSOR_API void Camera_SetShotCompletedCallback(ShotCompletedCallback callback, void* userContext);
+
+    // Get last shot trajectory data
+    XIMEASENSOR_API bool Camera_GetLastShotTrajectory(ShotCompletedInfo* info);
+
+    // Save trajectory data to file
+    XIMEASENSOR_API bool Camera_SaveTrajectoryToFile(const char* filename);
+
+    // Clear shot trajectory data
+    XIMEASENSOR_API void Camera_ClearShotTrajectory();
+
+    // Show shot completed dialog (blocking)
+    XIMEASENSOR_API void Camera_ShowShotCompletedDialog();
+
 }

@@ -5,6 +5,12 @@
 #include <atomic>
 #include <mutex>
 #include <array>
+#include <deque>
+#include <opencv2/core/types.hpp>
+
+#include <gdiplus.h>
+using namespace Gdiplus;
+#pragma comment(lib, "gdiplus.lib")
 
 // 메시지 정의
 #define WM_UPDATE_FRAME     (WM_USER + 100)
@@ -15,6 +21,7 @@
 #define WM_UPDATE_BALL_DETECTION (WM_USER + 105)
 #define WM_UPDATE_BALL_STATE (WM_USER + 106)
 #define WM_UPDATE_DYNAMIC_ROI (WM_USER + 107)
+#define WM_UPDATE_SHOT_COMPLETED (WM_USER + 108)
 
 class CXIMEASensorDiagDlg : public CDialogEx
 {
@@ -141,10 +148,61 @@ private:
     static constexpr int MAX_USB_ERRORS = 3;
     static constexpr int USB_ERROR_RESET_TIME_MS = 5000;
 
+    // ============================================================================
+    // 퍼팅 궤적 시각화 관련 멤버 변수
+    // ============================================================================
+
+    // 궤적 포인트 구조체
+    struct TrajectoryPoint {
+        cv::Point2f position;       // 공의 위치
+        DWORD timestamp;            // 시간 정보
+        float confidence;           // 검출 신뢰도
+
+        TrajectoryPoint(const cv::Point2f& pos, DWORD time, float conf)
+            : position(pos), timestamp(time), confidence(conf) {
+        }
+    };
+
+    // 궤적 관리
+    std::deque<TrajectoryPoint> m_trajectoryPoints;    // 현재 샷의 궤적 포인트들
+    std::mutex m_trajectoryMutex;                       // 궤적 데이터 보호
+    bool m_isRecordingTrajectory;                       // 궤적 기록 중 여부
+
+    // 페이드 아웃 관련
+    std::atomic<bool> m_showTrajectory;                 // 궤적 표시 여부
+    std::atomic<int> m_trajectoryAlpha;                 // 궤적 투명도 (255 = 불투명, 0 = 투명)
+    static constexpr UINT_PTR TIMER_TRAJECTORY_FADE = 1005;
+    static constexpr int FADE_DURATION_MS = 3000;       // 3초간 페이드 아웃
+    static constexpr int FADE_STEPS = 30;               // 페이드 단계
+
+    // 궤적 스타일 설정
+    struct TrajectoryStyle {
+        COLORREF startColor;        // 시작점 색상
+        COLORREF endColor;          // 끝점 색상
+        int lineWidth;              // 선 두께
+        bool showPoints;            // 개별 포인트 표시 여부
+        int pointSize;              // 포인트 크기
+        bool useGradient;           // 그라데이션 사용 여부
+
+        TrajectoryStyle()
+            : startColor(RGB(0, 255, 0))      // 초록색 시작
+            , endColor(RGB(255, 0, 0))        // 빨간색 끝
+            , lineWidth(3)
+            , showPoints(true)
+            , pointSize(4)
+            , useGradient(true) {
+        }
+    } m_trajectoryStyle;
+
+    // 화면 좌표 변환을 위한 캐시
+    float m_lastScaleX;
+    float m_lastScaleY;
+
     // 정적 콜백 함수
     static void RealtimeDetectionCallback(const RealtimeDetectionResult* result, void* userContext);
     static void ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state);
     static void BallStateChangeCallback(BallState newState, BallState oldState, const BallStateInfo* info, void* userContext);
+    static void ShotCompletedCallback(const ShotCompletedInfo* info, void* userContext);
     static CXIMEASensorDiagDlg* s_pThis;
 
     // Helper functions
@@ -165,6 +223,38 @@ private:
     void UpdateDynamicROIDisplay();
     CString GetBallStateDisplayString(BallState state);
     COLORREF GetBallStateColor(BallState state);
+
+    // ============================================================================
+    // 퍼팅 궤적 시각화 관련 메서드
+    // ============================================================================
+
+    // 궤적 관리
+    void StartTrajectoryRecording();
+    void StopTrajectoryRecording();
+    void ClearTrajectory();
+    void AddTrajectoryPoint(float x, float y, float confidence);
+
+    // 궤적 그리기
+    void DrawTrajectory(CDC& dc, const CRect& rect);
+    void DrawTrajectoryLine(CDC& dc, const std::vector<CPoint>& screenPoints);
+    void DrawTrajectoryPoints(CDC& dc, const std::vector<CPoint>& screenPoints);
+    void DrawTrajectoryWithGradient(CDC& dc, const std::vector<CPoint>& screenPoints);
+
+    void DrawTrajectoryWithGradientGDIPlus(Gdiplus::Graphics& graphics, const std::vector<CPoint>& screenPoints, int alpha);
+    void DrawTrajectoryPointsGDIPlus(Gdiplus::Graphics& graphics, const std::vector<CPoint>& screenPoints, int alpha);
+
+    // 페이드 아웃
+    void StartTrajectoryFadeOut();
+    void StopTrajectoryFadeOut();
+
+    // 좌표 변환
+    CPoint ConvertToScreenCoordinates(const cv::Point2f& point, const CRect& displayRect);
+
+    // 색상 보간
+    COLORREF InterpolateColor(COLORREF color1, COLORREF color2, float t);
+
+    // Shot completed 처리
+    void OnShotCompleted(const ShotCompletedInfo* info);
 
     // Callback handlers
     void OnFrameReceivedCallback(const FrameInfo& frameInfo);
@@ -199,6 +289,7 @@ public:
     afx_msg LRESULT OnUpdateBallDetection(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnUpdateBallState(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnUpdateDynamicROI(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnUpdateShotCompleted(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnContinuousCaptureComplete(WPARAM wParam, LPARAM lParam);
 
     afx_msg void OnDestroy();

@@ -12,6 +12,7 @@
 // GLOBAL VARIABLES
 // ============================================================================
 
+
 #ifdef ENABLE_CONTINUOUS_CAPTURE
 // Global callback for continuous capture progress updates
 static void(*g_continuousProgressCallback)(int, double, int) = nullptr;
@@ -20,6 +21,10 @@ static void(*g_continuousProgressCallback)(int, double, int) = nullptr;
 // Global callback for real-time ball detection
 static RealtimeDetectionCallback g_realtimeDetectionCallback = nullptr;
 static void* g_realtimeDetectionContext = nullptr;
+
+// Global callback for shot completed
+static ShotCompletedCallback g_shotCompletedCallback = nullptr;
+static void* g_shotCompletedContext = nullptr;
 
 // ============================================================================
 // NAMESPACE: Camera Default Settings
@@ -77,6 +82,34 @@ static SnapshotDefaults g_snapshotDefaults = {
     CameraDefaults::SNAPSHOT_FORMAT,
     CameraDefaults::SNAPSHOT_QUALITY
 };
+
+
+// Static wrapper callback function
+static void InternalShotCompletedCallbackWrapper(const ShotTrajectoryData* data, void* context) {
+    if (g_shotCompletedCallback && data) {
+        ShotCompletedInfo info;
+        info.startX = data->startPosition.x;
+        info.startY = data->startPosition.y;
+        info.endX = data->endPosition.x;
+        info.endY = data->endPosition.y;
+        info.totalDistance = static_cast<float>(data->totalDistance);
+        info.avgVelocity = static_cast<float>(data->averageVelocity);
+        info.maxVelocity = static_cast<float>(data->maxVelocity);
+        info.shotDuration = data->shotDuration;
+        info.trajectoryPointCount = static_cast<int>(data->fullTrajectory.size());
+        info.dataAvailable = true;
+
+        // Call user callback
+        g_shotCompletedCallback(&info, g_shotCompletedContext);
+    }
+
+    // Show message box for shot completion
+#ifdef _WIN32
+    MessageBoxA(NULL, "Shot Completed!\n\nPress OK to continue for next shot.",
+        "Golf Putting Analysis", MB_OK | MB_ICONINFORMATION);
+#endif
+}
+
 
 // ============================================================================
 // SYSTEM INITIALIZATION FUNCTIONS
@@ -890,6 +923,181 @@ bool Camera_IsBallStable() {
 }
 
 
+
+// ============================================================================
+// DYNAMIC ROI FUNCTIONS
+// ============================================================================
+
+bool Camera_EnableDynamicROI(bool enable) {
+    try {
+        return CameraController::GetInstance().EnableDynamicROI(enable);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_EnableDynamicROI: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_IsDynamicROIEnabled() {
+    try {
+        return CameraController::GetInstance().IsDynamicROIEnabled();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_IsDynamicROIEnabled: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_SetDynamicROIConfig(const DynamicROIConfig* config) {
+    try {
+        if (!config) {
+            LOG_ERROR("Invalid parameter: config is nullptr");
+            return false;
+        }
+
+        // Validate configuration
+        if (config->roiSizeMultiplier <= 0 || config->minROISize <= 0 ||
+            config->maxROISize <= 0 || config->minROISize > config->maxROISize) {
+            LOG_ERROR("Invalid dynamic ROI configuration");
+            return false;
+        }
+
+        return CameraController::GetInstance().SetDynamicROIConfig(*config);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetDynamicROIConfig: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_GetDynamicROIConfig(DynamicROIConfig* config) {
+    try {
+        if (!config) {
+            LOG_ERROR("Invalid parameter: config is nullptr");
+            return false;
+        }
+
+        *config = CameraController::GetInstance().GetDynamicROIConfig();
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetDynamicROIConfig: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_GetDynamicROIInfo(DynamicROIInfo* info) {
+    try {
+        if (!info) {
+            LOG_ERROR("Invalid parameter: info is nullptr");
+            return false;
+        }
+
+        return CameraController::GetInstance().GetDynamicROIInfo(info);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetDynamicROIInfo: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void Camera_ResetDynamicROI() {
+    try {
+        CameraController::GetInstance().ResetDynamicROI();
+        LOG_INFO("Dynamic ROI reset");
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_ResetDynamicROI: " + std::string(e.what()));
+    }
+}
+
+// Set shot completed callback
+void Camera_SetShotCompletedCallback(ShotCompletedCallback callback, void* userContext) {
+    try {
+        g_shotCompletedCallback = callback;
+        g_shotCompletedContext = userContext;
+
+        // Set internal callback wrapper
+        CameraController::GetInstance().SetShotCompletedCallback(
+            InternalShotCompletedCallbackWrapper, nullptr);
+
+        LOG_INFO("Shot completed callback " +
+            std::string(callback ? "registered" : "cleared"));
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetShotCompletedCallback: " + std::string(e.what()));
+    }
+}
+
+// Get last shot trajectory
+bool Camera_GetLastShotTrajectory(ShotCompletedInfo* info) {
+    try {
+        if (!info) {
+            LOG_ERROR("Invalid parameter: info is nullptr");
+            return false;
+        }
+
+        ShotTrajectoryData data;
+        if (CameraController::GetInstance().GetLastShotTrajectory(&data)) {
+            info->startX = data.startPosition.x;
+            info->startY = data.startPosition.y;
+            info->endX = data.endPosition.x;
+            info->endY = data.endPosition.y;
+            info->totalDistance = static_cast<float>(data.totalDistance);
+            info->avgVelocity = static_cast<float>(data.averageVelocity);
+            info->maxVelocity = static_cast<float>(data.maxVelocity);
+            info->shotDuration = data.shotDuration;
+            info->trajectoryPointCount = static_cast<int>(data.fullTrajectory.size());
+            info->dataAvailable = true;
+            return true;
+        }
+
+        info->dataAvailable = false;
+        return false;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetLastShotTrajectory: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Save trajectory to file
+bool Camera_SaveTrajectoryToFile(const char* filename) {
+    try {
+        if (!filename) {
+            LOG_ERROR("Invalid parameter: filename is nullptr");
+            return false;
+        }
+
+        return CameraController::GetInstance().SaveTrajectoryData(filename);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SaveTrajectoryToFile: " + std::string(e.what()));
+        return false;
+    }
+}
+
+// Clear shot trajectory
+void Camera_ClearShotTrajectory() {
+    try {
+        CameraController::GetInstance().ClearShotTrajectory();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_ClearShotTrajectory: " + std::string(e.what()));
+    }
+}
+
+// Show shot completed dialog
+void Camera_ShowShotCompletedDialog() {
+#ifdef _WIN32
+    MessageBoxA(NULL, "Shot Completed!\n\nPress OK to continue for next shot.",
+        "Golf Putting Analysis", MB_OK | MB_ICONINFORMATION);
+#else
+    LOG_INFO("Shot completed - Ready for next shot");
+#endif
+}
+
+
 // ============================================================================
 // CONTINUOUS CAPTURE FUNCTIONS (Conditional Compilation)
 // ============================================================================
@@ -1037,7 +1245,7 @@ int Camera_GetContinuousCaptureState() {
     }
 }
 
-// Get results from continuous capture session
+// Get continuous capture result - FIXED: strncpy_s
 bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames,
     int* droppedFrames, double* duration,
     char* folderPath, int pathSize) {
@@ -1056,7 +1264,12 @@ bool Camera_GetContinuousCaptureResult(int* totalFrames, int* savedFrames,
         if (duration) *duration = result.actualDuration;
 
         if (folderPath && pathSize > 0) {
-            strncpy_s(folderPath, pathSize, result.folderPath.c_str(), _TRUNCATE);
+#ifdef _WIN32
+            strncpy_s(folderPath, pathSize, result.folderPath.c_str(), pathSize - 1);
+#else
+            strncpy(folderPath, result.folderPath.c_str(), pathSize - 1);
+            folderPath[pathSize - 1] = '\0';
+#endif
         }
 
         return result.success;
@@ -1190,7 +1403,7 @@ bool Camera_StartContinuousCaptureWithDefaults() {
     }
 }
 
-// Get ball detection results from continuous capture
+// Get ball detection results - FIXED: strncpy_s
 bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* totalBallsDetected,
     float* averageConfidence, char* detectionFolder, int folderSize) {
     try {
@@ -1208,7 +1421,12 @@ bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* total
         if (averageConfidence) *averageConfidence = result.averageConfidence;
 
         if (detectionFolder && folderSize > 0) {
-            strncpy_s(detectionFolder, folderSize, result.detectionFolder.c_str(), _TRUNCATE);
+#ifdef _WIN32
+            strncpy_s(detectionFolder, folderSize, result.detectionFolder.c_str(), folderSize - 1);
+#else
+            strncpy(detectionFolder, result.detectionFolder.c_str(), folderSize - 1);
+            detectionFolder[folderSize - 1] = '\0';
+#endif
         }
 
         return true;
@@ -1219,7 +1437,8 @@ bool Camera_GetContinuousCaptureDetectionResult(int* framesWithBalls, int* total
     }
 }
 
-// Enable/disable ball detector debug images
+
+// Set ball detector debug images - FIXED: Variable initialization
 bool Camera_SetBallDetectorDebugImages(bool enable) {
     try {
         // Update global default
@@ -1237,9 +1456,9 @@ bool Camera_SetBallDetectorDebugImages(bool enable) {
             // Update ball detector directly
             auto* ballDetector = captureManager->GetBallDetector();
             if (ballDetector) {
-                auto params = ballDetector->GetParameters();
-                params.saveIntermediateImages = enable;
-                ballDetector->SetParameters(params);
+                auto detectorParams = ballDetector->GetParameters();
+                detectorParams.saveIntermediateImages = enable;
+                ballDetector->SetParameters(detectorParams);
 
                 LOG_INFO("Ball detector debug images " +
                     std::string(enable ? "enabled" : "disabled"));
@@ -1249,9 +1468,6 @@ bool Camera_SetBallDetectorDebugImages(bool enable) {
         // Also update real-time ball detector in CameraController
         auto& controller = CameraController::GetInstance();
         if (controller.IsRealtimeDetectionEnabled()) {
-            // Get the realtime ball detector through the controller's internal mechanism
-            // Since we can't directly access m_realtimeBallDetector from here,
-            // we need to add a method to CameraController or use another approach
             LOG_INFO("Note: Real-time ball detector debug settings may need manual update");
         }
 
@@ -1279,94 +1495,6 @@ bool Camera_GetBallDetectorDebugImages() {
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_GetBallDetectorDebugImages: " + std::string(e.what()));
         return false;
-    }
-}
-
-
-// ============================================================================
-// DYNAMIC ROI FUNCTIONS
-// ============================================================================
-
-bool Camera_EnableDynamicROI(bool enable) {
-    try {
-        return CameraController::GetInstance().EnableDynamicROI(enable);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_EnableDynamicROI: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool Camera_IsDynamicROIEnabled() {
-    try {
-        return CameraController::GetInstance().IsDynamicROIEnabled();
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_IsDynamicROIEnabled: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool Camera_SetDynamicROIConfig(const DynamicROIConfig* config) {
-    try {
-        if (!config) {
-            LOG_ERROR("Invalid parameter: config is nullptr");
-            return false;
-        }
-
-        // Validate configuration
-        if (config->roiSizeMultiplier <= 0 || config->minROISize <= 0 ||
-            config->maxROISize <= 0 || config->minROISize > config->maxROISize) {
-            LOG_ERROR("Invalid dynamic ROI configuration");
-            return false;
-        }
-
-        return CameraController::GetInstance().SetDynamicROIConfig(*config);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_SetDynamicROIConfig: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool Camera_GetDynamicROIConfig(DynamicROIConfig* config) {
-    try {
-        if (!config) {
-            LOG_ERROR("Invalid parameter: config is nullptr");
-            return false;
-        }
-
-        *config = CameraController::GetInstance().GetDynamicROIConfig();
-        return true;
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_GetDynamicROIConfig: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool Camera_GetDynamicROIInfo(DynamicROIInfo* info) {
-    try {
-        if (!info) {
-            LOG_ERROR("Invalid parameter: info is nullptr");
-            return false;
-        }
-
-        return CameraController::GetInstance().GetDynamicROIInfo(info);
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_GetDynamicROIInfo: " + std::string(e.what()));
-        return false;
-    }
-}
-
-void Camera_ResetDynamicROI() {
-    try {
-        CameraController::GetInstance().ResetDynamicROI();
-        LOG_INFO("Dynamic ROI reset");
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception in Camera_ResetDynamicROI: " + std::string(e.what()));
     }
 }
 

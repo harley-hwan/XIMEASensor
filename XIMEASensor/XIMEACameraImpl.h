@@ -1,5 +1,5 @@
 #pragma once
-#include "ICameraInterface.h"
+#include "CameraInterface.h"
 #include <map>
 
 namespace Camera {

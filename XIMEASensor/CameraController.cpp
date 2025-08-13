@@ -1,4 +1,5 @@
-﻿#include "pch.h"
+﻿#include "XIMEASensorDiagDlg.h"
+#include "pch.h"
 #include "CameraController.h"
 #include <algorithm>
 #include <sstream>
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <future>
 #include "BallDetector.h"
+#include <filesystem>
 
 std::unique_ptr<CameraController> CameraController::instance = nullptr;
 std::mutex CameraController::instanceMutex;
@@ -1350,37 +1352,133 @@ void CameraController::ResetBallTracking() {
     LOG_INFO("Ball tracking reset - all counters cleared");
 }
 
+void CameraController::RecordTrajectoryPoint(float x, float y, float radius,
+    float confidence, int frameNumber,
+    BallState state) {
+    auto now = std::chrono::steady_clock::now();
+    double timestamp = std::chrono::duration<double>(now.time_since_epoch()).count();
+
+    TrajectoryPoint point(cv::Point2f(x, y), radius, confidence, timestamp, frameNumber, state);
+
+    // Add to trajectory buffer
+    m_ballTracking.trajectoryBuffer.push_back(point);
+
+    // Limit buffer size
+    if (m_ballTracking.trajectoryBuffer.size() > MAX_TRAJECTORY_BUFFER_SIZE) {
+        m_ballTracking.trajectoryBuffer.pop_front();
+    }
+
+    // Add to shot data if recording
+    if (m_ballTracking.recordingTrajectory) {
+        std::lock_guard<std::mutex> lock(m_shotDataMutex);
+        m_currentShotData.fullTrajectory.push_back(point);
+
+        if (state == BallState::MOVING) {
+            m_currentShotData.movingTrajectory.push_back(point);
+        }
+    }
+}
+
+void CameraController::StartTrajectoryRecording() {
+    std::lock_guard<std::mutex> lock(m_shotDataMutex);
+
+    m_currentShotData.Clear();
+    m_ballTracking.recordingTrajectory = true;
+
+    // Add READY position as first trajectory point if available
+    if (m_ballTracking.currentState == BallState::READY ||
+        m_ballTracking.previousState == BallState::READY) {
+        auto now = std::chrono::steady_clock::now();
+        double timestamp = std::chrono::duration<double>(now.time_since_epoch()).count();
+
+        TrajectoryPoint readyPoint(m_ballTracking.readyPosition,
+            0, 1.0f, timestamp, 0, BallState::READY);
+        m_currentShotData.fullTrajectory.push_back(readyPoint);
+    }
+
+    LOG_INFO("Started trajectory recording");
+}
+
+void CameraController::StopTrajectoryRecording() {
+    m_ballTracking.recordingTrajectory = false;
+    LOG_INFO("Stopped trajectory recording");
+}
+
+
+void CameraController::ProcessShotCompleted() {
+    {
+        std::lock_guard<std::mutex> lock(m_shotDataMutex);
+
+        // Calculate shot metrics
+        m_currentShotData.CalculateMetrics();
+
+        LOG_INFO("Shot completed - Distance: " +
+            std::to_string(m_currentShotData.totalDistance) + " pixels, " +
+            "Duration: " + std::to_string(m_currentShotData.shotDuration) + " seconds, " +
+            "Max velocity: " + std::to_string(m_currentShotData.maxVelocity) + " pixels/sec");
+    }
+
+    // Stop recording
+    StopTrajectoryRecording();
+
+    // 자동으로 궤적 데이터를 파일로 저장
+    SaveTrajectoryDataAutomatic();
+
+    // Notify shot completion
+    NotifyShotCompleted();
+}
+
+
+void CameraController::SaveTrajectoryDataAutomatic() {
+    // 현재 시간으로 파일명 생성
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    struct tm localTime;
+#ifdef _WIN32
+    localtime_s(&localTime, &time_t);
+#else
+    localtime_r(&time_t, &localTime);
+#endif
+
+    std::ostringstream filename;
+    filename << "PuttingTrajectory_"
+        << std::put_time(&localTime, "%Y%m%d_%H%M%S")
+        << ".txt";
+
+    std::string filepath = "./trajectory_data/" + filename.str();
+
+    // 디렉토리 생성 (없으면)
+    try {
+        std::filesystem::create_directories("./trajectory_data/");
+    }
+    catch (...) {
+        LOG_ERROR("Failed to create trajectory_data directory");
+    }
+
+    // 파일 저장
+    if (SaveTrajectoryData(filepath)) {
+        LOG_INFO("Trajectory automatically saved to: " + filepath);
+    }
+    else {
+        LOG_ERROR("Failed to automatically save trajectory data");
+    }
+}
+
+void CameraController::NotifyShotCompleted() {
+    if (m_shotCompletedCallback) {
+        std::lock_guard<std::mutex> lock(m_shotDataMutex);
+
+        try {
+            m_shotCompletedCallback(&m_currentShotData, m_shotCompletedCallbackContext);
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("Exception in shot completed callback: " + std::string(e.what()));
+        }
+    }
+}
+
+
 void CameraController::NotifyBallStateChanged(BallState newState, BallState oldState, const BallStateInfo& info) {
-    // Adjust frame rate based on state
-    if (newState == BallState::READY && oldState != BallState::READY) {
-        // Increase frame rate to 80 FPS when entering READY state
-        float targetFPS = 80.0f;
-
-        // Check if current exposure time allows this frame rate
-        float maxPossibleFPS = 1000000.0f / currentExposure;
-        if (targetFPS > maxPossibleFPS) {
-            LOG_WARNING("Cannot set FPS to " + std::to_string(targetFPS) +
-                " with current exposure time. Max possible: " +
-                std::to_string(maxPossibleFPS));
-            targetFPS = maxPossibleFPS * 0.95f; // Set to 95% of max
-        }
-
-        if (SetFrameRate(targetFPS)) {
-            LOG_INFO("Frame rate increased to " + std::to_string(targetFPS) +
-                " FPS for ball tracking in READY state");
-        }
-    }
-    else if ((oldState == BallState::READY || oldState == BallState::MOVING ||
-        oldState == BallState::STABILIZING) &&
-        (newState == BallState::NOT_DETECTED || newState == BallState::STOPPED)) {
-        // Return to normal frame rate when ball tracking ends
-        float normalFPS = CameraDefaults::FRAMERATE_FPS; // 60 FPS
-        if (SetFrameRate(normalFPS)) {
-            LOG_INFO("Frame rate returned to normal " + std::to_string(normalFPS) + " FPS");
-        }
-    }
-
-    // Call registered callback
     if (m_ballStateCallback && m_ballStateConfig.enableStateCallback) {
         try {
             m_ballStateCallback(newState, oldState, &info, m_ballStateCallbackContext);
@@ -1394,9 +1492,7 @@ void CameraController::NotifyBallStateChanged(BallState newState, BallState oldS
     }
 
     LOG_INFO("Ball state changed: " + std::string(Camera_GetBallStateString(oldState)) +
-        " -> " + std::string(Camera_GetBallStateString(newState)) +
-        " (Position: " + std::to_string(info.lastPositionX) + ", " +
-        std::to_string(info.lastPositionY) + ")");
+        " -> " + std::string(Camera_GetBallStateString(newState)));
 }
 
 void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
@@ -1417,12 +1513,10 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
             if (m_ballTracking.currentState == BallState::READY) {
                 m_ballTracking.missedDetectionCount++;
 
-                // 첫 실패 시 시간 기록
                 if (m_ballTracking.missedDetectionCount == 1) {
                     m_ballTracking.lastMissedTime = now;
                 }
 
-                // 허용된 실패 횟수를 초과한 경우에만 상태 변경
                 if (m_ballTracking.missedDetectionCount > m_ballStateConfig.maxMissedDetections) {
                     LOG_INFO("Ball detection lost after " +
                         std::to_string(m_ballTracking.missedDetectionCount) +
@@ -1434,9 +1528,13 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
                     m_ballTracking.currentState = BallState::NOT_DETECTED;
                     m_ballTracking.lastStateChangeTime = now;
                     m_ballTracking.missedDetectionCount = 0;
+
+                    // Stop trajectory recording if active
+                    if (m_ballTracking.recordingTrajectory) {
+                        StopTrajectoryRecording();
+                    }
                 }
                 else {
-                    // 아직 허용 범위 내 - READY 상태 유지
                     LOG_DEBUG("Missed detection " +
                         std::to_string(m_ballTracking.missedDetectionCount) +
                         "/" + std::to_string(m_ballStateConfig.maxMissedDetections) +
@@ -1444,25 +1542,31 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
                 }
             }
             else if (m_ballTracking.isTracking) {
-                // READY가 아닌 다른 상태에서는 기존 로직 유지
                 m_ballTracking.consecutiveDetections = 0;
                 m_ballTracking.isTracking = false;
                 m_ballTracking.previousState = m_ballTracking.currentState;
                 m_ballTracking.currentState = BallState::NOT_DETECTED;
                 m_ballTracking.lastStateChangeTime = now;
                 m_ballTracking.missedDetectionCount = 0;
+
+                // Stop trajectory recording
+                if (m_ballTracking.recordingTrajectory) {
+                    StopTrajectoryRecording();
+                }
             }
         }
         else {
             // Ball detected
             float currentX = result->balls[0].centerX;
             float currentY = result->balls[0].centerY;
+            float currentRadius = result->balls[0].radius;
+            float currentConfidence = result->balls[0].confidence;
+            int currentFrame = result->balls[0].frameIndex;
 
             // READY 상태에서 탐지 성공 시 실패 카운터 리셋
             if (m_ballTracking.currentState == BallState::READY &&
                 m_ballTracking.missedDetectionCount > 0) {
 
-                // 타임아웃 내에 다시 탐지되었는지 확인
                 auto missedDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - m_ballTracking.lastMissedTime).count();
 
@@ -1471,13 +1575,36 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
                     m_ballTracking.missedDetectionCount = 0;
                 }
                 else {
-                    // 타임아웃 초과 - 재탐지 시작
-                    LOG_INFO("Ball detection recovered but timeout exceeded - restarting tracking");
-                    m_ballTracking.previousState = m_ballTracking.currentState;
-                    m_ballTracking.currentState = BallState::MOVING;
-                    m_ballTracking.lastStateChangeTime = now;
+                    LOG_INFO("Ball detection recovered but timeout exceeded - checking for movement");
                     m_ballTracking.missedDetectionCount = 0;
-                    m_ballTracking.stableStartTime = now;
+
+                    // Check if ball has moved significantly from READY position
+                    float distance = CalculateDistance(
+                        m_ballTracking.readyPosition.x,
+                        m_ballTracking.readyPosition.y,
+                        currentX,
+                        currentY
+                    );
+
+                    if (distance > m_ballStateConfig.movementThreshold) {
+                        // Ball has moved - transition to MOVING
+                        m_ballTracking.previousState = m_ballTracking.currentState;
+                        m_ballTracking.currentState = BallState::MOVING;
+                        m_ballTracking.lastStateChangeTime = now;
+                        m_ballTracking.movingStartTime = now;
+
+                        // Start trajectory recording
+                        StartTrajectoryRecording();
+
+                        // Record starting position
+                        {
+                            std::lock_guard<std::mutex> shotLock(m_shotDataMutex);
+                            m_currentShotData.startPosition = m_ballTracking.readyPosition;
+                            m_currentShotData.shotStartTime = m_ballTracking.movingStartTime;
+                        }
+
+                        LOG_INFO("Shot started - Ball moving from READY state");
+                    }
                 }
             }
 
@@ -1506,9 +1633,28 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
                 m_ballTracking.consecutiveDetections++;
 
                 // 움직임 감지
-                if (distance > m_ballStateConfig.positionTolerance) {
-                    // Ball is moving
-                    if (m_ballTracking.currentState != BallState::MOVING) {
+                if (distance > m_ballStateConfig.movementThreshold) {
+                    // Ball is moving significantly
+                    if (m_ballTracking.currentState == BallState::READY) {
+                        // READY -> MOVING transition: Start shot recording
+                        m_ballTracking.previousState = m_ballTracking.currentState;
+                        m_ballTracking.currentState = BallState::MOVING;
+                        m_ballTracking.lastStateChangeTime = now;
+                        m_ballTracking.movingStartTime = now;
+
+                        // Start trajectory recording from READY position
+                        StartTrajectoryRecording();
+
+                        // Record starting position (use READY position)
+                        {
+                            std::lock_guard<std::mutex> shotLock(m_shotDataMutex);
+                            m_currentShotData.startPosition = m_ballTracking.readyPosition;
+                            m_currentShotData.shotStartTime = m_ballTracking.movingStartTime;
+                        }
+
+                        LOG_INFO("Shot started - Ball moving from READY state");
+                    }
+                    else if (m_ballTracking.currentState != BallState::MOVING) {
                         m_ballTracking.previousState = m_ballTracking.currentState;
                         m_ballTracking.currentState = BallState::MOVING;
                         m_ballTracking.lastStateChangeTime = now;
@@ -1518,45 +1664,102 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
                     m_ballTracking.lastPositionY = currentY;
                     m_ballTracking.missedDetectionCount = 0;
                 }
-                else {
-                    // Ball is stationary
+                else if (distance <= m_ballStateConfig.positionTolerance) {
+                    // Ball is stationary or moving very slowly
                     auto stableDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
                         now - m_ballTracking.stableStartTime).count();
 
                     if (m_ballTracking.currentState == BallState::MOVING) {
-                        // 움직임이 멈춘 경우
+                        // Check if we were recording a shot
+                        bool wasRecordingShot = m_ballTracking.recordingTrajectory;
+
+                        // Small movement after initial movement - could be stopping
                         m_ballTracking.lastPositionX = currentX;
                         m_ballTracking.lastPositionY = currentY;
 
-                        // 1초 후에 STABILIZING으로 전환
+                        // After 1 second of stability, transition to STABILIZING
                         if (stableDuration >= m_ballStateConfig.stabilizingTimeMs) {
                             m_ballTracking.previousState = m_ballTracking.currentState;
                             m_ballTracking.currentState = BallState::STABILIZING;
                             m_ballTracking.lastStateChangeTime = now;
+
+                            LOG_INFO("Ball stabilizing after movement");
                         }
                     }
                     else if (m_ballTracking.currentState == BallState::STABILIZING) {
-                        // STABILIZING 상태에서 2초 경과 시 READY로 전환
-                        if (stableDuration >= m_ballStateConfig.stableTimeMs &&
+                        // Check if this is a shot completion scenario
+                        if (m_ballTracking.recordingTrajectory &&
+                            stableDuration >= m_ballStateConfig.stableTimeMs) {
+                            // Ball has stopped after a shot
+                            m_ballTracking.previousState = m_ballTracking.currentState;
+                            m_ballTracking.currentState = BallState::STOPPED;
+                            m_ballTracking.lastStateChangeTime = now;
+
+                            // Record end position
+                            {
+                                std::lock_guard<std::mutex> shotLock(m_shotDataMutex);
+                                m_currentShotData.endPosition = cv::Point2f(currentX, currentY);
+                                m_currentShotData.shotEndTime = now;
+                            }
+
+                            LOG_INFO("Shot completed - Ball STOPPED");
+                        }
+                        else if (!m_ballTracking.recordingTrajectory &&
+                            stableDuration >= m_ballStateConfig.stableTimeMs &&
                             m_ballTracking.consecutiveDetections >= m_ballStateConfig.minConsecutiveDetections) {
+                            // Normal READY state transition (no shot in progress)
                             m_ballTracking.previousState = m_ballTracking.currentState;
                             m_ballTracking.currentState = BallState::READY;
                             m_ballTracking.lastStateChangeTime = now;
-                            m_ballTracking.missedDetectionCount = 0;  // READY 진입 시 카운터 초기화
+                            m_ballTracking.missedDetectionCount = 0;
+
+                            // Save READY position for future shot detection
+                            m_ballTracking.readyPosition = cv::Point2f(currentX, currentY);
+
+                            LOG_INFO("Ball READY for shot at position (" +
+                                std::to_string(currentX) + ", " +
+                                std::to_string(currentY) + ")");
                         }
-                        // 위치 업데이트
+
+                        // Update position
                         m_ballTracking.lastPositionX = currentX;
                         m_ballTracking.lastPositionY = currentY;
                     }
                     else if (m_ballTracking.currentState == BallState::READY) {
-                        // READY 상태 유지 - 위치 업데이트
+                        // READY state maintenance - update position but keep READY position
                         m_ballTracking.lastPositionX = currentX;
                         m_ballTracking.lastPositionY = currentY;
-                        // 탐지 성공 시 실패 카운터는 위에서 이미 처리됨
                     }
+                    else if (m_ballTracking.currentState == BallState::STOPPED) {
+                        // Ball remains stopped - might transition back to READY
+                        auto stoppedDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - m_ballTracking.lastStateChangeTime).count();
+
+                        if (stoppedDuration > 3000) { // 3 seconds after stop
+                            m_ballTracking.previousState = m_ballTracking.currentState;
+                            m_ballTracking.currentState = BallState::READY;
+                            m_ballTracking.lastStateChangeTime = now;
+                            m_ballTracking.readyPosition = cv::Point2f(currentX, currentY);
+
+                            LOG_INFO("Ball READY for next shot");
+                        }
+                    }
+                }
+                else {
+                    // Moderate movement - update position but don't change state
+                    m_ballTracking.lastPositionX = currentX;
+                    m_ballTracking.lastPositionY = currentY;
                 }
 
                 m_ballTracking.lastDetectionTime = now;
+            }
+
+            // Record trajectory point if we're tracking a shot or in READY state
+            if (m_ballTracking.recordingTrajectory ||
+                m_ballTracking.currentState == BallState::READY) {
+                RecordTrajectoryPoint(currentX, currentY, currentRadius,
+                    currentConfidence, currentFrame,
+                    m_ballTracking.currentState);
             }
         }
 
@@ -1570,6 +1773,11 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
 
     if (stateChanged) {
         NotifyBallStateChanged(newState, previousState, stateInfo);
+
+        // Handle STOPPED state - process shot completion
+        if (newState == BallState::STOPPED) {
+            ProcessShotCompleted();
+        }
     }
 }
 
@@ -1695,99 +1903,303 @@ bool CameraController::IsBallStable() const {
         m_ballTracking.currentState == BallState::STOPPED);
 }
 
-// Dynamic ROI implementation
+void CameraController::SetShotCompletedCallback(InternalShotCompletedCallback callback, void* context) {
+    m_shotCompletedCallback = callback;
+    m_shotCompletedCallbackContext = context;
+
+    if (callback) {
+        LOG_INFO("Shot completed callback registered");
+    }
+    else {
+        LOG_INFO("Shot completed callback cleared");
+    }
+}
+
+bool CameraController::GetLastShotTrajectory(ShotTrajectoryData* data) const {
+    if (!data) return false;
+
+    std::lock_guard<std::mutex> lock(m_shotDataMutex);
+    *data = m_currentShotData;
+    return !m_currentShotData.fullTrajectory.empty();
+}
+
+void CameraController::ClearShotTrajectory() {
+    std::lock_guard<std::mutex> lock(m_shotDataMutex);
+    m_currentShotData.Clear();
+    LOG_INFO("Shot trajectory data cleared");
+}
+
+bool CameraController::SaveTrajectoryData(const std::string& filename) const {
+    std::lock_guard<std::mutex> lock(m_shotDataMutex);
+
+    if (m_currentShotData.fullTrajectory.empty()) {
+        LOG_ERROR("No trajectory data to save");
+        return false;
+    }
+
+    try {
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            LOG_ERROR("Failed to open file: " + filename);
+            return false;
+        }
+
+        // Write header with metadata
+        file << "# Golf Ball Putting Trajectory Data\n";
+        file << "# Generated: " << std::chrono::system_clock::now().time_since_epoch().count() << "\n";
+        file << "# Format: Frame,Timestamp,X,Y,Radius,Confidence,State,StateString\n";
+        file << "#\n";
+
+        // Write shot summary at the top
+        file << "# Shot Summary:\n";
+        file << "# Start Position: (" << std::fixed << std::setprecision(2)
+            << m_currentShotData.startPosition.x << ", "
+            << m_currentShotData.startPosition.y << ")\n";
+        file << "# End Position: (" << m_currentShotData.endPosition.x << ", "
+            << m_currentShotData.endPosition.y << ")\n";
+        file << "# Total Distance: " << m_currentShotData.totalDistance << " pixels\n";
+        file << "# Shot Duration: " << std::fixed << std::setprecision(3)
+            << m_currentShotData.shotDuration << " seconds\n";
+        file << "# Max Velocity: " << std::fixed << std::setprecision(2)
+            << m_currentShotData.maxVelocity << " pixels/sec\n";
+        file << "# Average Velocity: " << m_currentShotData.averageVelocity << " pixels/sec\n";
+        file << "# Total Points: " << m_currentShotData.fullTrajectory.size() << "\n";
+        file << "# Moving Points: " << m_currentShotData.movingTrajectory.size() << "\n";
+        file << "#\n";
+
+        // Write column headers
+        file << "Frame,Timestamp,X,Y,Radius,Confidence,State,StateString\n";
+
+        // Write all trajectory points
+        for (const auto& point : m_currentShotData.fullTrajectory) {
+            // Get state string
+            std::string stateStr;
+            switch (point.state) {
+            case BallState::NOT_DETECTED: stateStr = "NOT_DETECTED"; break;
+            case BallState::MOVING: stateStr = "MOVING"; break;
+            case BallState::STABILIZING: stateStr = "STABILIZING"; break;
+            case BallState::READY: stateStr = "READY"; break;
+            case BallState::STOPPED: stateStr = "STOPPED"; break;
+            default: stateStr = "UNKNOWN"; break;
+            }
+
+            file << point.frameNumber << ","
+                << std::fixed << std::setprecision(6) << point.timestamp << ","
+                << std::fixed << std::setprecision(2) << point.position.x << ","
+                << std::fixed << std::setprecision(2) << point.position.y << ","
+                << std::fixed << std::setprecision(2) << point.radius << ","
+                << std::fixed << std::setprecision(4) << point.confidence << ","
+                << static_cast<int>(point.state) << ","
+                << stateStr << "\n";
+        }
+
+        // Add trajectory analysis section
+        file << "\n# Trajectory Analysis\n";
+
+        // Calculate and write velocity profile
+        file << "# Velocity Profile (for MOVING state only):\n";
+        file << "# PointIndex,Time,X,Y,Velocity,Acceleration\n";
+
+        if (m_currentShotData.movingTrajectory.size() >= 2) {
+            for (size_t i = 1; i < m_currentShotData.movingTrajectory.size(); ++i) {
+                const auto& prev = m_currentShotData.movingTrajectory[i - 1];
+                const auto& curr = m_currentShotData.movingTrajectory[i];
+
+                float distance = cv::norm(curr.position - prev.position);
+                double timeDiff = curr.timestamp - prev.timestamp;
+                double velocity = (timeDiff > 0) ? distance / timeDiff : 0.0;
+
+                double acceleration = 0.0;
+                if (i >= 2) {
+                    const auto& prev2 = m_currentShotData.movingTrajectory[i - 2];
+                    float distance2 = cv::norm(prev.position - prev2.position);
+                    double timeDiff2 = prev.timestamp - prev2.timestamp;
+                    double velocity2 = (timeDiff2 > 0) ? distance2 / timeDiff2 : 0.0;
+                    double totalTimeDiff = curr.timestamp - prev2.timestamp;
+                    acceleration = (totalTimeDiff > 0) ? (velocity - velocity2) / totalTimeDiff : 0.0;
+                }
+
+                file << i << ","
+                    << std::fixed << std::setprecision(6) << curr.timestamp << ","
+                    << std::fixed << std::setprecision(2) << curr.position.x << ","
+                    << std::fixed << std::setprecision(2) << curr.position.y << ","
+                    << std::fixed << std::setprecision(2) << velocity << ","
+                    << std::fixed << std::setprecision(2) << acceleration << "\n";
+            }
+        }
+
+        // Add section markers for easy parsing
+        file << "\n# END OF DATA\n";
+
+        file.close();
+        LOG_INFO("Trajectory data saved to: " + filename);
+
+        // Also save a simplified CSV version for Excel
+        std::string csvFilename = filename.substr(0, filename.find_last_of('.')) + "_simple.csv";
+        SaveTrajectoryDataCSV(csvFilename);
+
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Failed to save trajectory data: " + std::string(e.what()));
+        return false;
+    }
+}
+
+
+bool CameraController::SaveTrajectoryDataCSV(const std::string& filename) const {
+    try {
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            return false;
+        }
+        
+        // Simple CSV header
+        file << "Frame,Time(sec),X,Y,State\n";
+        
+        // Write data
+        double startTime = m_currentShotData.fullTrajectory.empty() ? 0.0 : 
+                          m_currentShotData.fullTrajectory[0].timestamp;
+        
+        for (const auto& point : m_currentShotData.fullTrajectory) {
+            file << point.frameNumber << ","
+                 << std::fixed << std::setprecision(3) << (point.timestamp - startTime) << ","
+                 << std::fixed << std::setprecision(1) << point.position.x << ","
+                 << std::fixed << std::setprecision(1) << point.position.y << ","
+                 << static_cast<int>(point.state) << "\n";
+        }
+        
+        file.close();
+        LOG_INFO("Simple CSV saved to: " + filename);
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
 // Dynamic ROI implementation
 void CameraController::UpdateDynamicROI(const RealtimeDetectionResult* result) {
     if (!m_dynamicROIEnabled.load() || !result) return;
 
     std::lock_guard<std::mutex> lock(m_dynamicROIMutex);
 
-    // Update ROI in READY, MOVING, and STABILIZING states
-    if (m_ballTracking.currentState != BallState::READY &&
-        m_ballTracking.currentState != BallState::MOVING &&
-        m_ballTracking.currentState != BallState::STABILIZING) {
+    BallState currentBallState = m_ballTracking.currentState;
+
+    // Determine ROI mode based on ball state
+    switch (currentBallState) {
+    case BallState::NOT_DETECTED:
+    case BallState::STABILIZING:
+        // Full frame processing when no ball or stabilizing
         if (m_usingDynamicROI) {
             ClearDynamicROI();
+            SetROIMode(ROIMode::FULL_FRAME);
         }
-        return;
-    }
+        break;
 
-    // Check if we have a valid ball detection
-    if (!result->ballFound || result->ballCount == 0) {
-        // Keep existing ROI during brief detection losses in these states
-        if (m_ballTracking.currentState == BallState::READY ||
-            m_ballTracking.currentState == BallState::MOVING ||
-            m_ballTracking.currentState == BallState::STABILIZING) {
-            // Don't clear ROI immediately - wait for missed detection timeout
-            return;
+    case BallState::READY:
+        // Small ROI for READY state
+        if (result->ballFound && result->ballCount > 0) {
+            const RealtimeBallInfo& ball = result->balls[0];
+
+            // Use smaller multiplier for READY state
+            float readyMultiplier = m_dynamicROIConfig.roiSizeMultiplier;
+            cv::Rect newROI = CalculateDynamicROI(ball.centerX, ball.centerY,
+                ball.radius, BallState::READY);
+
+            if (ShouldUpdateROI(newROI)) {
+                ApplyDynamicROI(newROI);
+                SetROIMode(ROIMode::READY_ROI);
+            }
         }
+        break;
 
-        if (m_usingDynamicROI) {
-            ClearDynamicROI();
+    case BallState::MOVING:
+        // Larger ROI for MOVING state to handle sudden movements
+        if (result->ballFound && result->ballCount > 0) {
+            const RealtimeBallInfo& ball = result->balls[0];
+
+            // Use larger multiplier for MOVING state
+            cv::Rect newROI = CalculateDynamicROI(ball.centerX, ball.centerY,
+                ball.radius, BallState::MOVING);
+
+            if (ShouldUpdateROI(newROI)) {
+                ApplyDynamicROI(newROI);
+                SetROIMode(ROIMode::MOVING_ROI);
+            }
         }
-        return;
+        else {
+            // If we lose the ball while moving, expand ROI or go full frame
+            if (m_usingDynamicROI) {
+                // Expand current ROI by 50%
+                cv::Rect expandedROI = m_currentROI;
+                int expansion = static_cast<int>(m_currentROI.width * 0.25);
+                expandedROI.x = std::max(0, expandedROI.x - expansion);
+                expandedROI.y = std::max(0, expandedROI.y - expansion);
+                expandedROI.width = std::min(width - expandedROI.x, expandedROI.width + 2 * expansion);
+                expandedROI.height = std::min(height - expandedROI.y, expandedROI.height + 2 * expansion);
+
+                ApplyDynamicROI(expandedROI);
+            }
+        }
+        break;
+
+    case BallState::STOPPED:
+        // Maintain current ROI for STOPPED state
+        // Don't change ROI to allow for shot completion processing
+        break;
     }
 
-    // Use the first detected ball (coordinates are already in full frame space)
-    const RealtimeBallInfo& ball = result->balls[0];
+    m_lastROIUpdateTime = std::chrono::steady_clock::now();
+}
 
-    // Validate coordinates
-    if (ball.centerX < 0 || ball.centerX >= width ||
-        ball.centerY < 0 || ball.centerY >= height) {
-        LOG_ERROR("Invalid ball coordinates for ROI: (" +
-            std::to_string(ball.centerX) + "," +
-            std::to_string(ball.centerY) + ")");
-        return;
-    }
 
-    // Calculate new ROI with dynamic size based on state
-    cv::Rect newROI;
-
-    if (m_ballTracking.currentState == BallState::MOVING) {
-        // Larger ROI during movement to account for motion
-        float dynamicMultiplier = m_dynamicROIConfig.roiSizeMultiplier * 1.5f;
-        newROI = CalculateDynamicROI(ball.centerX, ball.centerY, ball.radius, dynamicMultiplier);
-    }
-    else {
-        // Normal ROI for READY and STABILIZING states
-        newROI = CalculateDynamicROI(ball.centerX, ball.centerY, ball.radius);
-    }
-
-    // Check if ROI needs update (with hysteresis to avoid jitter)
+bool CameraController::ShouldUpdateROI(const cv::Rect& newROI) {
     const int POSITION_THRESHOLD = 10;  // pixels
     const int SIZE_THRESHOLD = 20;      // pixels
 
-    bool needsUpdate = !m_usingDynamicROI ||
+    return !m_usingDynamicROI ||
         std::abs(newROI.x - m_currentROI.x) > POSITION_THRESHOLD ||
         std::abs(newROI.y - m_currentROI.y) > POSITION_THRESHOLD ||
         std::abs(newROI.width - m_currentROI.width) > SIZE_THRESHOLD ||
         std::abs(newROI.height - m_currentROI.height) > SIZE_THRESHOLD;
+}
 
-    if (needsUpdate) {
-        ApplyDynamicROI(newROI);
+cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, float radius, BallState state) {
+    float roiMultiplier = m_dynamicROIConfig.roiSizeMultiplier;
+
+    // Adjust multiplier based on state
+    switch (state) {
+    case BallState::READY:
+        // Smaller ROI for stationary ball
+        roiMultiplier = m_dynamicROIConfig.roiSizeMultiplier;
+        break;
+
+    case BallState::MOVING:
+        // Larger ROI to accommodate sudden movements
+        roiMultiplier = m_dynamicROIConfig.roiSizeMultiplier * 2.0f;
+        break;
+
+    default:
+        break;
     }
 
-    // Update timing
-    m_lastROIUpdateTime = std::chrono::steady_clock::now();
-}
+    // Calculate ROI size
+    float roiSize = radius * 2.0f * roiMultiplier;
 
-cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, float radius) {
-    return CalculateDynamicROI(centerX, centerY, radius, m_dynamicROIConfig.roiSizeMultiplier);
-}
+    // Apply min/max constraints
+    float maxSize = (state == BallState::MOVING) ?
+        m_dynamicROIConfig.maxROISize * 1.5f :
+        m_dynamicROIConfig.maxROISize;
 
-cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, float radius, float multiplier) {
-    // Calculate ROI size based on ball radius and multiplier
-    float roiSize = radius * 2.0f * multiplier;
-
-    // Clamp to min/max sizes
     roiSize = std::max(m_dynamicROIConfig.minROISize,
-        std::min(m_dynamicROIConfig.maxROISize, roiSize));
+        std::min(maxSize, roiSize));
 
-    // Make sure ROI size is even for better alignment
+    // Make size even for better alignment
     int size = static_cast<int>(roiSize);
     size = (size / 2) * 2;
 
-    // Calculate ROI position (centered on ball)
+    // Calculate position
     int halfSize = size / 2;
     int x = static_cast<int>(centerX) - halfSize;
     int y = static_cast<int>(centerY) - halfSize;
@@ -1796,7 +2208,6 @@ cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, flo
     x = std::max(0, x);
     y = std::max(0, y);
 
-    // Adjust size if ROI extends beyond image boundaries
     if (x + size > width) {
         size = width - x;
     }
@@ -1807,7 +2218,6 @@ cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, flo
     // Ensure minimum size
     const int MIN_ROI_SIZE = static_cast<int>(m_dynamicROIConfig.minROISize);
     if (size < MIN_ROI_SIZE) {
-        // Try to expand ROI while keeping it within bounds
         if (x > 0 && x + size < width) {
             int expand = MIN_ROI_SIZE - size;
             x = std::max(0, x - expand / 2);
@@ -1869,6 +2279,28 @@ void CameraController::ClearDynamicROI() {
     m_dynamicROIInfo.processingTimeReduction = 0.0f;
 
     LOG_INFO("Dynamic ROI cleared - using full frame");
+}
+
+void CameraController::SetROIMode(ROIMode mode) {
+    m_currentROIMode = mode;
+
+    std::string modeStr;
+    switch (mode) {
+    case ROIMode::FULL_FRAME:
+        modeStr = "FULL_FRAME";
+        break;
+    case ROIMode::READY_ROI:
+        modeStr = "READY_ROI";
+        break;
+    case ROIMode::MOVING_ROI:
+        modeStr = "MOVING_ROI";
+        break;
+    case ROIMode::TRACKING_ROI:
+        modeStr = "TRACKING_ROI";
+        break;
+    }
+
+    LOG_INFO("ROI mode changed to: " + modeStr);
 }
 
 bool CameraController::EnableDynamicROI(bool enable) {
