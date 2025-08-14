@@ -18,7 +18,7 @@
 #endif
 
 #define PYTHON1300_WIDTH    1280
-#define PYTHON1300_HEIGHT   960
+#define PYTHON1300_HEIGHT   1024
 #define PYTHON1300_MAX_FPS  210
 
 struct CameraStatistics {
@@ -167,8 +167,18 @@ private:
     RealtimeDetectionCallback m_realtimeCallback;
     void* m_realtimeCallbackContext;
 
+    // Detection queue item with ROI info
+    struct DetectionQueueItem {
+        std::vector<unsigned char> frameData;
+        FrameInfo frameInfo;
+        bool isROI;                // ROI 여부
+        cv::Rect roiRect;          // ROI 영역 정보
+
+        DetectionQueueItem() : isROI(false), roiRect(0, 0, 0, 0) {}
+    };
+
     std::mutex m_detectionQueueMutex;
-    std::queue<std::pair<std::vector<unsigned char>, FrameInfo>> m_detectionQueue;
+    std::queue<DetectionQueueItem> m_detectionQueue;  // 타입 변경
     std::thread m_detectionThread;
     std::atomic<bool> m_detectionThreadRunning;
     std::condition_variable m_detectionCV;
@@ -260,6 +270,8 @@ private:
 
     void RealtimeDetectionWorker();
     void ProcessRealtimeDetection(const unsigned char* data, int width, int height, int frameIndex);
+    void ProcessRealtimeDetectionWithROI(const unsigned char* data, int width, int height,
+        int frameIndex, bool isROI, const cv::Rect& roiRect);
 
     // Ball state tracking methods - ENHANCED
     void UpdateBallState(const RealtimeDetectionResult* result);
