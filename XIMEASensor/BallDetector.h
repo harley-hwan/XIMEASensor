@@ -10,6 +10,7 @@
 #include <thread>
 #include <atomic>
 #include <unordered_map>
+#include <deque>
 
 #define ENABLE_PERFORMANCE_PROFILING
 

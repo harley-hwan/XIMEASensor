@@ -81,8 +81,8 @@ thread_local std::unique_ptr<BallDetector::DetectionContext> BallDetector::t_con
 // Optimized DetectionParams constructor
 BallDetector::DetectionParams::DetectionParams() {
     // Initialize all members in one go to improve cache locality
-    minRadius = 20;
-    maxRadius = 30;
+    minRadius = 5;
+    maxRadius = 20;
     minCircularity = 0.70f;
     dp = 2.0;
     minDist = 40.0;
@@ -101,7 +101,7 @@ BallDetector::DetectionParams::DetectionParams() {
     useEnhanceShadows = true;
     shadowEnhanceFactor = 0.7f;
     useMorphology = false;
-    useNormalization = false;
+    useNormalization = true;
     useCLAHE = false;
     claheClipLimit = 2.0;
     useContourDetection = true;
@@ -120,7 +120,7 @@ BallDetector::DetectionParams::DetectionParams() {
     debugOutputDir = "";
     enableProfiling = false;
     enableTracking = false;
-    maxTrackingDistance = 50.0f;
+    maxTrackingDistance = 100.0f;
     trackingHistorySize = 10;
 }
 
@@ -418,7 +418,7 @@ BallDetectionResult BallDetector::DetectBall(const unsigned char* imageData, int
         cv::Mat edgeMap;
         if (localParams.edgeThreshold > 0) {
             MEASURE_TIME("Edge detection",
-                edgeMap = pImpl->computeEdgeMapOptimized(processed, 1);
+                edgeMap = pImpl->computeEdgeMapOptimized(processed, 0);
                 , context.metrics.edgeDetectionTime_ms);
         }
 

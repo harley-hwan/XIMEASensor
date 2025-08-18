@@ -141,25 +141,34 @@ enum class XIMEASENSOR_API BallState {
 
 // Ball state tracking configuration
 struct XIMEASENSOR_API BallStateConfig {
-    float positionTolerance;      // Position tolerance in pixels (default: 5.0)
-    float movementThreshold;      // Movement detection threshold in pixels (default: 10.0)
-    int stableTimeMs;            // Time required for READY state in ms (default: 2000)
-    int stabilizingTimeMs;       // Time required for STABILIZING state in ms (default: 1000)
-    int minConsecutiveDetections; // Minimum consecutive detections required (default: 5)
-    bool enableStateCallback;     // Enable state change callbacks (default: true)
-    int maxMissedDetections;     // Maximum missed detections in READY state (default: 2)
-    int missedDetectionTimeoutMs; // Timeout for missed detection recovery (default: 500)
+    float positionTolerance;          // 정지 판단 픽셀 허용치 (default: 1.5)
+    float movementThreshold;          // 움직임 시작 픽셀 임계값 (default: 3.0)
+    int stableTimeMs;                // READY 전환 시간 (default: 4000ms)
+    int stabilizingTimeMs;           // STABILIZING 최소 시간 (default: 2000ms)
+    int minConsecutiveDetections;    // 최소 연속 감지 (default: 5)
+    bool enableStateCallback;        // 콜백 활성화 (default: true)
+    int maxMissedDetections;         // READY 상태 최대 실패 (default: 2)
+    int missedDetectionTimeoutMs;    // 실패 복구 타임아웃 (default: 500ms)
 
-    // Default constructor with standard values
+    // 추가 파라미터
+    int minMovingFrames;             // MOVING 최소 유지 프레임 (default: 15)
+    int requiredStableFrames;        // 정지 판단 연속 프레임 (default: 15)
+    float noiseFloor;                // 기본 노이즈 레벨 (default: 0.5px)
+    float microMovementThreshold;    // 미세 움직임 임계값 (default: 2.0px)
+
     BallStateConfig()
-        : positionTolerance(5.0f)
-        , movementThreshold(10.0f)
-        , stableTimeMs(2000)
-        , stabilizingTimeMs(1000)
+        : positionTolerance(1.5f)      // 더 엄격하게
+        , movementThreshold(3.0f)      // 더 민감하게
+        , stableTimeMs(4000)
+        , stabilizingTimeMs(2000)      // 증가
         , minConsecutiveDetections(5)
         , enableStateCallback(true)
-        , maxMissedDetections(2)      // 2회까지 실패 허용
-        , missedDetectionTimeoutMs(500) {  // 500ms 이내 복구 시 카운터 리셋
+        , maxMissedDetections(2)
+        , missedDetectionTimeoutMs(500)
+        , minMovingFrames(15)          // 0.25초 @ 60fps
+        , requiredStableFrames(15)     // 0.25초 @ 60fps
+        , noiseFloor(0.5f)
+        , microMovementThreshold(2.0f) {
     }
 };
 

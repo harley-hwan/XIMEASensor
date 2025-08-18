@@ -209,7 +209,40 @@ private:
         // Trajectory recording
         std::deque<TrajectoryPoint> trajectoryBuffer;
         bool recordingTrajectory;
-        cv::Point2f readyPosition;  // Position when ball became READY
+        cv::Point2f readyPosition;
+
+        // ============ 개선된 움직임 추적 변수 ============
+
+        // 위치 히스토리 (최근 N프레임)
+        static constexpr size_t POSITION_HISTORY_SIZE = 30;  // 0.5초 @ 60fps
+        std::deque<cv::Point2f> positionHistory;
+
+        // 프레임 간 변화량 추적
+        std::deque<float> frameDeltas;  // 프레임 간 픽셀 거리
+        static constexpr size_t DELTA_HISTORY_SIZE = 20;
+
+        // 누적 이동 추적
+        float recentAccumulatedMovement;    // 최근 N프레임 동안의 누적 이동
+        float totalAccumulatedMovement;     // READY 이후 총 누적 이동
+        cv::Point2f movementStartPosition;  // 움직임 시작 위치
+
+        // 움직임 일관성 추적
+        int consecutiveMovingFrames;        // 연속 움직임 프레임 수
+        int consecutiveStableFrames;        // 연속 정지 프레임 수
+        int microMovementCount;              // 미세 움직임 카운터
+
+        // 움직임 패턴 분석
+        float averageFrameDelta;            // 평균 프레임 간 이동 거리
+        float maxRecentDelta;               // 최근 최대 이동 거리
+        float movementNoiseLevel;           // 추정 노이즈 레벨
+
+        // 상태 전환 카운터
+        int movingStateFrameCount;          // MOVING 상태 지속 프레임 수
+        int requiredStableFramesForStop;    // 정지 판단에 필요한 연속 정지 프레임
+
+        // 동적 임계값
+        float currentMovementThreshold;     // 현재 움직임 임계값
+        float currentStabilityThreshold;    // 현재 안정성 임계값
 
         BallTrackingData()
             : currentState(BallState::NOT_DETECTED)
@@ -219,9 +252,164 @@ private:
             , consecutiveDetections(0)
             , isTracking(false)
             , missedDetectionCount(0)
-            , recordingTrajectory(false) {
+            , recordingTrajectory(false)
+            , recentAccumulatedMovement(0.0f)
+            , totalAccumulatedMovement(0.0f)
+            , consecutiveMovingFrames(0)
+            , consecutiveStableFrames(0)
+            , microMovementCount(0)
+            , averageFrameDelta(0.0f)
+            , maxRecentDelta(0.0f)
+            , movementNoiseLevel(1.0f)
+            , movingStateFrameCount(0)
+            , requiredStableFramesForStop(15)  // 0.25초 @ 60fps
+            , currentMovementThreshold(3.0f)    // 기본 3픽셀
+            , currentStabilityThreshold(1.5f) { // 기본 1.5픽셀
+        }
+
+        // 위치 히스토리 업데이트
+        void UpdatePositionHistory(const cv::Point2f& newPos) {
+            positionHistory.push_back(newPos);
+            if (positionHistory.size() > POSITION_HISTORY_SIZE) {
+                positionHistory.pop_front();
+            }
+        }
+
+        // 프레임 델타 업데이트 및 통계 계산
+        void UpdateFrameDeltas(float delta) {
+            frameDeltas.push_back(delta);
+            if (frameDeltas.size() > DELTA_HISTORY_SIZE) {
+                frameDeltas.pop_front();
+            }
+
+            // 통계 계산
+            if (frameDeltas.size() >= 5) {
+                float sum = 0.0f;
+                maxRecentDelta = 0.0f;
+
+                for (float d : frameDeltas) {
+                    sum += d;
+                    maxRecentDelta = std::max(maxRecentDelta, d);
+                }
+
+                averageFrameDelta = sum / frameDeltas.size();
+
+                // 노이즈 레벨 추정 (표준편차 기반)
+                float variance = 0.0f;
+                for (float d : frameDeltas) {
+                    float diff = d - averageFrameDelta;
+                    variance += diff * diff;
+                }
+                variance /= frameDeltas.size();
+                movementNoiseLevel = std::sqrt(variance) + 0.5f;  // 기본 0.5 픽셀 노이즈
+            }
+        }
+
+        // 최근 누적 움직임 계산
+        void CalculateRecentAccumulatedMovement() {
+            if (positionHistory.size() < 2) {
+                recentAccumulatedMovement = 0.0f;
+                return;
+            }
+
+            // 최근 10프레임의 누적 이동 계산
+            size_t windowSize = std::min(size_t(10), positionHistory.size() - 1);
+            float accumulated = 0.0f;
+
+            for (size_t i = positionHistory.size() - windowSize - 1;
+                i < positionHistory.size() - 1; ++i) {
+                float dist = cv::norm(positionHistory[i + 1] - positionHistory[i]);
+                accumulated += dist;
+            }
+
+            recentAccumulatedMovement = accumulated;
+        }
+
+        // 움직임 패턴 분석
+        bool HasConsistentMovement() const {
+            if (frameDeltas.size() < 5) return false;
+
+            // 최근 5프레임 중 3프레임 이상이 노이즈 레벨 이상 움직임
+            int movingFrames = 0;
+            size_t startIdx = frameDeltas.size() >= 5 ? frameDeltas.size() - 5 : 0;
+
+            for (size_t i = startIdx; i < frameDeltas.size(); ++i) {
+                if (frameDeltas[i] > movementNoiseLevel) {
+                    movingFrames++;
+                }
+            }
+
+            return movingFrames >= 3;
+        }
+
+        // 정지 상태 판단
+        bool IsDefinitelyStable() const {
+            if (frameDeltas.empty()) return false;
+
+            // 최근 프레임들이 모두 안정성 임계값 이하
+            size_t checkFrames = std::min(size_t(10), frameDeltas.size());
+            for (size_t i = frameDeltas.size() - checkFrames; i < frameDeltas.size(); ++i) {
+                if (frameDeltas[i] > currentStabilityThreshold) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // 동적 임계값 업데이트
+        void UpdateDynamicThresholds() {
+            // 노이즈 레벨에 따라 임계값 조정
+            currentMovementThreshold = std::max(2.0f, movementNoiseLevel * 2.0f);
+            currentStabilityThreshold = std::max(1.0f, movementNoiseLevel * 1.5f);
+
+            // MOVING 상태에서는 더 민감하게
+            if (currentState == BallState::MOVING) {
+                currentStabilityThreshold *= 0.8f;
+            }
+        }
+
+        // 느린 움직임 감지
+        bool DetectSlowMovement() const {
+            // 누적 움직임이 임계값 초과
+            if (recentAccumulatedMovement > currentMovementThreshold * 5) {
+                return true;
+            }
+
+            // 일관된 미세 움직임
+            if (microMovementCount >= 5 && averageFrameDelta > currentMovementThreshold * 0.5f) {
+                return true;
+            }
+
+            return false;
+        }
+
+        void Reset() {
+            positionHistory.clear();
+            frameDeltas.clear();
+            recentAccumulatedMovement = 0.0f;
+            totalAccumulatedMovement = 0.0f;
+            consecutiveMovingFrames = 0;
+            consecutiveStableFrames = 0;
+            microMovementCount = 0;
+            averageFrameDelta = 0.0f;
+            maxRecentDelta = 0.0f;
+            movementNoiseLevel = 1.0f;
+            movingStateFrameCount = 0;
         }
     };
+
+    // Helper methods
+    void ProcessMovementData(BallTrackingData& tracking, float currentX, float currentY, float pixelDelta);
+    void HandleBallNotDetected(std::chrono::steady_clock::time_point now);
+    void StartNewTracking(const cv::Point2f& currentPos, std::chrono::steady_clock::time_point now);
+    void HandleNotDetectedState(float pixelDelta, const cv::Point2f& currentPos, std::chrono::steady_clock::time_point now);
+    void HandleReadyState(float pixelDelta, const cv::Point2f& currentPos, std::chrono::steady_clock::time_point now);
+    void HandleMovingState(float pixelDelta, std::chrono::steady_clock::time_point now);
+    void HandleStabilizingState(float pixelDelta, std::chrono::steady_clock::time_point now);
+    void HandleStoppedState(const cv::Point2f& currentPos, std::chrono::steady_clock::time_point now);
+    bool ShouldStartMoving(const BallTrackingData& tracking, float pixelDelta);
+    bool ShouldStopMoving(const BallTrackingData& tracking);
 
     // Ball state tracking members
     std::atomic<bool> m_ballStateTrackingEnabled;

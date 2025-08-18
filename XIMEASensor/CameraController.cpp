@@ -546,7 +546,7 @@ void CameraController::CaptureLoop() {
                             const unsigned char* srcRow = (unsigned char*)image.bp +
                                 (m_currentROI.y + y) * image.width + m_currentROI.x;
                             unsigned char* dstRow = item.frameData.data() + y * m_currentROI.width;
-                            memcpy(dstRow, srcRow, m_currentROI.width);
+                            memcpy(dstRow, srcRow, m_currentROI.width);     // Access violation reading error (vcruntime140d.dll)
                         }
 
                         // frameInfo 업데이트
@@ -1531,252 +1531,70 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
 
     {
         std::lock_guard<std::mutex> lock(m_ballStateMutex);
-
         auto now = std::chrono::steady_clock::now();
         previousState = m_ballTracking.currentState;
 
-        // 탐지 실패 처리
+        // ========== 탐지 실패 처리 ==========
         if (!result || !result->ballFound || result->ballCount == 0) {
-            // READY 상태에서의 특별 처리
-            if (m_ballTracking.currentState == BallState::READY) {
-                m_ballTracking.missedDetectionCount++;
-
-                if (m_ballTracking.missedDetectionCount == 1) {
-                    m_ballTracking.lastMissedTime = now;
-                }
-
-                if (m_ballTracking.missedDetectionCount > m_ballStateConfig.maxMissedDetections) {
-                    LOG_INFO("Ball detection lost after " +
-                        std::to_string(m_ballTracking.missedDetectionCount) +
-                        " missed detections in READY state");
-
-                    m_ballTracking.consecutiveDetections = 0;
-                    m_ballTracking.isTracking = false;
-                    m_ballTracking.previousState = m_ballTracking.currentState;
-                    m_ballTracking.currentState = BallState::NOT_DETECTED;
-                    m_ballTracking.lastStateChangeTime = now;
-                    m_ballTracking.missedDetectionCount = 0;
-
-                    // Stop trajectory recording if active
-                    if (m_ballTracking.recordingTrajectory) {
-                        StopTrajectoryRecording();
-                    }
-                }
-                else {
-                    LOG_DEBUG("Missed detection " +
-                        std::to_string(m_ballTracking.missedDetectionCount) +
-                        "/" + std::to_string(m_ballStateConfig.maxMissedDetections) +
-                        " in READY state - maintaining state");
-                }
-            }
-            else if (m_ballTracking.isTracking) {
-                m_ballTracking.consecutiveDetections = 0;
-                m_ballTracking.isTracking = false;
-                m_ballTracking.previousState = m_ballTracking.currentState;
-                m_ballTracking.currentState = BallState::NOT_DETECTED;
-                m_ballTracking.lastStateChangeTime = now;
-                m_ballTracking.missedDetectionCount = 0;
-
-                // Stop trajectory recording
-                if (m_ballTracking.recordingTrajectory) {
-                    StopTrajectoryRecording();
-                }
-            }
+            HandleBallNotDetected(now);
         }
         else {
-            // Ball detected
+            // ========== Ball detected ==========
             float currentX = result->balls[0].centerX;
             float currentY = result->balls[0].centerY;
             float currentRadius = result->balls[0].radius;
             float currentConfidence = result->balls[0].confidence;
             int currentFrame = result->balls[0].frameIndex;
 
-            // READY 상태에서 탐지 성공 시 실패 카운터 리셋
-            if (m_ballTracking.currentState == BallState::READY && m_ballTracking.missedDetectionCount > 0) {
+            cv::Point2f currentPos(currentX, currentY);
 
-                auto missedDuration = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.lastMissedTime).count();
-
-                if (missedDuration <= m_ballStateConfig.missedDetectionTimeoutMs) {
-                    LOG_DEBUG("Ball detection recovered within timeout - resetting missed counter");
-                    m_ballTracking.missedDetectionCount = 0;
-                }
-                else {
-                    LOG_INFO("Ball detection recovered but timeout exceeded - checking for movement");
-                    m_ballTracking.missedDetectionCount = 0;
-
-                    // Check if ball has moved significantly from READY position
-                    float distance = CalculateDistance(
-                        m_ballTracking.readyPosition.x, m_ballTracking.readyPosition.y,
-                        currentX, currentY
-                    );
-
-                    if (distance > m_ballStateConfig.movementThreshold) {
-                        // Ball has moved - transition to MOVING
-                        m_ballTracking.previousState = m_ballTracking.currentState;
-                        m_ballTracking.currentState = BallState::MOVING;
-                        m_ballTracking.lastStateChangeTime = now;
-                        m_ballTracking.movingStartTime = now;
-
-                        // Start trajectory recording
-                        StartTrajectoryRecording();
-
-                        // Record starting position
-                        {
-                            std::lock_guard<std::mutex> shotLock(m_shotDataMutex);
-                            m_currentShotData.startPosition = m_ballTracking.readyPosition;
-                            m_currentShotData.shotStartTime = m_ballTracking.movingStartTime;
-                        }
-
-                        LOG_INFO("Shot started - Ball moving from READY state");
-                    }
-                }
-            }
-
+            // 새로운 추적 시작
             if (!m_ballTracking.isTracking) {
-                // Start new tracking
+                StartNewTracking(currentPos, now);
+            }
+            else {
+                // 기존 추적 계속
+                float pixelDelta = cv::norm(currentPos -
+                    cv::Point2f(m_ballTracking.lastPositionX, m_ballTracking.lastPositionY));
+
+                // 움직임 데이터 처리
+                ProcessMovementData(m_ballTracking, currentX, currentY, pixelDelta);
+
+                // 상태별 전환 로직
+                switch (m_ballTracking.currentState) {
+                case BallState::NOT_DETECTED:
+                    HandleNotDetectedState(pixelDelta, currentPos, now);
+                    break;
+
+                case BallState::READY:
+                    HandleReadyState(pixelDelta, currentPos, now);
+                    break;
+
+                case BallState::MOVING:
+                    HandleMovingState(pixelDelta, now);
+                    break;
+
+                case BallState::STABILIZING:
+                    HandleStabilizingState(pixelDelta, now);
+                    break;
+
+                case BallState::STOPPED:
+                    HandleStoppedState(currentPos, now);
+                    break;
+                }
+
+                // 위치 업데이트
                 m_ballTracking.lastPositionX = currentX;
                 m_ballTracking.lastPositionY = currentY;
                 m_ballTracking.lastDetectionTime = now;
-                m_ballTracking.stableStartTime = now;
-                m_ballTracking.isTracking = true;
-                m_ballTracking.consecutiveDetections = 1;
-                m_ballTracking.previousState = m_ballTracking.currentState;
-                m_ballTracking.currentState = BallState::MOVING;
-                m_ballTracking.lastStateChangeTime = now;
-                m_ballTracking.missedDetectionCount = 0;
-            }
-            else {
-                // Continue tracking
-                float distance = CalculateDistance( m_ballTracking.lastPositionX,
-                                                    m_ballTracking.lastPositionY,
-                                                    currentX,
-                                                    currentY );
-
-                m_ballTracking.consecutiveDetections++;
-
-                // 움직임 감지
-                if (distance > m_ballStateConfig.movementThreshold) {
-                    // Ball is moving significantly
-                    if (m_ballTracking.currentState == BallState::READY) {
-                        // READY -> MOVING transition: Start shot recording
-                        m_ballTracking.previousState = m_ballTracking.currentState;
-                        m_ballTracking.currentState = BallState::MOVING;
-                        m_ballTracking.lastStateChangeTime = now;
-                        m_ballTracking.movingStartTime = now;
-
-                        // Start trajectory recording from READY position
-                        StartTrajectoryRecording();
-
-                        // Record starting position (use READY position)
-                        {
-                            std::lock_guard<std::mutex> shotLock(m_shotDataMutex);
-                            m_currentShotData.startPosition = m_ballTracking.readyPosition;
-                            m_currentShotData.shotStartTime = m_ballTracking.movingStartTime;
-                        }
-
-                        LOG_INFO("Shot started - Ball moving from READY state");
-                    }
-                    else if (m_ballTracking.currentState != BallState::MOVING) {
-                        m_ballTracking.previousState = m_ballTracking.currentState;
-                        m_ballTracking.currentState = BallState::MOVING;
-                        m_ballTracking.lastStateChangeTime = now;
-                    }
-                    m_ballTracking.stableStartTime = now;
-                    m_ballTracking.lastPositionX = currentX;
-                    m_ballTracking.lastPositionY = currentY;
-                    m_ballTracking.missedDetectionCount = 0;
-                }
-                else if (distance <= m_ballStateConfig.positionTolerance) {
-                    // Ball is stationary or moving very slowly
-                    auto stableDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        now - m_ballTracking.stableStartTime).count();
-
-                    if (m_ballTracking.currentState == BallState::MOVING) {
-                        // Check if we were recording a shot
-                        bool wasRecordingShot = m_ballTracking.recordingTrajectory;
-
-                        // Small movement after initial movement - could be stopping
-                        m_ballTracking.lastPositionX = currentX;
-                        m_ballTracking.lastPositionY = currentY;
-
-                        // After 1 second of stability, transition to STABILIZING
-                        if (stableDuration >= m_ballStateConfig.stabilizingTimeMs) {
-                            m_ballTracking.previousState = m_ballTracking.currentState;
-                            m_ballTracking.currentState = BallState::STABILIZING;
-                            m_ballTracking.lastStateChangeTime = now;
-
-                            LOG_INFO("Ball stabilizing after movement");
-                        }
-                    }
-                    else if (m_ballTracking.currentState == BallState::STABILIZING) {
-                        // Check if this is a shot completion scenario
-                        if (m_ballTracking.recordingTrajectory &&
-                            stableDuration >= m_ballStateConfig.stableTimeMs) {
-                            // Ball has stopped after a shot
-                            m_ballTracking.previousState = m_ballTracking.currentState;
-                            m_ballTracking.currentState = BallState::STOPPED;
-                            m_ballTracking.lastStateChangeTime = now;
-
-                            // Record end position
-                            {
-                                std::lock_guard<std::mutex> shotLock(m_shotDataMutex);
-                                m_currentShotData.endPosition = cv::Point2f(currentX, currentY);
-                                m_currentShotData.shotEndTime = now;
-                            }
-
-                            LOG_INFO("Shot completed - Ball STOPPED");
-                        }
-                        else if (!m_ballTracking.recordingTrajectory &&
-                            stableDuration >= m_ballStateConfig.stableTimeMs &&
-                            m_ballTracking.consecutiveDetections >= m_ballStateConfig.minConsecutiveDetections) {
-                            // Normal READY state transition (no shot in progress)
-                            m_ballTracking.previousState = m_ballTracking.currentState;
-                            m_ballTracking.currentState = BallState::READY;
-                            m_ballTracking.lastStateChangeTime = now;
-                            m_ballTracking.missedDetectionCount = 0;
-
-                            // Save READY position for future shot detection
-                            m_ballTracking.readyPosition = cv::Point2f(currentX, currentY);
-
-                            LOG_INFO("Ball READY for shot at position (" + std::to_string(currentX) + ", " + std::to_string(currentY) + ")");
-                        }
-
-                        // Update position
-                        m_ballTracking.lastPositionX = currentX;
-                        m_ballTracking.lastPositionY = currentY;
-                    }
-                    else if (m_ballTracking.currentState == BallState::READY) {
-                        // READY state maintenance - update position but keep READY position
-                        m_ballTracking.lastPositionX = currentX;
-                        m_ballTracking.lastPositionY = currentY;
-                    }
-                    else if (m_ballTracking.currentState == BallState::STOPPED) {
-                        // Ball remains stopped - might transition back to READY
-                        auto stoppedDuration = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_ballTracking.lastStateChangeTime).count();
-
-                        if (stoppedDuration > 3000) { // 3 seconds after stop
-                            m_ballTracking.previousState = m_ballTracking.currentState;
-                            m_ballTracking.currentState = BallState::READY;
-                            m_ballTracking.lastStateChangeTime = now;
-                            m_ballTracking.readyPosition = cv::Point2f(currentX, currentY);
-
-                            LOG_INFO("Ball READY for next shot");
-                        }
-                    }
-                }
-                else {
-                    // Moderate movement - update position but don't change state
-                    m_ballTracking.lastPositionX = currentX;
-                    m_ballTracking.lastPositionY = currentY;
-                }
-
-                m_ballTracking.lastDetectionTime = now;
             }
 
-            // Record trajectory point if we're tracking a shot or in READY state
+            // 궤적 기록
             if (m_ballTracking.recordingTrajectory ||
                 m_ballTracking.currentState == BallState::READY) {
-                RecordTrajectoryPoint(currentX, currentY, currentRadius, currentConfidence, currentFrame, m_ballTracking.currentState);
+                RecordTrajectoryPoint(currentX, currentY, currentRadius,
+                    currentConfidence, currentFrame,
+                    m_ballTracking.currentState);
             }
         }
 
@@ -1785,13 +1603,20 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
 
         if (stateChanged) {
             GetBallStateInfoInternal(&stateInfo);
+
+            // 상태 전환 로그 - Camera_GetBallStateString 사용
+            LOG_INFO("Ball state changed: " +
+                std::string(Camera_GetBallStateString(previousState)) + " -> " +
+                std::string(Camera_GetBallStateString(newState)) +
+                " (Moving frames: " + std::to_string(m_ballTracking.movingStateFrameCount) +
+                ", Stable frames: " + std::to_string(m_ballTracking.consecutiveStableFrames) +
+                ", Accumulated: " + std::to_string(m_ballTracking.totalAccumulatedMovement) + " px)");
         }
     }
 
     if (stateChanged) {
         NotifyBallStateChanged(newState, previousState, stateInfo);
 
-        // Handle STOPPED state - process shot completion
         if (newState == BallState::STOPPED) {
             ProcessShotCompleted();
         }
@@ -1825,6 +1650,418 @@ bool CameraController::EnableBallStateTracking(bool enable) {
     }
 
     return true;
+}
+
+
+// 움직임 데이터 처리
+void CameraController::ProcessMovementData(BallTrackingData& tracking, 
+                                          float currentX, float currentY, 
+                                          float pixelDelta) {
+    cv::Point2f currentPos(currentX, currentY);
+    
+    // 위치 히스토리 업데이트
+    tracking.UpdatePositionHistory(currentPos);
+    
+    // 프레임 델타 업데이트
+    tracking.UpdateFrameDeltas(pixelDelta);
+    
+    // 누적 움직임 계산
+    tracking.CalculateRecentAccumulatedMovement();
+    
+    // 총 누적 이동 업데이트
+    tracking.totalAccumulatedMovement += pixelDelta;
+    
+    // 동적 임계값 업데이트
+    tracking.UpdateDynamicThresholds();
+    
+    // 움직임/정지 카운터 업데이트
+    if (pixelDelta > tracking.currentMovementThreshold) {
+        tracking.consecutiveMovingFrames++;
+        tracking.consecutiveStableFrames = 0;
+        
+        if (pixelDelta < tracking.currentMovementThreshold * 2) {
+            tracking.microMovementCount++;
+        }
+    } else if (pixelDelta < tracking.currentStabilityThreshold) {
+        tracking.consecutiveStableFrames++;
+        tracking.consecutiveMovingFrames = 0;
+    } else {
+        // 애매한 영역 - 미세 움직임으로 처리
+        tracking.microMovementCount++;
+    }
+    
+    // 디버그 로깅 (10프레임마다)
+    if (tracking.currentState == BallState::MOVING && 
+        tracking.movingStateFrameCount % 10 == 0) {
+        LOG_DEBUG("Movement Analysis - Delta: " + std::to_string(pixelDelta) +
+                 " px, Avg: " + std::to_string(tracking.averageFrameDelta) +
+                 " px, Recent Accumulated: " + std::to_string(tracking.recentAccumulatedMovement) +
+                 " px, Noise: " + std::to_string(tracking.movementNoiseLevel) +
+                 " px, Thresholds(Move/Stable): " + 
+                 std::to_string(tracking.currentMovementThreshold) + "/" +
+                 std::to_string(tracking.currentStabilityThreshold));
+    }
+}
+
+
+// 볼이 감지되지 않았을 때 처리
+void CameraController::HandleBallNotDetected(std::chrono::steady_clock::time_point now) {
+    // READY 상태에서의 특별 처리
+    if (m_ballTracking.currentState == BallState::READY) {
+        m_ballTracking.missedDetectionCount++;
+
+        if (m_ballTracking.missedDetectionCount == 1) {
+            m_ballTracking.lastMissedTime = now;
+        }
+
+        if (m_ballTracking.missedDetectionCount > m_ballStateConfig.maxMissedDetections) {
+            LOG_INFO("Ball detection lost after " +
+                std::to_string(m_ballTracking.missedDetectionCount) +
+                " missed detections in READY state");
+
+            m_ballTracking.consecutiveDetections = 0;
+            m_ballTracking.isTracking = false;
+            m_ballTracking.previousState = m_ballTracking.currentState;
+            m_ballTracking.currentState = BallState::NOT_DETECTED;
+            m_ballTracking.lastStateChangeTime = now;
+            m_ballTracking.missedDetectionCount = 0;
+
+            // Reset tracking data
+            m_ballTracking.Reset();
+
+            if (m_ballTracking.recordingTrajectory) {
+                StopTrajectoryRecording();
+            }
+        }
+        else {
+            LOG_DEBUG("Missed detection " +
+                std::to_string(m_ballTracking.missedDetectionCount) +
+                "/" + std::to_string(m_ballStateConfig.maxMissedDetections) +
+                " in READY state - maintaining state");
+        }
+    }
+    else if (m_ballTracking.isTracking) {
+        // 추적 중 놓침 - 짧은 시간 대기
+        auto timeSinceLast = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_ballTracking.lastDetectionTime).count();
+
+        if (timeSinceLast > 200) {  // 200ms 이상 감지 안되면 추적 중단
+            m_ballTracking.consecutiveDetections = 0;
+            m_ballTracking.isTracking = false;
+            m_ballTracking.previousState = m_ballTracking.currentState;
+            m_ballTracking.currentState = BallState::NOT_DETECTED;
+            m_ballTracking.lastStateChangeTime = now;
+            m_ballTracking.missedDetectionCount = 0;
+
+            // Reset tracking data
+            m_ballTracking.Reset();
+
+            if (m_ballTracking.recordingTrajectory) {
+                StopTrajectoryRecording();
+            }
+
+            LOG_INFO("Ball tracking lost - no detection for " +
+                std::to_string(timeSinceLast) + " ms");
+        }
+    }
+}
+
+// 새로운 추적 시작
+void CameraController::StartNewTracking(const cv::Point2f& currentPos,
+    std::chrono::steady_clock::time_point now) {
+    m_ballTracking.lastPositionX = currentPos.x;
+    m_ballTracking.lastPositionY = currentPos.y;
+    m_ballTracking.lastDetectionTime = now;
+    m_ballTracking.stableStartTime = now;
+    m_ballTracking.isTracking = true;
+    m_ballTracking.consecutiveDetections = 1;
+    m_ballTracking.missedDetectionCount = 0;
+
+    // Reset tracking data for new tracking
+    m_ballTracking.Reset();
+    m_ballTracking.UpdatePositionHistory(currentPos);
+
+    // 초기 상태 설정
+    if (m_ballTracking.currentState == BallState::NOT_DETECTED) {
+        m_ballTracking.previousState = m_ballTracking.currentState;
+        m_ballTracking.currentState = BallState::MOVING;
+        m_ballTracking.lastStateChangeTime = now;
+        m_ballTracking.movingStateFrameCount = 0;
+
+        LOG_INFO("New ball tracking started - initial state: MOVING");
+    }
+}
+
+// NOT_DETECTED 상태 처리
+void CameraController::HandleNotDetectedState(float pixelDelta, const cv::Point2f& currentPos, std::chrono::steady_clock::time_point now) {
+    m_ballTracking.consecutiveDetections++;
+
+    // 충분한 연속 감지 후 상태 전환
+    if (m_ballTracking.consecutiveDetections >= m_ballStateConfig.minConsecutiveDetections) {
+        if (ShouldStartMoving(m_ballTracking, pixelDelta)) {
+            // MOVING으로 전환
+            m_ballTracking.previousState = m_ballTracking.currentState;
+            m_ballTracking.currentState = BallState::MOVING;
+            m_ballTracking.lastStateChangeTime = now;
+            m_ballTracking.movingStateFrameCount = 0;
+            m_ballTracking.movementStartPosition = currentPos;
+
+            LOG_INFO("NOT_DETECTED->MOVING: Movement detected after " +
+                std::to_string(m_ballTracking.consecutiveDetections) + " detections");
+        }
+        else {
+            // STABILIZING으로 전환 (정지 상태)
+            m_ballTracking.previousState = m_ballTracking.currentState;
+            m_ballTracking.currentState = BallState::STABILIZING;
+            m_ballTracking.lastStateChangeTime = now;
+            m_ballTracking.stableStartTime = now;
+
+            LOG_INFO("NOT_DETECTED->STABILIZING: Stable ball detected");
+        }
+    }
+}
+
+
+// READY 상태 처리
+void CameraController::HandleReadyState(float pixelDelta, const cv::Point2f& currentPos,
+    std::chrono::steady_clock::time_point now) {
+    // READY에서 벗어난 거리 계산
+    float distanceFromReady = cv::norm(currentPos - m_ballTracking.readyPosition);
+
+    // 움직임 시작 조건
+    bool shouldStartMoving = false;
+
+    // 1. 즉각적인 큰 움직임
+    if (pixelDelta > m_ballStateConfig.movementThreshold) {
+        shouldStartMoving = true;
+        LOG_INFO("READY->MOVING: Large movement detected (" +
+            std::to_string(pixelDelta) + " px/frame)");
+    }
+    // 2. READY 위치에서 일정 거리 이상 벗어남
+    else if (distanceFromReady > m_ballStateConfig.movementThreshold * 2) {
+        shouldStartMoving = true;
+        LOG_INFO("READY->MOVING: Moved away from ready position (" +
+            std::to_string(distanceFromReady) + " px total)");
+    }
+    // 3. 일관된 작은 움직임
+    else if (m_ballTracking.HasConsistentMovement()) {
+        shouldStartMoving = true;
+        LOG_INFO("READY->MOVING: Consistent small movements detected (avg: " +
+            std::to_string(m_ballTracking.averageFrameDelta) + " px/frame)");
+    }
+    // 4. 느린 움직임 감지
+    else if (m_ballTracking.DetectSlowMovement()) {
+        shouldStartMoving = true;
+        LOG_INFO("READY->MOVING: Slow movement pattern detected (accumulated: " +
+            std::to_string(m_ballTracking.recentAccumulatedMovement) + " px)");
+    }
+
+    if (shouldStartMoving) {
+        // MOVING 상태로 전환
+        m_ballTracking.previousState = m_ballTracking.currentState;
+        m_ballTracking.currentState = BallState::MOVING;
+        m_ballTracking.lastStateChangeTime = now;
+        m_ballTracking.movingStartTime = now;
+        m_ballTracking.movingStateFrameCount = 0;
+        m_ballTracking.consecutiveStableFrames = 0;
+        m_ballTracking.movementStartPosition = m_ballTracking.readyPosition;
+
+        // 궤적 기록 시작
+        StartTrajectoryRecording();
+
+        {
+            std::lock_guard<std::mutex> shotLock(m_shotDataMutex);
+            m_currentShotData.startPosition = m_ballTracking.readyPosition;
+            m_currentShotData.shotStartTime = m_ballTracking.movingStartTime;
+        }
+
+        LOG_INFO("Shot started - Ball moving from READY state");
+    }
+}
+
+// MOVING 상태 처리
+void CameraController::HandleMovingState(float pixelDelta,
+    std::chrono::steady_clock::time_point now) {
+    m_ballTracking.movingStateFrameCount++;
+
+    // 최소 MOVING 지속 시간 보장 (15프레임 = 0.25초 @ 60fps)
+    const int MIN_MOVING_FRAMES = 15;
+
+    if (m_ballTracking.movingStateFrameCount < MIN_MOVING_FRAMES) {
+        // 최소 시간 동안은 MOVING 유지
+        return;
+    }
+
+    // STABILIZING 전환 조건 체크
+    bool shouldStabilize = false;
+
+    // 1. 연속 안정 프레임이 임계값 초과
+    if (m_ballTracking.consecutiveStableFrames >= m_ballTracking.requiredStableFramesForStop) {
+        shouldStabilize = true;
+        LOG_INFO("MOVING->STABILIZING: Consecutive stable frames (" +
+            std::to_string(m_ballTracking.consecutiveStableFrames) + ")");
+    }
+    // 2. 확실한 정지 패턴
+    else if (m_ballTracking.IsDefinitelyStable() &&
+        m_ballTracking.averageFrameDelta < m_ballTracking.currentStabilityThreshold) {
+        shouldStabilize = true;
+        LOG_INFO("MOVING->STABILIZING: Definitely stable pattern (avg delta: " +
+            std::to_string(m_ballTracking.averageFrameDelta) + " px)");
+    }
+    // 3. 매우 낮은 움직임이 지속
+    else if (m_ballTracking.consecutiveStableFrames >= 10 &&
+        m_ballTracking.recentAccumulatedMovement < m_ballTracking.currentStabilityThreshold * 5) {
+        shouldStabilize = true;
+        LOG_INFO("MOVING->STABILIZING: Very low movement sustained (accumulated: " +
+            std::to_string(m_ballTracking.recentAccumulatedMovement) + " px)");
+    }
+
+    // 하지만 여전히 움직임이 감지되면 MOVING 유지
+    if (shouldStabilize && pixelDelta > m_ballTracking.currentMovementThreshold * 1.5f) {
+        shouldStabilize = false;
+        m_ballTracking.consecutiveStableFrames = 0;
+        LOG_DEBUG("Stabilization cancelled - movement detected (" +
+            std::to_string(pixelDelta) + " px)");
+    }
+
+    if (shouldStabilize) {
+        m_ballTracking.previousState = m_ballTracking.currentState;
+        m_ballTracking.currentState = BallState::STABILIZING;
+        m_ballTracking.lastStateChangeTime = now;
+        m_ballTracking.stableStartTime = now;
+
+        LOG_INFO("Ball stabilizing after " +
+            std::to_string(m_ballTracking.movingStateFrameCount) +
+            " frames of movement");
+    }
+}
+
+// STABILIZING 상태 처리
+void CameraController::HandleStabilizingState(float pixelDelta,
+    std::chrono::steady_clock::time_point now) {
+    auto stableDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_ballTracking.stableStartTime).count();
+
+    // 다시 움직이기 시작했는지 확인
+    if (pixelDelta > m_ballTracking.currentMovementThreshold * 2 ||
+        m_ballTracking.consecutiveMovingFrames >= 3) {
+
+        // MOVING으로 복귀
+        m_ballTracking.previousState = m_ballTracking.currentState;
+        m_ballTracking.currentState = BallState::MOVING;
+        m_ballTracking.lastStateChangeTime = now;
+        m_ballTracking.consecutiveStableFrames = 0;
+
+        LOG_INFO("Ball resumed movement from STABILIZING state");
+        return;
+    }
+
+    // STOPPED 또는 READY 전환 확인
+    if (stableDuration >= m_ballStateConfig.stabilizingTimeMs) {
+        if (m_ballTracking.recordingTrajectory) {
+            // 샷 완료 - STOPPED
+            m_ballTracking.previousState = m_ballTracking.currentState;
+            m_ballTracking.currentState = BallState::STOPPED;
+            m_ballTracking.lastStateChangeTime = now;
+
+            cv::Point2f currentPos(m_ballTracking.lastPositionX, m_ballTracking.lastPositionY);
+
+            {
+                std::lock_guard<std::mutex> shotLock(m_shotDataMutex);
+                m_currentShotData.endPosition = currentPos;
+                m_currentShotData.shotEndTime = now;
+            }
+
+            float totalDistance = cv::norm(currentPos - m_ballTracking.movementStartPosition);
+
+            LOG_INFO("Shot completed - Ball STOPPED (distance: " +
+                std::to_string(totalDistance) + " px, duration: " +
+                std::to_string(stableDuration) + " ms)");
+        }
+        else {
+            // 일반 READY 전환
+            m_ballTracking.previousState = m_ballTracking.currentState;
+            m_ballTracking.currentState = BallState::READY;
+            m_ballTracking.lastStateChangeTime = now;
+            m_ballTracking.readyPosition = cv::Point2f(m_ballTracking.lastPositionX,
+                m_ballTracking.lastPositionY);
+
+            // 추적 데이터 리셋
+            m_ballTracking.Reset();
+            m_ballTracking.totalAccumulatedMovement = 0.0f;
+
+            LOG_INFO("Ball READY for shot");
+        }
+    }
+}
+
+// STOPPED 상태 처리
+void CameraController::HandleStoppedState(const cv::Point2f& currentPos,
+    std::chrono::steady_clock::time_point now) {
+    auto stoppedDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_ballTracking.lastStateChangeTime).count();
+
+    // 3초 후 READY로 전환
+    if (stoppedDuration > 3000) {
+        m_ballTracking.previousState = m_ballTracking.currentState;
+        m_ballTracking.currentState = BallState::READY;
+        m_ballTracking.lastStateChangeTime = now;
+        m_ballTracking.readyPosition = currentPos;
+
+        // 추적 데이터 리셋
+        m_ballTracking.Reset();
+        m_ballTracking.totalAccumulatedMovement = 0.0f;
+
+        LOG_INFO("Ball READY for next shot after " +
+            std::to_string(stoppedDuration) + " ms in STOPPED state");
+    }
+}
+
+
+// 움직임 시작 판단 (helper)
+bool CameraController::ShouldStartMoving(const BallTrackingData& tracking, float pixelDelta) {
+    // 1. 즉각적인 큰 움직임
+    if (pixelDelta > tracking.currentMovementThreshold * 2) {
+        return true;
+    }
+
+    // 2. 일관된 움직임 패턴
+    if (tracking.HasConsistentMovement()) {
+        return true;
+    }
+
+    // 3. 느린 움직임 감지
+    if (tracking.DetectSlowMovement()) {
+        return true;
+    }
+
+    // 4. 연속 움직임 프레임
+    if (tracking.consecutiveMovingFrames >= 3) {
+        return true;
+    }
+
+    return false;
+}
+
+// 움직임 정지 판단 (helper)
+bool CameraController::ShouldStopMoving(const BallTrackingData& tracking) {
+    // 1. 확실한 정지 패턴
+    if (tracking.IsDefinitelyStable()) {
+        return true;
+    }
+
+    // 2. 연속 안정 프레임이 충분
+    if (tracking.consecutiveStableFrames >= tracking.requiredStableFramesForStop) {
+        return true;
+    }
+
+    // 3. 매우 낮은 평균 델타
+    if (tracking.averageFrameDelta < tracking.currentStabilityThreshold * 0.5f &&
+        tracking.frameDeltas.size() >= 10) {
+        return true;
+    }
+
+    return false;
 }
 
 BallState CameraController::GetBallState() const {
