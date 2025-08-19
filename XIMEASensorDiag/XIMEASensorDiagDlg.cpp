@@ -173,8 +173,8 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     }
 
     if (m_sliderROIMultiplier) {
-        m_sliderROIMultiplier->SetRange(60, 100); // 8.0 ~ 10.0으로 변경 (기존: 20, 80)
-        m_sliderROIMultiplier->SetPos(80); // 8.0 default
+        m_sliderROIMultiplier->SetRange(60, 160); // 6.0 ~ 16.0으로 변경
+        m_sliderROIMultiplier->SetPos(100); // 10.0 default
         m_sliderROIMultiplier->SetTicFreq(5);  // 더 세밀한 조정을 위해 변경
     }
 
