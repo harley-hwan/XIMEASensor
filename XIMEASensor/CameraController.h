@@ -86,7 +86,7 @@ struct ShotTrajectoryData {
         maxVelocity = 0.0;
 
         for (size_t i = 1; i < movingTrajectory.size(); ++i) {
-            float dist = cv::norm(movingTrajectory[i].position - movingTrajectory[i - 1].position);
+            float dist = static_cast<float>(cv::norm(movingTrajectory[i].position - movingTrajectory[i - 1].position));
             double timeDiff = movingTrajectory[i].timestamp - movingTrajectory[i - 1].timestamp;
 
             totalDistance += dist;
@@ -318,7 +318,7 @@ private:
 
             for (size_t i = positionHistory.size() - windowSize - 1;
                 i < positionHistory.size() - 1; ++i) {
-                float dist = cv::norm(positionHistory[i + 1] - positionHistory[i]);
+                float dist = static_cast<float>(cv::norm(positionHistory[i + 1] - positionHistory[i]));
                 accumulated += dist;
             }
 

@@ -194,7 +194,7 @@ struct XIMEASENSOR_API DynamicROIConfig {
 
     DynamicROIConfig()
         : enabled(false)
-        , roiSizeMultiplier(8.0f)    // 기본값 8.0
+        , roiSizeMultiplier(10.0f)    // 기본값 10.0
         , minROISize(100.0f)
         , maxROISize(600.0f)
         , showROIOverlay(true) {

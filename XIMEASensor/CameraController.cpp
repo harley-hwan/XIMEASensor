@@ -1,5 +1,4 @@
-﻿#include "XIMEASensorDiagDlg.h"
-#include "pch.h"
+﻿#include "pch.h"
 #include "CameraController.h"
 #include <algorithm>
 #include <sstream>
@@ -1554,8 +1553,7 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
             }
             else {
                 // 기존 추적 계속
-                float pixelDelta = cv::norm(currentPos -
-                    cv::Point2f(m_ballTracking.lastPositionX, m_ballTracking.lastPositionY));
+                float pixelDelta = static_cast<float>(cv::norm(currentPos - cv::Point2f(m_ballTracking.lastPositionX, m_ballTracking.lastPositionY)));
 
                 // 움직임 데이터 처리
                 ProcessMovementData(m_ballTracking, currentX, currentY, pixelDelta);
@@ -1826,7 +1824,7 @@ void CameraController::HandleNotDetectedState(float pixelDelta, const cv::Point2
 void CameraController::HandleReadyState(float pixelDelta, const cv::Point2f& currentPos,
     std::chrono::steady_clock::time_point now) {
     // READY에서 벗어난 거리 계산
-    float distanceFromReady = cv::norm(currentPos - m_ballTracking.readyPosition);
+    float distanceFromReady = static_cast<float>(cv::norm(currentPos - m_ballTracking.readyPosition));
 
     // 움직임 시작 조건
     bool shouldStartMoving = false;
@@ -1972,7 +1970,7 @@ void CameraController::HandleStabilizingState(float pixelDelta,
                 m_currentShotData.shotEndTime = now;
             }
 
-            float totalDistance = cv::norm(currentPos - m_ballTracking.movementStartPosition);
+            float totalDistance = static_cast<float>(cv::norm(currentPos - m_ballTracking.movementStartPosition));
 
             LOG_INFO("Shot completed - Ball STOPPED (distance: " +
                 std::to_string(totalDistance) + " px, duration: " +
@@ -2258,14 +2256,14 @@ bool CameraController::SaveTrajectoryData(const std::string& filename) const {
                 const auto& prev = m_currentShotData.movingTrajectory[i - 1];
                 const auto& curr = m_currentShotData.movingTrajectory[i];
 
-                float distance = cv::norm(curr.position - prev.position);
+                float distance = static_cast<float>(cv::norm(curr.position - prev.position));
                 double timeDiff = curr.timestamp - prev.timestamp;
                 double velocity = (timeDiff > 0) ? distance / timeDiff : 0.0;
 
                 double acceleration = 0.0;
                 if (i >= 2) {
                     const auto& prev2 = m_currentShotData.movingTrajectory[i - 2];
-                    float distance2 = cv::norm(prev.position - prev2.position);
+                    float distance2 = static_cast<float>(cv::norm(prev.position - prev2.position));
                     double timeDiff2 = prev.timestamp - prev2.timestamp;
                     double velocity2 = (timeDiff2 > 0) ? distance2 / timeDiff2 : 0.0;
                     double totalTimeDiff = curr.timestamp - prev2.timestamp;

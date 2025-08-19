@@ -179,7 +179,7 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     }
 
     if (m_editROIMultiplier) {
-        m_editROIMultiplier->SetWindowText(_T("8.0")); // 기본값 8.0
+        m_editROIMultiplier->SetWindowText(_T("10.0")); // 기본값 10.0
     }
 
     if (!Camera_Initialize("./logs/XIMEASensor.log", 1)) {
