@@ -39,33 +39,33 @@ C++ 17 | OpenCV 4.x | XIMEA API | MFC | GDI+ | Multi-threading
 ### 시스템 계층 구조
 
 ```
-┌─────────────────────────────────────────────────┐
-│          MFC UI Application (EXE)               │
-│         XIMEASensorDiagDlg                      │
-├─────────────────────────────────────────────────┤
-│           C API Interface Layer                  │
-│         XIMEASensor.dll (Export)                │
-├─────────────────────────────────────────────────┤
-│          Core Processing Engine                  │
-│  ┌─────────────────────────────────────────┐   │
-│  │     CameraController (Singleton)         │   │
-│  ├─────────────────────────────────────────┤   │
-│  │  • Frame Capture Thread                  │   │
-│  │  • Ball Detection Worker Thread          │   │
-│  │  • State Tracking System                 │   │
-│  │  • Trajectory Recording                  │   │
-│  └─────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────┤
-│         Hardware Abstraction Layer              │
-│  ┌─────────────────────────────────────────┐   │
-│  │    ICameraInterface (Abstract)           │   │
-│  ├─────────────────────────────────────────┤   │
-│  │    XIMEACameraImpl : ICameraInterface    │   │
-│  └─────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────┤
-│            XIMEA Hardware Driver                │
-│              xiApi.dll (SDK)                    │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│          MFC UI Application (EXE)             │
+│         XIMEASensorDiagDlg                    │
+├───────────────────────────────────────────────┤
+│           C API Interface Layer               │
+│         XIMEASensor.dll (Export)              │
+├───────────────────────────────────────────────┤
+│          Core Processing Engine               │
+│  ┌─────────────────────────────────────────┐  │
+│  │     CameraController (Singleton)        │  │
+│  ├─────────────────────────────────────────┤  │
+│  │  • Frame Capture Thread                 │  │
+│  │  • Ball Detection Worker Thread         │  │
+│  │  • State Tracking System                │  │
+│  │  • Trajectory Recording                 │  │
+│  └─────────────────────────────────────────┘  │
+├───────────────────────────────────────────────┤
+│         Hardware Abstraction Layer            │
+│  ┌─────────────────────────────────────────┐  │
+│  │    ICameraInterface (Abstract)          │  │
+│  ├─────────────────────────────────────────┤  │
+│  │    XIMEACameraImpl : ICameraInterface   │  │
+│  └─────────────────────────────────────────┘  │
+├───────────────────────────────────────────────┤
+│            XIMEA Hardware Driver              │
+│              xiApi.dll (SDK)                  │
+└───────────────────────────────────────────────┘
 ```
 
 ### 데이터 플로우
