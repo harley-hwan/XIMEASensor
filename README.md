@@ -1,4 +1,4 @@
-# 🏌️ Golf Putting Analysis System - Technical Documentation
+# 🏌️ Ball Detection Analysis System - Technical Documentation
 
 ## 📋 목차
 1. [시스템 개요](#시스템-개요)
@@ -17,12 +17,12 @@
 ## 🎯 시스템 개요
 
 ### 프로젝트 목적
-XIMEA 고속 카메라를 이용하여 골프 퍼팅 시 공의 움직임을 실시간으로 추적하고 분석하는 비전 시스템
+XIMEA 고속 카메라를 이용하여 공의 움직임을 실시간으로 추적하고 분석하는 비전 시스템
 
 ### 주요 기능
 - ✅ **실시간 볼 감지** (120 FPS)
 - ✅ **볼 상태 추적** (5단계 상태 머신)
-- ✅ **퍼팅 궤적 기록 및 분석**
+- ✅ **볼 궤적 기록 및 분석**
 - ✅ **Dynamic ROI 최적화**
 - ✅ **샷 완료 자동 감지**
 - ✅ **궤적 데이터 저장 및 시각화**
@@ -149,7 +149,7 @@ enum class BallState {
     NOT_DETECTED = 0,  // 공 미감지
     MOVING = 1,        // 이동 중
     STABILIZING = 2,   // 감속 중
-    READY = 3,         // 퍼팅 준비
+    READY = 3,         // 샷 준비
     STOPPED = 4        // 샷 완료
 };
 ```
