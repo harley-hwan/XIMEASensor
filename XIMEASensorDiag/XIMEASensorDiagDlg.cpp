@@ -8,6 +8,7 @@
 #include "afxdialogex.h"
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -105,6 +106,8 @@ void CXIMEASensorDiagDlg::LoadDefaultSettings()
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
 {
     CDialogEx::OnInitDialog();
+
+    Gdiplus::GdiplusStartup(&m_gdiplusToken, &m_gdiplusStartupInput, NULL);
 
     if (AllocConsole()) {
         FILE* fp;
@@ -300,6 +303,8 @@ void CXIMEASensorDiagDlg::OnDestroy()
     Camera_Close();
     Camera_UnregisterCallback(m_cameraCallback.get());
     Camera_Shutdown();
+
+    Gdiplus::GdiplusShutdown(m_gdiplusToken);
 }
 
 void CXIMEASensorDiagDlg::UpdateDeviceList()
@@ -789,6 +794,10 @@ void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
 
     if (m_trajectoryPoints.size() < 2) return;
 
+    // NULL 체크 추가
+    HDC hdc = dc.GetSafeHdc();
+    if (!hdc) return;
+
     // 화면 좌표로 변환
     std::vector<CPoint> screenPoints;
     screenPoints.reserve(m_trajectoryPoints.size());
@@ -803,44 +812,52 @@ void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
     // 직접 화면 DC에 그리기 (알파 블렌딩 없이)
     if (alpha == 255) {
         // 완전 불투명일 때는 직접 그리기
-        if (m_trajectoryStyle.useGradient) {
-            DrawTrajectoryWithGradient(dc, screenPoints);
-        }
-        else {
-            DrawTrajectoryLine(dc, screenPoints);
-        }
+        DrawTrajectoryLine(dc, screenPoints);
 
         if (m_trajectoryStyle.showPoints) {
             DrawTrajectoryPoints(dc, screenPoints);
         }
     }
-    else {
+    else if (alpha > 0) {  // alpha가 0보다 클 때만 그리기
         // 페이드 아웃 중일 때는 GDI+ 사용하여 반투명 그리기
-        Graphics graphics(dc.GetSafeHdc());
-        graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+        try {
+            Graphics graphics(hdc);
+            if (graphics.GetLastStatus() != Ok) {
+                // GDI+ 실패 시 GDI로 폴백
+                DrawTrajectoryLine(dc, screenPoints);
+                return;
+            }
 
-        // 알파값이 적용된 펜 생성
-        if (m_trajectoryStyle.useGradient) {
-            DrawTrajectoryWithGradientGDIPlus(graphics, screenPoints, alpha);
-        }
-        else {
-            Color lineColor(alpha, GetRValue(m_trajectoryStyle.startColor),
-                GetGValue(m_trajectoryStyle.startColor),
-                GetBValue(m_trajectoryStyle.startColor));
+            graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+
+            // 알파값이 적용된 펜 생성
+            Color lineColor(alpha, GetRValue(m_trajectoryStyle.lineColor),
+                GetGValue(m_trajectoryStyle.lineColor),
+                GetBValue(m_trajectoryStyle.lineColor));
             Pen pen(lineColor, static_cast<REAL>(m_trajectoryStyle.lineWidth));
 
-            // 선 그리기
-            if (screenPoints.size() >= 2) {
+            // 선 그리기 - 안전성 검사 추가
+            if (screenPoints.size() >= 2 && pen.GetLastStatus() == Ok) {
                 std::vector<Point> gdiPoints;
+                gdiPoints.reserve(screenPoints.size());
+
                 for (const auto& pt : screenPoints) {
                     gdiPoints.push_back(Point(pt.x, pt.y));
                 }
-                graphics.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
+
+                // DrawLines 호출 전 검증
+                if (!gdiPoints.empty()) {
+                    graphics.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
+                }
+            }
+
+            if (m_trajectoryStyle.showPoints) {
+                DrawTrajectoryPointsGDIPlus(graphics, screenPoints, alpha);
             }
         }
-
-        if (m_trajectoryStyle.showPoints) {
-            DrawTrajectoryPointsGDIPlus(graphics, screenPoints, alpha);
+        catch (...) {
+            // GDI+ 예외 발생 시 GDI로 폴백
+            DrawTrajectoryLine(dc, screenPoints);
         }
     }
 
@@ -872,34 +889,6 @@ void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
     }
 }
 
-
-// GDI+ 그라데이션 그리기
-void CXIMEASensorDiagDlg::DrawTrajectoryWithGradientGDIPlus(Graphics& graphics,
-    const std::vector<CPoint>& screenPoints,
-    int alpha)
-{
-    if (screenPoints.size() < 2) return;
-
-    for (size_t i = 1; i < screenPoints.size(); ++i) {
-        float t = static_cast<float>(i) / (screenPoints.size() - 1);
-        COLORREF color = InterpolateColor(m_trajectoryStyle.startColor,
-            m_trajectoryStyle.endColor, t);
-
-        Color lineColor(alpha, GetRValue(color), GetGValue(color), GetBValue(color));
-
-        int lineWidth = m_trajectoryStyle.lineWidth;
-        if (i > screenPoints.size() * 0.8) {
-            lineWidth = std::max(1, lineWidth - 1);
-        }
-
-        Pen pen(lineColor, static_cast<REAL>(lineWidth));
-
-        graphics.DrawLine(&pen,
-            Point(screenPoints[i - 1].x, screenPoints[i - 1].y),
-            Point(screenPoints[i].x, screenPoints[i].y));
-    }
-}
-
 // GDI+ 포인트 그리기
 void CXIMEASensorDiagDlg::DrawTrajectoryPointsGDIPlus(Graphics& graphics,
     const std::vector<CPoint>& screenPoints,
@@ -907,14 +896,12 @@ void CXIMEASensorDiagDlg::DrawTrajectoryPointsGDIPlus(Graphics& graphics,
 {
     const int POINT_INTERVAL = std::max(1, static_cast<int>(screenPoints.size() / 20));
 
+    Color fillColor(alpha, GetRValue(m_trajectoryStyle.lineColor),
+        GetGValue(m_trajectoryStyle.lineColor),
+        GetBValue(m_trajectoryStyle.lineColor));
+    SolidBrush brush(fillColor);
+
     for (size_t i = 0; i < screenPoints.size(); i += POINT_INTERVAL) {
-        float t = static_cast<float>(i) / (screenPoints.size() - 1);
-        COLORREF color = InterpolateColor(m_trajectoryStyle.startColor,
-            m_trajectoryStyle.endColor, t);
-
-        Color fillColor(alpha, GetRValue(color), GetGValue(color), GetBValue(color));
-        SolidBrush brush(fillColor);
-
         int size = m_trajectoryStyle.pointSize;
         graphics.FillEllipse(&brush,
             screenPoints[i].x - size,
@@ -929,7 +916,7 @@ void CXIMEASensorDiagDlg::DrawTrajectoryLine(CDC& dc, const std::vector<CPoint>&
 {
     if (screenPoints.size() < 2) return;
 
-    CPen pen(PS_SOLID, m_trajectoryStyle.lineWidth, m_trajectoryStyle.startColor);
+    CPen pen(PS_SOLID, m_trajectoryStyle.lineWidth, m_trajectoryStyle.lineColor);
     CPen* pOldPen = dc.SelectObject(&pen);
 
     dc.MoveTo(screenPoints[0]);
@@ -946,46 +933,16 @@ void CXIMEASensorDiagDlg::DrawTrajectoryPoints(CDC& dc, const std::vector<CPoint
     // 일정 간격으로 포인트 표시
     const int POINT_INTERVAL = std::max(1, static_cast<int>(screenPoints.size() / 20));
 
+    CBrush brush(m_trajectoryStyle.lineColor);
+    CBrush* pOldBrush = dc.SelectObject(&brush);
+
     for (size_t i = 0; i < screenPoints.size(); i += POINT_INTERVAL) {
-        float t = static_cast<float>(i) / (screenPoints.size() - 1);
-        COLORREF color = InterpolateColor(m_trajectoryStyle.startColor,
-            m_trajectoryStyle.endColor, t);
-
-        CBrush brush(color);
-        CBrush* pOldBrush = dc.SelectObject(&brush);
-
         int size = m_trajectoryStyle.pointSize;
         dc.Ellipse(screenPoints[i].x - size, screenPoints[i].y - size,
             screenPoints[i].x + size, screenPoints[i].y + size);
-
-        dc.SelectObject(pOldBrush);
     }
-}
 
-void CXIMEASensorDiagDlg::DrawTrajectoryWithGradient(CDC& dc, const std::vector<CPoint>& screenPoints)
-{
-    if (screenPoints.size() < 2) return;
-
-    // 각 세그먼트를 다른 색상으로 그리기
-    for (size_t i = 1; i < screenPoints.size(); ++i) {
-        float t = static_cast<float>(i) / (screenPoints.size() - 1);
-        COLORREF color = InterpolateColor(m_trajectoryStyle.startColor,
-            m_trajectoryStyle.endColor, t);
-
-        // 선 두께도 변화시킬 수 있음
-        int lineWidth = m_trajectoryStyle.lineWidth;
-        if (i > screenPoints.size() * 0.8) {
-            lineWidth = std::max(1, lineWidth - 1);
-        }
-
-        CPen pen(PS_SOLID, lineWidth, color);
-        CPen* pOldPen = dc.SelectObject(&pen);
-
-        dc.MoveTo(screenPoints[i - 1]);
-        dc.LineTo(screenPoints[i]);
-
-        dc.SelectObject(pOldPen);
-    }
+    dc.SelectObject(pOldBrush);
 }
 
 // 페이드 아웃 시작
@@ -1010,7 +967,8 @@ CPoint CXIMEASensorDiagDlg::ConvertToScreenCoordinates(const cv::Point2f& point,
     int displayIdx = m_displayBufferIndex.load();
     FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
 
-    if (displayBuffer.width == 0 || displayBuffer.height == 0) {
+    if (displayBuffer.width == 0 || displayBuffer.height == 0 ||
+        displayRect.Width() == 0 || displayRect.Height() == 0) {
         return CPoint(0, 0);
     }
 
@@ -1020,27 +978,11 @@ CPoint CXIMEASensorDiagDlg::ConvertToScreenCoordinates(const cv::Point2f& point,
     int x = static_cast<int>(point.x * scaleX);
     int y = static_cast<int>(point.y * scaleY);
 
+    // 경계 검사 추가
+    x = std::max(0, std::min(x, displayRect.Width() - 1));
+    y = std::max(0, std::min(y, displayRect.Height() - 1));
+
     return CPoint(x, y);
-}
-
-// 색상 보간
-COLORREF CXIMEASensorDiagDlg::InterpolateColor(COLORREF color1, COLORREF color2, float t)
-{
-    t = std::max(0.0f, std::min(1.0f, t));
-
-    int r1 = GetRValue(color1);
-    int g1 = GetGValue(color1);
-    int b1 = GetBValue(color1);
-
-    int r2 = GetRValue(color2);
-    int g2 = GetGValue(color2);
-    int b2 = GetBValue(color2);
-
-    int r = static_cast<int>(r1 + (r2 - r1) * t);
-    int g = static_cast<int>(g1 + (g2 - g1) * t);
-    int b = static_cast<int>(b1 + (b2 - b1) * t);
-
-    return RGB(r, g, b);
 }
 
 void CXIMEASensorDiagDlg::OnShotCompleted(const ShotCompletedInfo* info)

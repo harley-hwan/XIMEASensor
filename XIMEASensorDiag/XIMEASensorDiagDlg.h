@@ -149,7 +149,7 @@ private:
     static constexpr int USB_ERROR_RESET_TIME_MS = 5000;
 
     // ============================================================================
-    // 퍼팅 궤적 시각화 관련 멤버 변수
+    // 궤적 시각화 관련 멤버 변수
     // ============================================================================
 
     // 궤적 포인트 구조체
@@ -164,7 +164,7 @@ private:
     };
 
     // 궤적 관리
-    std::deque<TrajectoryPoint> m_trajectoryPoints;    // 현재 샷의 궤적 포인트들
+    std::deque<TrajectoryPoint> m_trajectoryPoints;     // 현재 샷의 궤적 포인트들
     std::mutex m_trajectoryMutex;                       // 궤적 데이터 보호
     bool m_isRecordingTrajectory;                       // 궤적 기록 중 여부
 
@@ -175,22 +175,22 @@ private:
     static constexpr int FADE_DURATION_MS = 3000;       // 3초간 페이드 아웃
     static constexpr int FADE_STEPS = 30;               // 페이드 단계
 
+    // GDI+ 관련 추가: 2025-08-20
+    ULONG_PTR m_gdiplusToken;
+    Gdiplus::GdiplusStartupInput m_gdiplusStartupInput;
+
     // 궤적 스타일 설정
     struct TrajectoryStyle {
-        COLORREF startColor;        // 시작점 색상
-        COLORREF endColor;          // 끝점 색상
+        COLORREF lineColor;         // 선 색상
         int lineWidth;              // 선 두께
         bool showPoints;            // 개별 포인트 표시 여부
         int pointSize;              // 포인트 크기
-        bool useGradient;           // 그라데이션 사용 여부
 
         TrajectoryStyle()
-            : startColor(RGB(0, 255, 0))      // 초록색 시작
-            , endColor(RGB(255, 0, 0))        // 빨간색 끝
+            : lineColor(RGB(0, 255, 0))      // 초록색 시작
             , lineWidth(3)
             , showPoints(true)
-            , pointSize(4)
-            , useGradient(true) {
+            , pointSize(4) {
         }
     } m_trajectoryStyle;
 
@@ -238,9 +238,7 @@ private:
     void DrawTrajectory(CDC& dc, const CRect& rect);
     void DrawTrajectoryLine(CDC& dc, const std::vector<CPoint>& screenPoints);
     void DrawTrajectoryPoints(CDC& dc, const std::vector<CPoint>& screenPoints);
-    void DrawTrajectoryWithGradient(CDC& dc, const std::vector<CPoint>& screenPoints);
 
-    void DrawTrajectoryWithGradientGDIPlus(Gdiplus::Graphics& graphics, const std::vector<CPoint>& screenPoints, int alpha);
     void DrawTrajectoryPointsGDIPlus(Gdiplus::Graphics& graphics, const std::vector<CPoint>& screenPoints, int alpha);
 
     // 페이드 아웃
@@ -249,9 +247,6 @@ private:
 
     // 좌표 변환
     CPoint ConvertToScreenCoordinates(const cv::Point2f& point, const CRect& displayRect);
-
-    // 색상 보간
-    COLORREF InterpolateColor(COLORREF color1, COLORREF color2, float t);
 
     // Shot completed 처리
     void OnShotCompleted(const ShotCompletedInfo* info);

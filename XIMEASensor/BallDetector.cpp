@@ -25,7 +25,7 @@ namespace fs = std::filesystem;
 namespace {
     constexpr int MIN_DOWNSCALE_WIDTH = 160;
     constexpr int MIN_DOWNSCALE_HEIGHT = 120;
-    constexpr float MIN_CONFIDENCE_THRESHOLD = 0.7f;
+    constexpr float MIN_CONFIDENCE_THRESHOLD = 0.75f;
     constexpr int SHADOW_THRESHOLD = 100;
     constexpr float SHADOW_ENHANCEMENT_BASE = 1.0f;
     constexpr int MAX_DISPLAY_BALLS = 5;
