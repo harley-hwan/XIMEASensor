@@ -34,7 +34,7 @@ namespace CameraDefaults {
     // Default operational parameters
     const int EXPOSURE_US = 4000;        // 4ms default exposure time
     const float GAIN_DB = 10.0f;          // 0dB default gain (no amplification)
-    const float FRAMERATE_FPS = 60.0f;   // 60 FPS default frame rate
+    const float FRAMERATE_FPS = 120.0f;   // 60 FPS default frame rate
 
     // Hardware limits for PYTHON1300 sensor
     const int MIN_EXPOSURE_US = 10;      // 10 microseconds minimum
