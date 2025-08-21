@@ -198,9 +198,7 @@ bool CameraController::OpenCamera(int deviceIndex) {
     LOG_INFO("Configuring MQ013MG-ON camera");
 
     // pixel format
-    stat = cameraInterface->SetParamInt(cameraHandle,
-        Camera::ParamType::IMAGE_DATA_FORMAT,
-        static_cast<int>(Camera::ImageFormat::MONO8));
+    stat = cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::IMAGE_DATA_FORMAT, static_cast<int>(Camera::ImageFormat::MONO8));
     if (stat != Camera::ReturnCode::OK) {
         LOG_WARNING("Failed to set image format: " + cameraInterface->GetErrorString(stat));
     }
@@ -219,41 +217,27 @@ bool CameraController::OpenCamera(int deviceIndex) {
     cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::FRAMERATE, CameraDefaults::FRAMERATE_FPS);
     currentFrameRate = CameraDefaults::FRAMERATE_FPS;
 
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::ACQ_TIMING_MODE,
-        static_cast<int>(Camera::AcqTimingMode::FRAME_RATE));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::BUFFER_POLICY,
-        static_cast<int>(Camera::BufferPolicy::SAFE));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::AUTO_BANDWIDTH_CALCULATION,
-        static_cast<int>(Camera::OnOff::ON));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::TRG_SOURCE,
-        static_cast<int>(Camera::TriggerSource::OFF));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::DOWNSAMPLING,
-        static_cast<int>(Camera::Downsampling::DWN_1x1));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::DOWNSAMPLING_TYPE,
-        static_cast<int>(Camera::DownsamplingType::BINNING));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::ACQ_TIMING_MODE,              static_cast<int>(Camera::AcqTimingMode::FRAME_RATE));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::BUFFER_POLICY,                static_cast<int>(Camera::BufferPolicy::SAFE));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::AUTO_BANDWIDTH_CALCULATION,   static_cast<int>(Camera::OnOff::ON));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::TRG_SOURCE,                   static_cast<int>(Camera::TriggerSource::OFF));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::DOWNSAMPLING,                 static_cast<int>(Camera::Downsampling::DWN_1x1));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::DOWNSAMPLING_TYPE,            static_cast<int>(Camera::DownsamplingType::BINNING));
 
     // Advanced settings for high-speed capture
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::SENSOR_TAPS,
-        static_cast<int>(Camera::SensorTaps::TAP_CNT_2));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::SENSOR_TAPS, static_cast<int>(Camera::SensorTaps::TAP_CNT_2));
     cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::BUFFERS_QUEUE_SIZE, 20);
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::RECENT_FRAME,
-        static_cast<int>(Camera::OnOff::ON));
+    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::RECENT_FRAME, static_cast<int>(Camera::OnOff::ON));
 
     // Disable image enhancements for raw data
     cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::GAMMAY, 1.0f);
     cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::SHARPNESS, 0.0f);
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::HDR,
-        static_cast<int>(Camera::OnOff::OFF));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::AUTO_WB,
-        static_cast<int>(Camera::OnOff::OFF));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::MANUAL_WB,
-        static_cast<int>(Camera::OnOff::OFF));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::SENS_DEFECTS_CORR,
-        static_cast<int>(Camera::OnOff::ON));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::COLOR_FILTER_ARRAY,
-        static_cast<int>(Camera::ColorFilterArray::CFA_NONE));
-    cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::TRANSPORT_PIXEL_FORMAT,
-        static_cast<int>(Camera::GenTLImageFormat::Mono8));
+    cameraInterface->SetParamInt  (cameraHandle, Camera::ParamType::HDR, static_cast<int>(Camera::OnOff::OFF));
+    cameraInterface->SetParamInt  (cameraHandle, Camera::ParamType::AUTO_WB, static_cast<int>(Camera::OnOff::OFF));
+    cameraInterface->SetParamInt  (cameraHandle, Camera::ParamType::MANUAL_WB, static_cast<int>(Camera::OnOff::OFF));
+    cameraInterface->SetParamInt  (cameraHandle, Camera::ParamType::SENS_DEFECTS_CORR, static_cast<int>(Camera::OnOff::ON));
+    cameraInterface->SetParamInt  (cameraHandle, Camera::ParamType::COLOR_FILTER_ARRAY, static_cast<int>(Camera::ColorFilterArray::CFA_NONE));
+    cameraInterface->SetParamInt  (cameraHandle, Camera::ParamType::TRANSPORT_PIXEL_FORMAT, static_cast<int>(Camera::GenTLImageFormat::Mono8));
 
     // RAII 패턴을 사용한 프레임 버퍼 할당
     {
@@ -1222,10 +1206,7 @@ void CameraController::ProcessRealtimeDetectionWithROI(
         processWidth = roiRect.width;
         processHeight = roiRect.height;
 
-        LOG_DEBUG("Processing pre-extracted ROI: offset(" +
-            std::to_string(roiOffsetX) + "," + std::to_string(roiOffsetY) +
-            "), size(" + std::to_string(processWidth) + "x" +
-            std::to_string(processHeight) + ")");
+        LOG_DEBUG("Processing pre-extracted ROI: offset(" + std::to_string(roiOffsetX) + "," + std::to_string(roiOffsetY) + "), size(" + std::to_string(processWidth) + "x" + std::to_string(processHeight) + ")");
     }
 
     // Detect ball
@@ -1238,10 +1219,7 @@ void CameraController::ProcessRealtimeDetectionWithROI(
             ball.center.x += roiOffsetX;
             ball.center.y += roiOffsetY;
 
-            LOG_INFO("Ball detected at (" +
-                std::to_string(static_cast<int>(ball.center.x)) + ", " +
-                std::to_string(static_cast<int>(ball.center.y)) +
-                ") in full frame coordinates");
+            LOG_INFO("Ball detected at (" + std::to_string(static_cast<int>(ball.center.x)) + ", " + std::to_string(static_cast<int>(ball.center.y)) + ") in full frame coordinates");
         }
     }
 
