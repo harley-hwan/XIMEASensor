@@ -1568,9 +1568,7 @@ void CameraController::UpdateBallState(const RealtimeDetectionResult* result) {
             // 궤적 기록
             if (m_ballTracking.recordingTrajectory ||
                 m_ballTracking.currentState == BallState::READY) {
-                RecordTrajectoryPoint(currentX, currentY, currentRadius,
-                    currentConfidence, currentFrame,
-                    m_ballTracking.currentState);
+                RecordTrajectoryPoint(currentX, currentY, currentRadius, currentConfidence, currentFrame, m_ballTracking.currentState);
             }
         }
 
@@ -2466,7 +2464,7 @@ void CameraController::ApplyDynamicROI(const cv::Rect& roi) {
     // Update detection parameters
     if (m_realtimeBallDetector) {
         auto params = m_realtimeBallDetector->GetParameters();
-        params.useROI = true;
+        //params.useROI = true;
         params.roiScale = 1.0f; // Full scale within ROI
         m_realtimeBallDetector->SetParameters(params);
     }
@@ -2496,7 +2494,7 @@ void CameraController::ApplyDynamicROI(const cv::Rect& roi) {
 void CameraController::ClearDynamicROI() {
     if (m_realtimeBallDetector) {
         auto params = m_realtimeBallDetector->GetParameters();
-        params.useROI = false;
+        //params.useROI = false;
         params.roiScale = 0.75f; // Default
         m_realtimeBallDetector->SetParameters(params);
     }

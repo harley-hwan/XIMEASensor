@@ -109,7 +109,7 @@ BallDetector::DetectionParams::DetectionParams() {
     useThresholding = true;
     useTemplateMatching = false;
     fastMode = true;
-    useROI = true;
+    useROI = false;
     roiScale = 0.75f;
     downscaleFactor = 2;
     useParallel = true;

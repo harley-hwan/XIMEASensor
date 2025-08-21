@@ -1,11 +1,9 @@
-// XIMEASensorDiagDlg.cpp : 구현 파일
-//
-
 #include "pch.h"
 #include "framework.h"
 #include "XIMEASensorDiag.h"
 #include "XIMEASensorDiagDlg.h"
 #include "afxdialogex.h"
+
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -14,51 +12,23 @@
 #define new DEBUG_NEW
 #endif
 
-#define TIMER_UPDATE_STATISTICS 1001
-#define TIMER_FRAME_UPDATE 1002
+using namespace DialogConstants;
+using namespace Gdiplus;
+
+#pragma comment(lib, "gdiplus.lib")
 
 CXIMEASensorDiagDlg* CXIMEASensorDiagDlg::s_pThis = nullptr;
 
 CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
-    : CDialogEx(IDD_XIMEASENSORDIAG_DIALOG, pParent),
-    m_isStreaming(false),
-    m_frameCount(0),
-    m_currentFPS(0.0),
-    m_defaultExposureUs(4000),
-    m_defaultGainDb(0.0f),
-    m_defaultFps(60.0f),
-    m_writeBufferIndex(0),
-    m_readBufferIndex(1),
-    m_displayBufferIndex(2),
-    m_pendingFrameUpdates(0),
-    m_usbErrorCount(0),
-    m_isRecordingTrajectory(false),
-    m_showTrajectory(false),
-    m_trajectoryAlpha(255),
-    m_lastScaleX(1.0f),
-    m_lastScaleY(1.0f),
-    m_pOldBitmap(nullptr),
-    m_pOldOverlayBitmap(nullptr),
-    m_bMemDCReady(false),
-    m_bOverlayNeedsUpdate(true)
+    : CDialogEx(IDD_XIMEASENSORDIAG_DIALOG, pParent)
 {
-    m_cameraCallback = std::make_unique<CameraCallback>();
-    memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
     s_pThis = this;
+    m_cameraCallback = std::make_unique<CameraCallback>();
 }
 
 CXIMEASensorDiagDlg::~CXIMEASensorDiagDlg()
 {
-    // 소멸자는 이제 자동으로 모든 unique_ptr을 정리
-}
-
-void CXIMEASensorDiagDlg::InitializeFrameBuffers()
-{
-    size_t maxBufferSize = 2048 * 2048;
-    for (auto& buffer : m_frameBuffers) {
-        buffer.allocate(maxBufferSize);
-        buffer.ready = false;
-    }
+    s_pThis = nullptr;
 }
 
 void CXIMEASensorDiagDlg::DoDataExchange(CDataExchange* pDX)
@@ -72,291 +42,347 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_WM_DESTROY()
     ON_WM_TIMER()
     ON_WM_HSCROLL()
+
+    // Button clicks
     ON_BN_CLICKED(IDC_BUTTON_START, &CXIMEASensorDiagDlg::OnBnClickedButtonStart)
     ON_BN_CLICKED(IDC_BUTTON_STOP, &CXIMEASensorDiagDlg::OnBnClickedButtonStop)
     ON_BN_CLICKED(IDC_BUTTON_REFRESH, &CXIMEASensorDiagDlg::OnBnClickedButtonRefresh)
     ON_BN_CLICKED(IDC_BUTTON_SNAPSHOT, &CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot)
     ON_BN_CLICKED(IDC_BUTTON_SETTINGS, &CXIMEASensorDiagDlg::OnBnClickedButtonSettings)
+
+    // Feature controls
     ON_BN_CLICKED(IDC_CHECK_REALTIME_DETECTION, &CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection)
+    ON_BN_CLICKED(IDC_BUTTON_RESET_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking)
+    ON_BN_CLICKED(IDC_BUTTON_CONFIGURE_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking)
+    ON_BN_CLICKED(IDC_CHECK_ENABLE_DYNAMIC_ROI, &CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI)
+    ON_BN_CLICKED(IDC_CHECK_SHOW_ROI_OVERLAY, &CXIMEASensorDiagDlg::OnBnClickedCheckShowROIOverlay)
+    ON_BN_CLICKED(IDC_BUTTON_RESET_ROI, &CXIMEASensorDiagDlg::OnBnClickedButtonResetROI)
+
+    // Selection changes
     ON_CBN_SELCHANGE(IDC_COMBO_DEVICES, &CXIMEASensorDiagDlg::OnCbnSelchangeComboDevices)
+
+    // Edit changes
+    ON_EN_CHANGE(IDC_EDIT_EXPOSURE, &CXIMEASensorDiagDlg::OnEnChangeEditExposure)
+    ON_EN_CHANGE(IDC_EDIT_GAIN, &CXIMEASensorDiagDlg::OnEnChangeEditGain)
+    ON_EN_CHANGE(IDC_EDIT_FRAMERATE, &CXIMEASensorDiagDlg::OnEnChangeEditFramerate)
+    ON_EN_CHANGE(IDC_EDIT_ROI_MULTIPLIER, &CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier)
+
+    // Custom messages
     ON_MESSAGE(WM_UPDATE_FRAME, &CXIMEASensorDiagDlg::OnUpdateFrame)
     ON_MESSAGE(WM_UPDATE_STATUS, &CXIMEASensorDiagDlg::OnUpdateStatus)
     ON_MESSAGE(WM_UPDATE_ERROR, &CXIMEASensorDiagDlg::OnUpdateError)
     ON_MESSAGE(WM_UPDATE_FPS, &CXIMEASensorDiagDlg::OnUpdateFPS)
     ON_MESSAGE(WM_CONTINUOUS_CAPTURE_COMPLETE, &CXIMEASensorDiagDlg::OnContinuousCaptureComplete)
     ON_MESSAGE(WM_UPDATE_BALL_DETECTION, &CXIMEASensorDiagDlg::OnUpdateBallDetection)
-    ON_EN_CHANGE(IDC_EDIT_EXPOSURE, &CXIMEASensorDiagDlg::OnEnChangeEditExposure)
-    ON_EN_CHANGE(IDC_EDIT_GAIN, &CXIMEASensorDiagDlg::OnEnChangeEditGain)
-    ON_EN_CHANGE(IDC_EDIT_FRAMERATE, &CXIMEASensorDiagDlg::OnEnChangeEditFramerate)
-    // 2025-07-30
-    ON_BN_CLICKED(IDC_BUTTON_RESET_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking)
-    ON_BN_CLICKED(IDC_BUTTON_CONFIGURE_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking)
     ON_MESSAGE(WM_UPDATE_BALL_STATE, &CXIMEASensorDiagDlg::OnUpdateBallState)
-    // 2025-08-06
-    ON_BN_CLICKED(IDC_CHECK_ENABLE_DYNAMIC_ROI, &CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI)
-    ON_BN_CLICKED(IDC_CHECK_SHOW_ROI_OVERLAY, &CXIMEASensorDiagDlg::OnBnClickedCheckShowROIOverlay)
-    ON_BN_CLICKED(IDC_BUTTON_RESET_ROI, &CXIMEASensorDiagDlg::OnBnClickedButtonResetROI)
-    ON_EN_CHANGE(IDC_EDIT_ROI_MULTIPLIER, &CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier)
     ON_MESSAGE(WM_UPDATE_DYNAMIC_ROI, &CXIMEASensorDiagDlg::OnUpdateDynamicROI)
-    // 궤적 시각화
     ON_MESSAGE(WM_UPDATE_SHOT_COMPLETED, &CXIMEASensorDiagDlg::OnUpdateShotCompleted)
 END_MESSAGE_MAP()
-
-void CXIMEASensorDiagDlg::LoadDefaultSettings()
-{
-    Camera_GetDefaultSettings(&m_defaultExposureUs, &m_defaultGainDb, &m_defaultFps);
-}
-
-
-void CXIMEASensorDiagDlg::InitializeMemoryDC()
-{
-    if (!m_pictureCtrl || !m_pictureCtrl->GetSafeHwnd()) return;
-
-    CClientDC dc(m_pictureCtrl);
-    CRect rect;
-    m_pictureCtrl->GetClientRect(&rect);
-
-    // Picture Control 영역만큼의 메모리 DC 생성
-    if (!m_memDC.GetSafeHdc()) {
-        m_memDC.CreateCompatibleDC(&dc);
-        m_memBitmap.CreateCompatibleBitmap(&dc, rect.Width(), rect.Height());
-        m_pOldBitmap = m_memDC.SelectObject(&m_memBitmap);
-
-        // 초기 배경을 회색으로 채우기
-        m_memDC.FillSolidRect(rect, RGB(128, 128, 128));
-    }
-
-    m_lastPictureRect = rect;
-    m_bMemDCReady = true;
-}
-
-// 메모리 DC 정리
-void CXIMEASensorDiagDlg::CleanupMemoryDC()
-{
-    if (m_memDC.GetSafeHdc()) {
-        m_memDC.SelectObject(m_pOldBitmap);
-        m_memBitmap.DeleteObject();
-        m_memDC.DeleteDC();
-    }
-
-    m_bMemDCReady = false;
-}
 
 
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
 {
     CDialogEx::OnInitDialog();
 
-    Gdiplus::GdiplusStartup(&m_gdiplusToken, &m_gdiplusStartupInput, NULL);
+    // Initialize GDI+
+    GdiplusStartup(&m_gdiplusToken, &m_gdiplusStartupInput, NULL);
 
+    // Initialize console for debugging
+#ifdef _DEBUG
     if (AllocConsole()) {
         FILE* fp;
         freopen_s(&fp, "CONOUT$", "w", stdout);
         freopen_s(&fp, "CONOUT$", "w", stderr);
         freopen_s(&fp, "CONIN$", "r", stdin);
     }
+#endif
 
-    m_checkContinuous = (CButton*)GetDlgItem(IDC_CHECK_CONTINUOUS);
-    if (m_checkContinuous) {
-        m_checkContinuous->SetCheck(BST_UNCHECKED);
+    // Initialize all components
+    if (!InitializeControls()) {
+        AfxMessageBox(_T("Failed to initialize controls!"));
+        return FALSE;
     }
 
-    m_pictureCtrl = (CStatic*)GetDlgItem(IDC_STATIC_VIDEO);
-    m_btnStart = (CButton*)GetDlgItem(IDC_BUTTON_START);
-    m_btnStop = (CButton*)GetDlgItem(IDC_BUTTON_STOP);
-    m_btnSnapshot = (CButton*)GetDlgItem(IDC_BUTTON_SNAPSHOT);
-    m_staticStatus = (CStatic*)GetDlgItem(IDC_STATIC_STATUS);
-    m_staticFPS = (CStatic*)GetDlgItem(IDC_STATIC_FPS);
-    m_sliderExposure = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_EXPOSURE);
-    m_sliderGain = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_GAIN);
-    m_sliderFramerate = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_FRAMERATE);
-    m_comboDevices = (CComboBox*)GetDlgItem(IDC_COMBO_DEVICES);
-
-    m_editExposure = (CEdit*)GetDlgItem(IDC_EDIT_EXPOSURE);
-    m_editGain = (CEdit*)GetDlgItem(IDC_EDIT_GAIN);
-    m_editFramerate = (CEdit*)GetDlgItem(IDC_EDIT_FRAMERATE);
-
-    m_checkRealtimeDetection = (CButton*)GetDlgItem(IDC_CHECK_REALTIME_DETECTION);
-    if (m_checkRealtimeDetection) {
-        m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
-    }
-
-    m_staticBallPosition = (CStatic*)GetDlgItem(IDC_STATIC_BALL_POSITION);
-    m_staticBallInfo = (CStatic*)GetDlgItem(IDC_STATIC_BALL_INFO);
-    m_staticDetectionFPS = (CStatic*)GetDlgItem(IDC_STATIC_DETECTION_FPS);
-
-    // 2025-07-30: 볼 상태 관련 컨트롤 초기화
-    m_staticBallState = (CStatic*)GetDlgItem(IDC_STATIC_BALL_STATE);
-    m_staticStateTime = (CStatic*)GetDlgItem(IDC_STATIC_STATE_TIME);
-    m_staticStableTime = (CStatic*)GetDlgItem(IDC_STATIC_STABLE_TIME);
-    m_btnResetTracking = (CButton*)GetDlgItem(IDC_BUTTON_RESET_TRACKING);
-    m_btnConfigureTracking = (CButton*)GetDlgItem(IDC_BUTTON_CONFIGURE_TRACKING);
-
-    // 2025-08-06: Dynamic ROI 컨트롤 초기화
-    m_checkEnableDynamicROI = (CButton*)GetDlgItem(IDC_CHECK_ENABLE_DYNAMIC_ROI);
-    m_checkShowROIOverlay = (CButton*)GetDlgItem(IDC_CHECK_SHOW_ROI_OVERLAY);
-    m_staticROIStatus = (CStatic*)GetDlgItem(IDC_STATIC_ROI_STATUS);
-    m_staticROISize = (CStatic*)GetDlgItem(IDC_STATIC_ROI_SIZE);
-    m_staticROIReduction = (CStatic*)GetDlgItem(IDC_STATIC_ROI_REDUCTION);
-    m_sliderROIMultiplier = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_ROI_MULTIPLIER);
-    m_editROIMultiplier = (CEdit*)GetDlgItem(IDC_EDIT_ROI_MULTIPLIER);
-    m_btnResetROI = (CButton*)GetDlgItem(IDC_BUTTON_RESET_ROI);
-
-    if (m_staticBallState) { m_staticBallState->SetWindowText(_T("NOT DETECTED")); }
-    if (m_btnResetTracking) { m_btnResetTracking->EnableWindow(FALSE); }
-    if (m_btnConfigureTracking) { m_btnConfigureTracking->EnableWindow(TRUE); }
-
-    // 2025-08-06
-    if (m_checkEnableDynamicROI) {
-        m_checkEnableDynamicROI->SetCheck(BST_UNCHECKED);
-    }
-
-    if (m_checkShowROIOverlay) {
-        m_checkShowROIOverlay->SetCheck(BST_CHECKED);
-    }
-
-    if (m_sliderROIMultiplier) {
-        m_sliderROIMultiplier->SetRange(60, 160); // 6.0 ~ 16.0으로 변경
-        m_sliderROIMultiplier->SetPos(100); // 10.0 default
-        m_sliderROIMultiplier->SetTicFreq(5);  // 더 세밀한 조정을 위해 변경
-    }
-
-    if (m_editROIMultiplier) {
-        m_editROIMultiplier->SetWindowText(_T("10.0")); // 기본값 10.0
-    }
-
-    if (!Camera_Initialize("./logs/XIMEASensor.log", 1)) {
+    if (!InitializeCamera()) {
         AfxMessageBox(_T("Failed to initialize camera system!"));
         return FALSE;
     }
 
+    InitializeCallbacks();
+    InitializeTimers();
+    InitializeFrameBuffers();
+
+    // Load settings and update UI
     LoadDefaultSettings();
+    UpdateDeviceList();
+    UpdateUI(false);
 
-    if (m_sliderExposure) {
-        m_sliderExposure->SetRange(CameraDefaults::MIN_EXPOSURE_US, CameraDefaults::MAX_EXPOSURE_US);
-        m_sliderExposure->SetPos(m_defaultExposureUs);
-        m_sliderExposure->SetTicFreq(10000);
+    return TRUE;
+}
+
+bool CXIMEASensorDiagDlg::InitializeControls()
+{
+    try {
+        // Main controls
+        m_ui.pictureCtrl = (CStatic*)GetDlgItem(IDC_STATIC_VIDEO);
+        m_ui.btnStart = (CButton*)GetDlgItem(IDC_BUTTON_START);
+        m_ui.btnStop = (CButton*)GetDlgItem(IDC_BUTTON_STOP);
+        m_ui.btnSnapshot = (CButton*)GetDlgItem(IDC_BUTTON_SNAPSHOT);
+        m_ui.btnRefresh = (CButton*)GetDlgItem(IDC_BUTTON_REFRESH);
+        m_ui.btnSettings = (CButton*)GetDlgItem(IDC_BUTTON_SETTINGS);
+        m_ui.comboDevices = (CComboBox*)GetDlgItem(IDC_COMBO_DEVICES);
+
+        // Status controls
+        m_ui.status = (CStatic*)GetDlgItem(IDC_STATIC_STATUS);
+        m_ui.fps = (CStatic*)GetDlgItem(IDC_STATIC_FPS);
+        m_ui.ballPosition = (CStatic*)GetDlgItem(IDC_STATIC_BALL_POSITION);
+        m_ui.ballInfo = (CStatic*)GetDlgItem(IDC_STATIC_BALL_INFO);
+        m_ui.detectionFPS = (CStatic*)GetDlgItem(IDC_STATIC_DETECTION_FPS);
+
+        // Parameter controls
+        m_ui.sliderExposure = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_EXPOSURE);
+        m_ui.sliderGain = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_GAIN);
+        m_ui.sliderFramerate = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_FRAMERATE);
+        m_ui.editExposure = (CEdit*)GetDlgItem(IDC_EDIT_EXPOSURE);
+        m_ui.editGain = (CEdit*)GetDlgItem(IDC_EDIT_GAIN);
+        m_ui.editFramerate = (CEdit*)GetDlgItem(IDC_EDIT_FRAMERATE);
+
+        // Feature controls - Ball detection
+        m_ui.checkRealtimeDetection = (CButton*)GetDlgItem(IDC_CHECK_REALTIME_DETECTION);
+        m_ui.checkContinuous = (CButton*)GetDlgItem(IDC_CHECK_CONTINUOUS);
+
+        // Feature controls - Ball state tracking
+        m_ui.ballState = (CStatic*)GetDlgItem(IDC_STATIC_BALL_STATE);
+        m_ui.stateTime = (CStatic*)GetDlgItem(IDC_STATIC_STATE_TIME);
+        m_ui.stableTime = (CStatic*)GetDlgItem(IDC_STATIC_STABLE_TIME);
+        m_ui.btnResetTracking = (CButton*)GetDlgItem(IDC_BUTTON_RESET_TRACKING);
+        m_ui.btnConfigureTracking = (CButton*)GetDlgItem(IDC_BUTTON_CONFIGURE_TRACKING);
+
+        // Feature controls - Dynamic ROI
+        m_ui.checkEnableDynamicROI = (CButton*)GetDlgItem(IDC_CHECK_ENABLE_DYNAMIC_ROI);
+        m_ui.checkShowROIOverlay = (CButton*)GetDlgItem(IDC_CHECK_SHOW_ROI_OVERLAY);
+        m_ui.roiStatus = (CStatic*)GetDlgItem(IDC_STATIC_ROI_STATUS);
+        m_ui.roiSize = (CStatic*)GetDlgItem(IDC_STATIC_ROI_SIZE);
+        m_ui.roiReduction = (CStatic*)GetDlgItem(IDC_STATIC_ROI_REDUCTION);
+        m_ui.sliderROIMultiplier = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_ROI_MULTIPLIER);
+        m_ui.editROIMultiplier = (CEdit*)GetDlgItem(IDC_EDIT_ROI_MULTIPLIER);
+        m_ui.btnResetROI = (CButton*)GetDlgItem(IDC_BUTTON_RESET_ROI);
+
+        // Initialize control states
+        if (m_ui.checkRealtimeDetection) {
+            m_ui.checkRealtimeDetection->SetCheck(BST_UNCHECKED);
+        }
+
+        if (m_ui.checkContinuous) {
+            m_ui.checkContinuous->SetCheck(BST_UNCHECKED);
+        }
+
+        if (m_ui.checkEnableDynamicROI) {
+            m_ui.checkEnableDynamicROI->SetCheck(BST_UNCHECKED);
+        }
+
+        if (m_ui.checkShowROIOverlay) {
+            m_ui.checkShowROIOverlay->SetCheck(BST_CHECKED);
+        }
+
+        // Initialize sliders
+        if (m_ui.sliderExposure) {
+            m_ui.sliderExposure->SetRange(CameraDefaults::MIN_EXPOSURE_US,
+                CameraDefaults::MAX_EXPOSURE_US);
+            m_ui.sliderExposure->SetTicFreq(10000);
+        }
+
+        if (m_ui.sliderGain) {
+            m_ui.sliderGain->SetRange(static_cast<int>(CameraDefaults::MIN_GAIN_DB * 10),
+                static_cast<int>(CameraDefaults::MAX_GAIN_DB * 10));
+            m_ui.sliderGain->SetTicFreq(30);
+        }
+
+        if (m_ui.sliderFramerate) {
+            m_ui.sliderFramerate->SetRange(static_cast<int>(CameraDefaults::MIN_FPS * 10),
+                static_cast<int>(CameraDefaults::MAX_FPS * 10));
+            m_ui.sliderFramerate->SetTicFreq(100);
+        }
+
+        if (m_ui.sliderROIMultiplier) {
+            m_ui.sliderROIMultiplier->SetRange(60, 160); // 6.0 ~ 16.0
+            m_ui.sliderROIMultiplier->SetPos(100); // 10.0 default
+            m_ui.sliderROIMultiplier->SetTicFreq(5);
+        }
+
+        // Set initial text
+        if (m_ui.ballState) {
+            m_ui.ballState->SetWindowText(_T("NOT DETECTED"));
+        }
+
+        if (m_ui.editROIMultiplier) {
+            m_ui.editROIMultiplier->SetWindowText(_T("10.0"));
+        }
+
+        return true;
     }
-
-    if (m_sliderGain) {
-        m_sliderGain->SetRange(static_cast<int>(CameraDefaults::MIN_GAIN_DB * 10),
-            static_cast<int>(CameraDefaults::MAX_GAIN_DB * 10));
-        m_sliderGain->SetPos(static_cast<int>(m_defaultGainDb * 10));
-        m_sliderGain->SetTicFreq(30);
+    catch (...) {
+        return false;
     }
+}
 
-    if (m_sliderFramerate) {
-        m_sliderFramerate->SetRange(static_cast<int>(CameraDefaults::MIN_FPS * 10),
-            static_cast<int>(CameraDefaults::MAX_FPS * 10));
-        m_sliderFramerate->SetPos(static_cast<int>(m_defaultFps * 10));
-        m_sliderFramerate->SetTicFreq(100);
-    }
+bool CXIMEASensorDiagDlg::InitializeCamera()
+{
+    return Camera_Initialize("./logs/XIMEASensor.log", 1);
+}
 
-    if (m_editExposure) {
-        CString strExposure;
-        strExposure.Format(_T("%d"), m_defaultExposureUs);
-        m_editExposure->SetWindowText(strExposure);
-    }
-
-    if (m_editGain) {
-        CString strGain;
-        strGain.Format(_T("%.1f"), m_defaultGainDb);
-        m_editGain->SetWindowText(strGain);
-    }
-
-    if (m_editFramerate) {
-        CString strFPS;
-        strFPS.Format(_T("%.1f"), m_defaultFps);
-        m_editFramerate->SetWindowText(strFPS);
-    }
-
+void CXIMEASensorDiagDlg::InitializeCallbacks()
+{
+    // Frame callback
     m_cameraCallback->SetFrameCallback(
-        [this](const FrameInfo& info) { OnFrameReceivedCallback(info); });
+        [this](const FrameInfo& info) {
+            OnFrameReceivedCallback(info);
+        });
 
+    // State callback
     m_cameraCallback->SetStateCallback(
         [this](CameraState newState, CameraState oldState) {
             OnStateChangedCallback(newState, oldState);
         });
 
+    // Error callback
     m_cameraCallback->SetErrorCallback(
         [this](CameraError error, const std::string& msg) {
             OnErrorCallback(error, msg);
         });
 
+    // Property callback
     m_cameraCallback->SetPropertyCallback(
         [this](const std::string& prop, const std::string& value) {
             OnPropertyChangedCallback(prop, value);
         });
 
+    // Register camera callback
     Camera_RegisterCallback(m_cameraCallback.get());
 
-    // 퍼팅 궤적 시각화 초기화
-    m_isRecordingTrajectory = false;
-    m_showTrajectory = false;
-    m_trajectoryAlpha = 255;
-    m_lastScaleX = 1.0f;
-    m_lastScaleY = 1.0f;
-
-    // Shot completed 콜백 등록
+    // Register shot completed callback
     Camera_SetShotCompletedCallback(ShotCompletedCallback, this);
-
-    UpdateDeviceList();
-    UpdateUI(false);
-    SetTimer(TIMER_UPDATE_STATISTICS, 1000, nullptr);
-    SetTimer(TIMER_FRAME_UPDATE, 33, nullptr); // 30 FPS UI update
-
-    return TRUE;
 }
 
+void CXIMEASensorDiagDlg::InitializeTimers()
+{
+    SetTimer(TIMER_UPDATE_STATISTICS, STATISTICS_UPDATE_INTERVAL_MS, nullptr);
+    SetTimer(TIMER_FRAME_UPDATE, FRAME_UPDATE_INTERVAL_MS, nullptr);
+}
+
+// ============================================================================
+// Cleanup
+// ============================================================================
 void CXIMEASensorDiagDlg::OnDestroy()
 {
     CDialogEx::OnDestroy();
 
-    // Shot completed 콜백 해제
+    CleanupCamera();
+    CleanupTimers();
+    CleanupGraphics();
+}
+
+void CXIMEASensorDiagDlg::CleanupCamera()
+{
+    // Unregister callbacks
     Camera_SetShotCompletedCallback(nullptr, nullptr);
+    Camera_SetBallStateChangeCallback(nullptr, nullptr);
+    Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
+    Camera_SetContinuousCaptureProgressCallback(nullptr);
 
-    // 페이드 아웃 타이머 정지
-    KillTimer(TIMER_TRAJECTORY_FADE);
-
-    // 볼 상태 추적 비활성화
+    // Disable features
     if (Camera_IsBallStateTrackingEnabled()) {
         Camera_EnableBallStateTracking(false);
     }
-    Camera_SetBallStateChangeCallback(nullptr, nullptr);
 
     if (Camera_IsRealtimeDetectionEnabled()) {
         Camera_EnableRealtimeDetection(false);
     }
-    Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
 
-    Camera_SetContinuousCaptureProgressCallback(nullptr);
-    s_pThis = nullptr;
-
-    KillTimer(TIMER_UPDATE_STATISTICS);
-    KillTimer(TIMER_FRAME_UPDATE);
-
-    CleanupMemoryDC();
-
+    // Stop and close camera
     if (m_isStreaming) {
         Camera_Stop();
     }
     Camera_Close();
-    Camera_UnregisterCallback(m_cameraCallback.get());
-    Camera_Shutdown();
 
-    Gdiplus::GdiplusShutdown(m_gdiplusToken);
+    // Unregister main callback
+    Camera_UnregisterCallback(m_cameraCallback.get());
+
+    // Shutdown camera system
+    Camera_Shutdown();
+}
+
+void CXIMEASensorDiagDlg::CleanupTimers()
+{
+    KillTimer(TIMER_UPDATE_STATISTICS);
+    KillTimer(TIMER_FRAME_UPDATE);
+    KillTimer(TIMER_BALL_STATE_UPDATE);
+    KillTimer(TIMER_DYNAMIC_ROI_UPDATE);
+    KillTimer(TIMER_TRAJECTORY_FADE);
+}
+
+void CXIMEASensorDiagDlg::CleanupGraphics()
+{
+    CleanupMemoryDC();
+    GdiplusShutdown(m_gdiplusToken);
+}
+
+// ============================================================================
+// Frame Buffer Management
+// ============================================================================
+void CXIMEASensorDiagDlg::FrameBuffer::allocate(size_t size)
+{
+    data = std::make_unique<unsigned char[]>(size);
+    if (data) {
+        memset(data.get(), 0, size);
+    }
+}
+
+void CXIMEASensorDiagDlg::FrameBuffer::reallocate(size_t newSize)
+{
+    if (!data || getCurrentSize() < newSize) {
+        allocate(newSize);
+    }
+}
+
+size_t CXIMEASensorDiagDlg::FrameBuffer::getCurrentSize() const
+{
+    return data ? (2048 * 2048) : 0;  // Fixed max size
+}
+
+void CXIMEASensorDiagDlg::InitializeFrameBuffers()
+{
+    size_t maxBufferSize = 2048 * 2048;
+    for (auto& buffer : m_frameBuffers) {
+        buffer.allocate(maxBufferSize);
+        buffer.ready = false;
+    }
+}
+
+// ============================================================================
+// UI Updates
+// ============================================================================
+void CXIMEASensorDiagDlg::UpdateUI(bool isStreaming)
+{
+    m_ui.btnStart->EnableWindow(!isStreaming);
+    m_ui.btnStop->EnableWindow(isStreaming);
+    m_ui.comboDevices->EnableWindow(!isStreaming);
+
+    m_ui.sliderExposure->EnableWindow(isStreaming);
+    m_ui.sliderGain->EnableWindow(isStreaming);
+    m_ui.sliderFramerate->EnableWindow(isStreaming);
 }
 
 void CXIMEASensorDiagDlg::UpdateDeviceList()
 {
-    if (!m_comboDevices) return;
+    if (!m_ui.comboDevices) return;
 
-    m_comboDevices->ResetContent();
+    m_ui.comboDevices->ResetContent();
 
     int deviceCount = Camera_GetDeviceCount();
     if (deviceCount == 0) {
-        m_comboDevices->AddString(_T("No devices found"));
-        m_comboDevices->EnableWindow(FALSE);
+        m_ui.comboDevices->AddString(_T("No devices found"));
+        m_ui.comboDevices->EnableWindow(FALSE);
         return;
     }
 
@@ -368,65 +394,131 @@ void CXIMEASensorDiagDlg::UpdateDeviceList()
             CString deviceStr;
             deviceStr.Format(_T("%d: %s (S/N: %s)"), i,
                 CString(name), CString(serial));
-            m_comboDevices->AddString(deviceStr);
+            m_ui.comboDevices->AddString(deviceStr);
         }
     }
 
-    m_comboDevices->SetCurSel(0);
-    m_comboDevices->EnableWindow(TRUE);
+    m_ui.comboDevices->SetCurSel(0);
+    m_ui.comboDevices->EnableWindow(TRUE);
 }
 
-void CXIMEASensorDiagDlg::UpdateUI(bool isStreaming)
-{
-    m_btnStart->EnableWindow(!isStreaming);
-    m_btnStop->EnableWindow(isStreaming);
-    m_comboDevices->EnableWindow(!isStreaming);
-
-    if (m_sliderExposure) {
-        m_sliderExposure->EnableWindow(isStreaming);
-    }
-
-    if (m_sliderGain) {
-        m_sliderGain->EnableWindow(isStreaming);
-    }
-
-    if (m_sliderFramerate) {
-        m_sliderFramerate->EnableWindow(isStreaming);
-    }
-}
-
+// ============================================================================
+// Camera Operations
+// ============================================================================
 void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
 {
-    int deviceIndex = m_comboDevices->GetCurSel();
+    int deviceIndex = m_ui.comboDevices->GetCurSel();
     if (deviceIndex < 0) {
         AfxMessageBox(_T("Please select a device!"));
         return;
     }
 
+    if (!StartCamera(deviceIndex)) {
+        AfxMessageBox(_T("Failed to start camera!"));
+    }
+}
+
+bool CXIMEASensorDiagDlg::StartCamera(int deviceIndex)
+{
+    // Open camera
     if (!Camera_Open(deviceIndex)) {
-        AfxMessageBox(_T("Failed to open camera!"));
-        return;
+        return false;
     }
 
-    Camera_SetExposure(m_defaultExposureUs);
-    Camera_SetGain(m_defaultGainDb);
-    Camera_SetFrameRate(m_defaultFps);
+    // Apply default settings
+    if (!ApplyCameraSettings()) {
+        Camera_Close();
+        return false;
+    }
 
+    // Sync UI with camera
     SyncSlidersWithCamera();
 
+    // Start streaming
     if (!Camera_Start()) {
-        AfxMessageBox(_T("Failed to start streaming!"));
         Camera_Close();
-        return;
+        return false;
     }
 
+    // Update state
     m_isStreaming = true;
     UpdateUI(true);
 
+    // Reset counters
     m_frameCount = 0;
     m_lastFPSUpdate = std::chrono::steady_clock::now();
     m_lastFrameDrawTime = std::chrono::steady_clock::now();
     ResetUSBErrorCount();
+
+    return true;
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
+{
+    StopCamera();
+}
+
+void CXIMEASensorDiagDlg::StopCamera()
+{
+    // Disable features
+    if (Camera_IsRealtimeDetectionEnabled()) {
+        Camera_EnableRealtimeDetection(false);
+        Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
+
+        if (m_ui.checkRealtimeDetection) {
+            m_ui.checkRealtimeDetection->SetCheck(BST_UNCHECKED);
+        }
+    }
+
+    if (Camera_IsContinuousCapturing()) {
+        Camera_StopContinuousCapture();
+
+        if (m_ui.btnSnapshot) {
+            m_ui.btnSnapshot->EnableWindow(TRUE);
+        }
+        if (m_ui.checkContinuous) {
+            m_ui.checkContinuous->EnableWindow(TRUE);
+        }
+    }
+
+    // Stop camera
+    Camera_Stop();
+    Camera_Close();
+
+    // Update state
+    m_isStreaming = false;
+    UpdateUI(false);
+
+    // Refresh display
+    Invalidate();
+}
+
+// ============================================================================
+// Camera Parameter Management
+// ============================================================================
+bool CXIMEASensorDiagDlg::ApplyCameraSettings()
+{
+    return SetCameraParameter(m_defaultSettings.exposureUs,
+        m_defaultSettings.gainDb,
+        m_defaultSettings.fps);
+}
+
+bool CXIMEASensorDiagDlg::SetCameraParameter(int exposureUs, float gainDb, float fps)
+{
+    bool success = true;
+
+    success &= Camera_SetExposure(exposureUs);
+    success &= Camera_SetGain(gainDb);
+    success &= Camera_SetFrameRate(fps);
+
+    return success;
+}
+
+void CXIMEASensorDiagDlg::LoadDefaultSettings()
+{
+    Camera_GetDefaultSettings(&m_defaultSettings.exposureUs,
+        &m_defaultSettings.gainDb,
+        &m_defaultSettings.fps);
 }
 
 void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
@@ -435,372 +527,98 @@ void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
     float currentGain = Camera_GetGain();
     float currentFramerate = Camera_GetFrameRate();
 
-    if (m_sliderExposure && currentExposure > 0) {
-        m_sliderExposure->SetPos(currentExposure);
-        if (m_editExposure) {
+    // Update exposure
+    if (m_ui.sliderExposure && currentExposure > 0) {
+        m_ui.sliderExposure->SetPos(currentExposure);
+        if (m_ui.editExposure) {
             CString strExposure;
             strExposure.Format(_T("%d"), currentExposure);
-            m_editExposure->SetWindowText(strExposure);
+            m_ui.editExposure->SetWindowText(strExposure);
         }
     }
 
-    if (m_sliderGain) {
-        m_sliderGain->SetPos((int)(currentGain * 10));
-        if (m_editGain) {
+    // Update gain
+    if (m_ui.sliderGain) {
+        m_ui.sliderGain->SetPos(static_cast<int>(currentGain * 10));
+        if (m_ui.editGain) {
             CString strGain;
             strGain.Format(_T("%.1f"), currentGain);
-            m_editGain->SetWindowText(strGain);
+            m_ui.editGain->SetWindowText(strGain);
         }
     }
 
-    if (m_sliderFramerate && currentFramerate > 0) {
-        m_sliderFramerate->SetPos((int)(currentFramerate * 10));
-        if (m_editFramerate) {
+    // Update framerate
+    if (m_ui.sliderFramerate && currentFramerate > 0) {
+        m_ui.sliderFramerate->SetPos(static_cast<int>(currentFramerate * 10));
+        if (m_ui.editFramerate) {
             CString strFPS;
             strFPS.Format(_T("%.1f"), currentFramerate);
-            m_editFramerate->SetWindowText(strFPS);
+            m_ui.editFramerate->SetWindowText(strFPS);
         }
     }
 }
 
-void CXIMEASensorDiagDlg::OnBnClickedButtonStop()
+// ============================================================================
+// Frame Processing
+// ============================================================================
+void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
 {
-    if (Camera_IsRealtimeDetectionEnabled()) {
-        Camera_EnableRealtimeDetection(false);
-        Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
-
-        if (m_checkRealtimeDetection) {
-            m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
-        }
-    }
-
-    if (Camera_IsContinuousCapturing()) {
-        Camera_StopContinuousCapture();
-
-        if (m_btnSnapshot) m_btnSnapshot->EnableWindow(TRUE);
-        if (m_checkContinuous) m_checkContinuous->EnableWindow(TRUE);
-    }
-
-    Camera_Stop();
-    Camera_Close();
-
-    m_isStreaming = false;
-    UpdateUI(false);
-
-    Invalidate();
+    ProcessFrame(frameInfo);
+    UpdateFPSCalculation();
 }
 
-void CXIMEASensorDiagDlg::OnBnClickedButtonRefresh()
+void CXIMEASensorDiagDlg::ProcessFrame(const FrameInfo& frameInfo)
 {
-    UpdateDeviceList();
-}
-
-void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
-{
-    if (!m_isStreaming) {
-        AfxMessageBox(_T("Camera is not running!"));
+    // Skip frame if necessary
+    if (ShouldSkipFrame()) {
         return;
     }
 
-#ifdef ENABLE_CONTINUOUS_CAPTURE
-    if (Camera_IsContinuousCapturing()) {
-        AfxMessageBox(_T("Already in continuous capture mode!"));
-        return;
-    }
+    // Get write buffer
+    int writeIdx = m_writeBufferIndex.load();
+    FrameBuffer& writeBuffer = m_frameBuffers[writeIdx];
 
-    BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
+    // Only update if buffer is available
+    if (!writeBuffer.ready.exchange(false)) {
+        int requiredSize = frameInfo.width * frameInfo.height;
 
-    if (isContinuous) {
-        ContinuousCaptureConfig config;
-        Camera_GetContinuousCaptureDefaults(&config);
+        // Reallocate if needed
+        writeBuffer.reallocate(requiredSize);
 
-        int result = MessageBox(_T("Select image format:\n\nPNG (Yes) - Lossless, larger files\nJPG (No) - Compressed, smaller files"),
-            _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
-
-        if (result == IDCANCEL) {
-            return;
+        // Copy frame data
+        if (frameInfo.data && requiredSize > 0) {
+            memcpy(writeBuffer.data.get(), frameInfo.data, requiredSize);
+            writeBuffer.width = frameInfo.width;
+            writeBuffer.height = frameInfo.height;
         }
 
-        config.imageFormat = (result == IDYES) ? 0 : 1;
-        Camera_SetContinuousCaptureDefaults(&config);
+        writeBuffer.ready = true;
 
-        Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
+        // Swap buffers
+        SwapBuffers();
 
-        TRACE(_T("Starting continuous capture for %.1f seconds with ball detection\n"), config.durationSeconds);
-
-        if (Camera_StartContinuousCaptureWithDefaults()) {
-            if (m_btnSnapshot) m_btnSnapshot->EnableWindow(FALSE);
-            if (m_checkContinuous) m_checkContinuous->EnableWindow(FALSE);
-
-            if (m_staticStatus) {
-                CString status;
-                status.Format(_T("Continuous capture (%.1fs) with ball detection in progress..."),
-                    config.durationSeconds);
-                m_staticStatus->SetWindowText(status);
-            }
-
-            TRACE(_T("Continuous capture started successfully\n"));
+        // Post update message
+        if (m_pendingFrameUpdates.fetch_add(1) < MAX_PENDING_FRAMES) {
+            PostMessage(WM_UPDATE_FRAME);
         }
         else {
-            AfxMessageBox(_T("Failed to start continuous capture!"));
-            TRACE(_T("Failed to start continuous capture\n"));
-        }
-    }
-    else
-#endif
-    {
-        SnapshotDefaults defaults;
-        Camera_GetSnapshotDefaults(&defaults);
-
-        int result = MessageBox(_T("Select image format:\n\nPNG (Yes) - Lossless format\nJPG (No) - Compressed format"),
-            _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
-
-        if (result == IDCANCEL) {
-            return;
-        }
-
-        defaults.format = (result == IDYES) ? 0 : 1;
-        Camera_SetSnapshotDefaults(&defaults);
-
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        CString filename;
-        const char* extension = (defaults.format == 0) ? "png" : "jpg";
-        filename.Format(_T("snapshot_%04d%02d%02d_%02d%02d%02d.%s"),
-            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
-            CString(extension));
-
-        CStringA filenameA(filename);
-        bool saveSuccess = Camera_SaveSnapshotWithDefaults(filenameA.GetString());
-
-        if (saveSuccess) {
-            int width = 0, height = 0;
-            Camera_GetROI(nullptr, nullptr, &width, &height);
-
-            CString msg;
-            msg.Format(_T("Snapshot saved: %s\nSize: %dx%d\nFormat: %s\nQuality: %d%%"),
-                filename.GetString(), width, height,
-                (defaults.format == 0) ? _T("PNG") : _T("JPG"),
-                defaults.quality);
-            AfxMessageBox(msg);
-        }
-        else {
-            AfxMessageBox(_T("Failed to save image!"));
+            m_pendingFrameUpdates.fetch_sub(1);
         }
     }
 }
 
-void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
-{
-    AfxMessageBox(_T("Settings dialog not implemented yet."));
-}
-
-void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
-{
-    CSliderCtrl* pSlider = (CSliderCtrl*)pScrollBar;
-
-    // ROI Multiplier 슬라이더 처리 추가
-    if (pSlider == m_sliderROIMultiplier) {
-        float multiplier = m_sliderROIMultiplier->GetPos() / 10.0f;
-
-        // Edit 컨트롤 업데이트
-        if (m_editROIMultiplier) {
-            CString str;
-            str.Format(_T("%.1f"), multiplier);
-            m_editROIMultiplier->SetWindowText(str);
-        }
-
-        // Dynamic ROI가 활성화되어 있으면 설정 적용
-        if (Camera_IsDynamicROIEnabled()) {
-            DynamicROIConfig config;
-            if (Camera_GetDynamicROIConfig(&config)) {
-                config.roiSizeMultiplier = multiplier;
-                Camera_SetDynamicROIConfig(&config);
-            }
-        }
-
-        CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
-        return;
-    }
-
-    if (!m_isStreaming) {
-        if (pSlider == m_sliderExposure && m_editExposure) {
-            int exposure = m_sliderExposure->GetPos();
-            CString str;
-            str.Format(_T("%d"), exposure);
-            m_editExposure->SetWindowText(str);
-        }
-        else if (pSlider == m_sliderGain && m_editGain) {
-            float gain = m_sliderGain->GetPos() / 10.0f;
-            CString str;
-            str.Format(_T("%.1f"), gain);
-            m_editGain->SetWindowText(str);
-        }
-        else if (pSlider == m_sliderFramerate && m_editFramerate) {
-            float fps = m_sliderFramerate->GetPos() / 10.0f;
-            CString str;
-            str.Format(_T("%.1f"), fps);
-            m_editFramerate->SetWindowText(str);
-        }
-
-        CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
-        return;
-    }
-
-    // 기존 코드 유지 (exposure, gain, framerate 처리)
-    if (pSlider == m_sliderExposure) {
-        int exposure = m_sliderExposure->GetPos();
-
-        if (Camera_SetExposure(exposure)) {
-            if (m_editExposure) {
-                CString str;
-                str.Format(_T("%d"), exposure);
-                m_editExposure->SetWindowText(str);
-            }
-        }
-        else {
-            int currentExposure = Camera_GetExposure();
-            m_sliderExposure->SetPos(currentExposure);
-            if (m_editExposure) {
-                CString str;
-                str.Format(_T("%d"), currentExposure);
-                m_editExposure->SetWindowText(str);
-            }
-        }
-    }
-    else if (pSlider == m_sliderGain) {
-        float gain = m_sliderGain->GetPos() / 10.0f;
-
-        if (Camera_SetGain(gain)) {
-            if (m_editGain) {
-                CString str;
-                str.Format(_T("%.1f"), gain);
-                m_editGain->SetWindowText(str);
-            }
-        }
-        else {
-            float currentGain = Camera_GetGain();
-            m_sliderGain->SetPos((int)(currentGain * 10));
-            if (m_editGain) {
-                CString str;
-                str.Format(_T("%.1f"), currentGain);
-                m_editGain->SetWindowText(str);
-            }
-        }
-    }
-    else if (pSlider == m_sliderFramerate) {
-        float fps = m_sliderFramerate->GetPos() / 10.0f;
-
-        if (Camera_SetFrameRate(fps)) {
-            if (m_editFramerate) {
-                CString str;
-                str.Format(_T("%.1f"), fps);
-                m_editFramerate->SetWindowText(str);
-            }
-        }
-        else {
-            int currentExposure = Camera_GetExposure();
-            float maxPossibleFPS = 1000000.0f / currentExposure;
-
-            CString msg;
-            msg.Format(_T("Cannot set %.1f FPS with current exposure time (%d us).\nMaximum possible FPS: %.1f"),
-                fps, currentExposure, maxPossibleFPS);
-            MessageBox(msg, _T("FPS Limitation"), MB_OK | MB_ICONWARNING);
-
-            float currentFPS = Camera_GetFrameRate();
-            m_sliderFramerate->SetPos((int)(currentFPS * 10));
-            if (m_editFramerate) {
-                CString str;
-                str.Format(_T("%.1f"), currentFPS);
-                m_editFramerate->SetWindowText(str);
-            }
-        }
-    }
-
-    CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
-}
-
-void CXIMEASensorDiagDlg::OnCbnSelchangeComboDevices()
-{
-    //
-}
-
-void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
-{
-    if (nIDEvent == TIMER_UPDATE_STATISTICS && m_isStreaming) {
-        unsigned long totalFrames, droppedFrames;
-        double avgFPS, minFPS, maxFPS;
-
-        if (Camera_GetStatistics(&totalFrames, &droppedFrames,
-            &avgFPS, &minFPS, &maxFPS)) {
-            CString str;
-            str.Format(_T("Total: %lu, Dropped: %lu, Avg FPS: %.1f"),
-                totalFrames, droppedFrames, avgFPS);
-
-            if (m_staticStatus) {
-                m_staticStatus->SetWindowText(str);
-            }
-        }
-    }
-    else if (nIDEvent == TIMER_FRAME_UPDATE) {
-        if (m_pendingFrameUpdates > 0 && m_pictureCtrl) {
-            CRect rect;
-            m_pictureCtrl->GetWindowRect(&rect);
-            ScreenToClient(&rect);
-            InvalidateRect(&rect, FALSE);
-        }
-    }
-    else if (nIDEvent == TIMER_BALL_STATE_UPDATE) {
-        // 볼 상태 표시 업데이트
-        UpdateBallStateDisplay();
-    }
-    else if (nIDEvent == TIMER_DYNAMIC_ROI_UPDATE) {
-        // Dynamic ROI 표시 업데이트
-        UpdateDynamicROIDisplay();
-    }
-    else if (nIDEvent == TIMER_TRAJECTORY_FADE) {
-        // 페이드 아웃 처리
-        int currentAlpha = m_trajectoryAlpha.load();
-        int fadeStep = 255 / FADE_STEPS;
-        
-        currentAlpha -= fadeStep;
-        
-        if (currentAlpha <= 0) {
-            m_trajectoryAlpha = 0;
-            m_showTrajectory = false;
-            ClearTrajectory();
-            KillTimer(TIMER_TRAJECTORY_FADE);
-            
-            TRACE(_T("Trajectory fade out completed\n"));
-        } else {
-            m_trajectoryAlpha = currentAlpha;
-        }
-        
-        // 화면 갱신
-        Invalidate(FALSE);
-    }
-
-    CDialogEx::OnTimer(nIDEvent);
-}
-
-bool CXIMEASensorDiagDlg::ShouldSkipFrame()
+bool CXIMEASensorDiagDlg::ShouldSkipFrame() const
 {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_lastFrameDrawTime).count();
 
-    // Skip frame if too many pending or too soon since last draw
-    if (m_pendingFrameUpdates > MAX_PENDING_FRAMES ||
-        elapsed < MIN_FRAME_INTERVAL_MS) {
-        return true;
-    }
-
-    return false;
+    return (m_pendingFrameUpdates > MAX_PENDING_FRAMES ||
+        elapsed < MIN_FRAME_INTERVAL_MS);
 }
 
 void CXIMEASensorDiagDlg::SwapBuffers()
 {
-    // Rotate buffer indices for triple buffering
     int oldWrite = m_writeBufferIndex.load();
     int oldRead = m_readBufferIndex.load();
     int oldDisplay = m_displayBufferIndex.load();
@@ -810,15 +628,554 @@ void CXIMEASensorDiagDlg::SwapBuffers()
     m_writeBufferIndex = oldDisplay;
 }
 
-// 궤적 포인트 추가
+void CXIMEASensorDiagDlg::UpdateFPSCalculation()
+{
+    m_frameCount++;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_lastFPSUpdate).count();
+
+    if (elapsed >= 500) {  // Update every 500ms
+        m_currentFPS = (m_frameCount * 1000.0) / elapsed;
+        m_frameCount = 0;
+        m_lastFPSUpdate = now;
+        PostMessage(WM_UPDATE_FPS, 0, static_cast<LPARAM>(m_currentFPS * 10));
+    }
+}
+
+// ============================================================================
+// Rendering
+// ============================================================================
+void CXIMEASensorDiagDlg::OnPaint()
+{
+    if (IsIconic()) {
+        CPaintDC dc(this);
+        SendMessage(WM_ICONERASEBKGND, reinterpret_cast<WPARAM>(dc.GetSafeHdc()), 0);
+    }
+    else {
+        CDialogEx::OnPaint();
+
+        if (m_isStreaming) {
+            DrawFrame();
+        }
+    }
+}
+
+void CXIMEASensorDiagDlg::DrawFrame()
+{
+    if (!m_ui.pictureCtrl || !m_ui.pictureCtrl->GetSafeHwnd()) {
+        return;
+    }
+
+    // Initialize memory DC if needed
+    if (!m_bMemDCReady) {
+        InitializeMemoryDC();
+        if (!m_bMemDCReady) return;
+    }
+
+    CRect rect;
+    m_ui.pictureCtrl->GetClientRect(&rect);
+
+    // Recreate memory DC if size changed
+    if (rect != m_lastPictureRect) {
+        CleanupMemoryDC();
+        InitializeMemoryDC();
+    }
+
+    // Check frame rate limiting
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_lastRenderTime).count();
+
+    if (elapsed < 16) {  // 60 FPS limit
+        return;
+    }
+    m_lastRenderTime = now;
+
+    // Draw to memory DC
+    DrawCameraImage(m_memDC, rect);
+    DrawOverlays(m_memDC, rect);
+
+    // Copy to screen
+    CClientDC dc(m_ui.pictureCtrl);
+    dc.BitBlt(0, 0, rect.Width(), rect.Height(), &m_memDC, 0, 0, SRCCOPY);
+
+    m_lastFrameDrawTime = std::chrono::steady_clock::now();
+}
+
+void CXIMEASensorDiagDlg::DrawCameraImage(CDC& dc, const CRect& rect)
+{
+    // Get display buffer
+    int displayIdx = m_displayBufferIndex.load();
+    FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
+
+    if (!displayBuffer.ready || !displayBuffer.data ||
+        displayBuffer.width <= 0 || displayBuffer.height <= 0) {
+        return;
+    }
+
+    // Create grayscale bitmap info
+    constexpr int PALETTE_SIZE = 256;
+    const size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + PALETTE_SIZE * sizeof(RGBQUAD);
+
+    std::unique_ptr<uint8_t[]> bmpInfoBuffer;
+    try {
+        bmpInfoBuffer.reset(new uint8_t[bmpInfoSize]);
+    }
+    catch (const std::bad_alloc&) {
+        TRACE(_T("Failed to allocate memory for BITMAPINFO\n"));
+        return;
+    }
+
+    BITMAPINFO* pBmpInfo = reinterpret_cast<BITMAPINFO*>(bmpInfoBuffer.get());
+    memset(pBmpInfo, 0, bmpInfoSize);
+
+    // Setup bitmap header
+    BITMAPINFOHEADER& header = pBmpInfo->bmiHeader;
+    header.biSize = sizeof(BITMAPINFOHEADER);
+    header.biWidth = displayBuffer.width;
+    header.biHeight = -displayBuffer.height;  // Top-down
+    header.biPlanes = 1;
+    header.biBitCount = 8;
+    header.biCompression = BI_RGB;
+    header.biSizeImage = displayBuffer.width * displayBuffer.height;
+    header.biClrUsed = PALETTE_SIZE;
+    header.biClrImportant = PALETTE_SIZE;
+
+    // Setup grayscale palette
+    RGBQUAD* pPalette = pBmpInfo->bmiColors;
+    for (int i = 0; i < PALETTE_SIZE; i++) {
+        pPalette[i].rgbBlue = static_cast<BYTE>(i);
+        pPalette[i].rgbGreen = static_cast<BYTE>(i);
+        pPalette[i].rgbRed = static_cast<BYTE>(i);
+        pPalette[i].rgbReserved = 0;
+    }
+
+    // Draw image
+    int oldStretchMode = SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
+    SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, NULL);
+
+    StretchDIBits(
+        dc.GetSafeHdc(),
+        0, 0, rect.Width(), rect.Height(),
+        0, 0, displayBuffer.width, displayBuffer.height,
+        displayBuffer.data.get(),
+        pBmpInfo,
+        DIB_RGB_COLORS,
+        SRCCOPY
+    );
+
+    SetStretchBltMode(dc.GetSafeHdc(), oldStretchMode);
+}
+
+void CXIMEASensorDiagDlg::DrawOverlays(CDC& dc, const CRect& rect)
+{
+    // Draw trajectory if visible
+    if (m_showTrajectory && m_trajectoryAlpha > 0) {
+        DrawTrajectory(dc, rect);
+    }
+
+    // Draw detection overlay
+    if (Camera_IsRealtimeDetectionEnabled()) {
+        DrawDetectionOverlay(dc, rect);
+    }
+
+    // Draw ROI overlay
+    if (Camera_IsDynamicROIEnabled()) {
+        DrawDynamicROIOverlay(dc, rect);
+    }
+}
+
+void CXIMEASensorDiagDlg::InitializeMemoryDC()
+{
+    if (!m_ui.pictureCtrl || !m_ui.pictureCtrl->GetSafeHwnd()) {
+        return;
+    }
+
+    CClientDC dc(m_ui.pictureCtrl);
+    CRect rect;
+    m_ui.pictureCtrl->GetClientRect(&rect);
+
+    // Create memory DC
+    if (!m_memDC.GetSafeHdc()) {
+        m_memDC.CreateCompatibleDC(&dc);
+        m_memBitmap.CreateCompatibleBitmap(&dc, rect.Width(), rect.Height());
+        m_pOldBitmap = m_memDC.SelectObject(&m_memBitmap);
+
+        // Fill with gray background
+        m_memDC.FillSolidRect(rect, RGB(128, 128, 128));
+    }
+
+    m_lastPictureRect = rect;
+    m_bMemDCReady = true;
+}
+
+void CXIMEASensorDiagDlg::CleanupMemoryDC()
+{
+    if (m_memDC.GetSafeHdc()) {
+        m_memDC.SelectObject(m_pOldBitmap);
+        m_memBitmap.DeleteObject();
+        m_memDC.DeleteDC();
+    }
+
+    m_bMemDCReady = false;
+}
+
+// ============================================================================
+// Ball Detection
+// ============================================================================
+void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
+{
+    if (!m_ui.checkRealtimeDetection || !m_isStreaming) {
+        return;
+    }
+
+    BOOL isChecked = (m_ui.checkRealtimeDetection->GetCheck() == BST_CHECKED);
+
+    if (isChecked) {
+        EnableRealtimeDetection();
+    }
+    else {
+        DisableRealtimeDetection();
+    }
+}
+
+void CXIMEASensorDiagDlg::EnableRealtimeDetection()
+{
+    // Set detection callback
+    Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback, this);
+
+    if (Camera_EnableRealtimeDetection(true)) {
+        m_lastDetectionStatsUpdate = std::chrono::steady_clock::now();
+
+        // Enable ball state tracking
+        Camera_SetBallStateChangeCallback(BallStateChangeCallback, this);
+        Camera_EnableBallStateTracking(true);
+
+        // Start update timer
+        SetTimer(TIMER_BALL_STATE_UPDATE, UI_UPDATE_INTERVAL_MS, nullptr);
+
+        // Update UI
+        if (m_ui.btnResetTracking) {
+            m_ui.btnResetTracking->EnableWindow(TRUE);
+        }
+
+        if (m_ui.ballPosition) {
+            m_ui.ballPosition->SetWindowText(_T("Detecting..."));
+        }
+
+        if (m_ui.ballState) {
+            m_ui.ballState->SetWindowText(_T("NOT DETECTED"));
+        }
+
+        TRACE(_T("Real-time detection and state tracking enabled\n"));
+    }
+    else {
+        AfxMessageBox(_T("Failed to enable real-time detection!"));
+        m_ui.checkRealtimeDetection->SetCheck(BST_UNCHECKED);
+    }
+}
+
+void CXIMEASensorDiagDlg::DisableRealtimeDetection()
+{
+    // Disable tracking
+    Camera_EnableBallStateTracking(false);
+    Camera_SetBallStateChangeCallback(nullptr, nullptr);
+
+    Camera_EnableRealtimeDetection(false);
+    Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
+
+    // Stop timer
+    KillTimer(TIMER_BALL_STATE_UPDATE);
+
+    // Update UI
+    if (m_ui.btnResetTracking) {
+        m_ui.btnResetTracking->EnableWindow(FALSE);
+    }
+
+    // Reset displays
+    ResetDetectionDisplays();
+
+    TRACE(_T("Real-time detection and state tracking disabled\n"));
+}
+
+void CXIMEASensorDiagDlg::ResetDetectionDisplays()
+{
+    if (m_ui.ballPosition) {
+        m_ui.ballPosition->SetWindowText(_T("Not detected"));
+    }
+    if (m_ui.ballInfo) {
+        m_ui.ballInfo->SetWindowText(_T("-"));
+    }
+    if (m_ui.detectionFPS) {
+        m_ui.detectionFPS->SetWindowText(_T("0.0"));
+    }
+    if (m_ui.ballState) {
+        m_ui.ballState->SetWindowText(_T("NOT DETECTED"));
+    }
+    if (m_ui.stateTime) {
+        m_ui.stateTime->SetWindowText(_T("0 ms"));
+    }
+    if (m_ui.stableTime) {
+        m_ui.stableTime->SetWindowText(_T("0 ms"));
+    }
+}
+
+void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
+{
+    RealtimeDetectionResult result;
+    {
+        std::lock_guard<std::mutex> lock(m_detectionMutex);
+        result = m_lastDetectionResult;
+    }
+
+    if (!result.ballFound || result.ballCount == 0) {
+        return;
+    }
+
+    // Get current ball state for color
+    BallState currentState = Camera_GetBallState();
+
+    // Get display buffer dimensions
+    int displayIdx = m_displayBufferIndex.load();
+    FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
+
+    if (displayBuffer.width == 0 || displayBuffer.height == 0) {
+        return;
+    }
+
+    float scaleX = static_cast<float>(rect.Width()) / displayBuffer.width;
+    float scaleY = static_cast<float>(rect.Height()) / displayBuffer.height;
+
+    // Set pen based on state
+    COLORREF penColor = GetBallStateColor(currentState);
+    int penWidth = (currentState == BallState::READY) ? 4 : 3;
+
+    CPen pen(PS_SOLID, penWidth, penColor);
+    CPen* pOldPen = dc.SelectObject(&pen);
+    CBrush* pOldBrush = static_cast<CBrush*>(dc.SelectStockObject(NULL_BRUSH));
+
+    // Draw each detected ball
+    for (int i = 0; i < result.ballCount; i++) {
+        int x = static_cast<int>(result.balls[i].centerX * scaleX);
+        int y = static_cast<int>(result.balls[i].centerY * scaleY);
+        int radius = static_cast<int>(result.balls[i].radius * scaleX);
+
+        // Draw circle
+        dc.Ellipse(x - radius, y - radius, x + radius, y + radius);
+
+        // Draw crosshair
+        CPen crosshairPen(PS_SOLID, 2, RGB(255, 200, 100));
+        dc.SelectObject(&crosshairPen);
+        dc.MoveTo(x - 5, y);
+        dc.LineTo(x + 5, y);
+        dc.MoveTo(x, y - 5);
+        dc.LineTo(x, y + 5);
+        dc.SelectObject(&pen);
+
+        // Draw confidence for high confidence detections
+        if (result.balls[i].confidence > 0.75f) {
+            CString confStr;
+            confStr.Format(_T("%.0f%%"), result.balls[i].confidence * 100);
+            dc.SetBkMode(TRANSPARENT);
+            dc.SetTextColor(RGB(0, 255, 0));
+            dc.TextOut(x + radius + 5, y - 10, confStr);
+        }
+    }
+
+    // Draw READY indicator if applicable
+    if (currentState == BallState::READY) {
+        dc.SetTextColor(RGB(0, 255, 0));
+        dc.SetBkMode(TRANSPARENT);
+
+        CFont font;
+        font.CreateFont(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, 0,
+            ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, _T("Arial"));
+
+        CFont* pOldFont = dc.SelectObject(&font);
+
+        int x = static_cast<int>(result.balls[0].centerX * scaleX);
+        int y = static_cast<int>(result.balls[0].centerY * scaleY);
+        int radius = static_cast<int>(result.balls[0].radius * scaleX);
+
+        dc.TextOut(x - 20, y + radius + 10, _T("READY"));
+        dc.SelectObject(pOldFont);
+    }
+
+    dc.SelectObject(pOldPen);
+    dc.SelectObject(pOldBrush);
+}
+
+// ============================================================================
+// Ball State Management
+// ============================================================================
+void CXIMEASensorDiagDlg::UpdateBallStateDisplay()
+{
+    if (!Camera_IsBallStateTrackingEnabled()) {
+        return;
+    }
+
+    BallStateInfo info;
+    if (!Camera_GetBallStateInfo(&info)) {
+        return;
+    }
+
+    // Update state text
+    if (m_ui.ballState) {
+        CString stateStr = GetBallStateDisplayString(info.currentState);
+        m_ui.ballState->SetWindowText(stateStr);
+    }
+
+    // Update time in state
+    int timeInState = Camera_GetTimeInCurrentState();
+    if (m_ui.stateTime) {
+        CString timeStr;
+        if (timeInState < 1000) {
+            timeStr.Format(_T("%d ms"), timeInState);
+        }
+        else {
+            timeStr.Format(_T("%.1f s"), timeInState / 1000.0f);
+        }
+        m_ui.stateTime->SetWindowText(timeStr);
+    }
+
+    // Update stable time
+    if (m_ui.stableTime) {
+        if (info.currentState == BallState::STABILIZING ||
+            info.currentState == BallState::READY ||
+            info.currentState == BallState::STOPPED) {
+            CString stableStr;
+            if (info.stableDurationMs < 1000) {
+                stableStr.Format(_T("%d ms"), info.stableDurationMs);
+            }
+            else {
+                stableStr.Format(_T("%.1f s"), info.stableDurationMs / 1000.0f);
+            }
+            m_ui.stableTime->SetWindowText(stableStr);
+        }
+        else {
+            m_ui.stableTime->SetWindowText(_T("0 ms"));
+        }
+    }
+}
+
+CString CXIMEASensorDiagDlg::GetBallStateDisplayString(BallState state) const
+{
+    switch (state) {
+    case BallState::NOT_DETECTED:
+        return _T("NOT DETECTED");
+    case BallState::MOVING:
+        return _T("MOVING");
+    case BallState::STABILIZING:
+        return _T("STABILIZING...");
+    case BallState::READY:
+        return _T("READY");
+    case BallState::STOPPED:
+        return _T("STOPPED");
+    default:
+        return _T("UNKNOWN");
+    }
+}
+
+COLORREF CXIMEASensorDiagDlg::GetBallStateColor(BallState state) const
+{
+    switch (state) {
+    case BallState::NOT_DETECTED:
+        return RGB(128, 128, 128);  // Gray
+    case BallState::MOVING:
+        return RGB(255, 165, 0);    // Orange
+    case BallState::STABILIZING:
+        return RGB(255, 255, 0);    // Yellow
+    case BallState::READY:
+        return RGB(0, 255, 0);      // Green
+    case BallState::STOPPED:
+        return RGB(0, 128, 255);    // Blue
+    default:
+        return RGB(255, 0, 0);      // Red
+    }
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking()
+{
+    Camera_ResetBallStateTracking();
+    UpdateBallStateDisplay();
+
+    CString msg = _T("Ball state tracking has been reset.");
+    SetDlgItemText(IDC_STATIC_STATUS, msg);
+
+    TRACE(_T("Ball state tracking reset\n"));
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking()
+{
+    BallStateConfig config;
+    Camera_GetBallStateConfig(&config);
+
+    CString msg;
+    msg.Format(_T("Ball State Tracking Configuration:\n\n")
+        _T("Position Tolerance: %.1f pixels\n")
+        _T("Movement Threshold: %.1f pixels\n")
+        _T("Stable Time: %d ms\n")
+        _T("Min Consecutive Detections: %d\n\n")
+        _T("Default values are optimized for most cases."),
+        config.positionTolerance,
+        config.movementThreshold,
+        config.stableTimeMs,
+        config.minConsecutiveDetections);
+
+    AfxMessageBox(msg, MB_OK | MB_ICONINFORMATION);
+}
+
+// ============================================================================
+// Trajectory Visualization
+// ============================================================================
+void CXIMEASensorDiagDlg::StartTrajectoryRecording()
+{
+    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+
+    m_trajectoryPoints.clear();
+    m_isRecordingTrajectory = true;
+    m_showTrajectory = true;
+    m_trajectoryAlpha = 255;
+
+    // Stop fade timer if running
+    KillTimer(TIMER_TRAJECTORY_FADE);
+
+    TRACE(_T("Started trajectory recording\n"));
+}
+
+void CXIMEASensorDiagDlg::StopTrajectoryRecording()
+{
+    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+
+    m_isRecordingTrajectory = false;
+
+    TRACE(_T("Stopped trajectory recording - %zu points recorded\n"),
+        m_trajectoryPoints.size());
+}
+
+void CXIMEASensorDiagDlg::ClearTrajectory()
+{
+    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+
+    m_trajectoryPoints.clear();
+    m_isRecordingTrajectory = false;
+    m_showTrajectory = false;
+    m_trajectoryAlpha = 255;
+
+    KillTimer(TIMER_TRAJECTORY_FADE);
+}
+
 void CXIMEASensorDiagDlg::AddTrajectoryPoint(float x, float y, float confidence)
 {
-    if (!m_isRecordingTrajectory) return;
+    if (!m_isRecordingTrajectory) {
+        return;
+    }
 
     std::lock_guard<std::mutex> lock(m_trajectoryMutex);
 
-    // 최대 포인트 수 제한 (메모리 관리)
-    const size_t MAX_TRAJECTORY_POINTS = 1000;
+    // Limit maximum points
     if (m_trajectoryPoints.size() >= MAX_TRAJECTORY_POINTS) {
         m_trajectoryPoints.pop_front();
     }
@@ -826,20 +1183,55 @@ void CXIMEASensorDiagDlg::AddTrajectoryPoint(float x, float y, float confidence)
     m_trajectoryPoints.emplace_back(cv::Point2f(x, y), GetTickCount(), confidence);
 }
 
+void CXIMEASensorDiagDlg::StartTrajectoryFadeOut()
+{
+    m_trajectoryAlpha = 255;
+    SetTimer(TIMER_TRAJECTORY_FADE, FADE_DURATION_MS / FADE_STEPS, nullptr);
 
-// 궤적 그리기 메인 함수 - 수정 버전
+    TRACE(_T("Started trajectory fade out\n"));
+}
+
+void CXIMEASensorDiagDlg::UpdateTrajectoryFade()
+{
+    int currentAlpha = m_trajectoryAlpha.load();
+    int fadeStep = 255 / FADE_STEPS;
+
+    currentAlpha -= fadeStep;
+
+    if (currentAlpha <= 0) {
+        m_trajectoryAlpha = 0;
+        m_showTrajectory = false;
+        ClearTrajectory();
+        KillTimer(TIMER_TRAJECTORY_FADE);
+
+        TRACE(_T("Trajectory fade out completed\n"));
+    }
+    else {
+        m_trajectoryAlpha = currentAlpha;
+    }
+
+    // Refresh display
+    Invalidate(FALSE);
+}
+
 void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
 {
-    if (!m_showTrajectory || m_trajectoryAlpha == 0) return;
+    if (!m_showTrajectory || m_trajectoryAlpha == 0) {
+        return;
+    }
 
     std::lock_guard<std::mutex> lock(m_trajectoryMutex);
 
-    if (m_trajectoryPoints.size() < 2) return;
+    if (m_trajectoryPoints.size() < 2) {
+        return;
+    }
 
     HDC hdc = dc.GetSafeHdc();
-    if (!hdc) return;
+    if (!hdc) {
+        return;
+    }
 
-    // 화면 좌표로 변환
+    // Convert to screen coordinates
     std::vector<CPoint> screenPoints;
     screenPoints.reserve(m_trajectoryPoints.size());
 
@@ -847,44 +1239,25 @@ void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
         screenPoints.push_back(ConvertToScreenCoordinates(point.position, rect));
     }
 
-    // 페이드 아웃을 위한 알파값
+    // Draw based on alpha value
     int alpha = m_trajectoryAlpha.load();
 
     if (alpha == 255) {
-        // 완전 불투명일 때는 GDI 사용
-        CPen pen(PS_SOLID, m_trajectoryStyle.lineWidth, m_trajectoryStyle.lineColor);
-        CPen* pOldPen = dc.SelectObject(&pen);
+        // Full opacity - use GDI
+        DrawTrajectoryLine(dc, screenPoints);
 
-        dc.MoveTo(screenPoints[0]);
-        for (size_t i = 1; i < screenPoints.size(); ++i) {
-            dc.LineTo(screenPoints[i]);
+        if (m_trajectoryStyle.showPoints) {
+            DrawTrajectoryPoints(dc, screenPoints);
         }
-
-        dc.SelectObject(pOldPen);
     }
     else if (alpha > 0) {
-        // 페이드 아웃 중일 때 GDI+ 사용
+        // Fading - use GDI+
         Graphics graphics(hdc);
         graphics.SetSmoothingMode(SmoothingModeAntiAlias);
-
-        Color lineColor(alpha, GetRValue(m_trajectoryStyle.lineColor),
-            GetGValue(m_trajectoryStyle.lineColor),
-            GetBValue(m_trajectoryStyle.lineColor));
-        Pen pen(lineColor, static_cast<REAL>(m_trajectoryStyle.lineWidth));
-
-        if (screenPoints.size() >= 2) {
-            std::vector<Point> gdiPoints;
-            gdiPoints.reserve(screenPoints.size());
-
-            for (const auto& pt : screenPoints) {
-                gdiPoints.push_back(Point(pt.x, pt.y));
-            }
-
-            graphics.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
-        }
+        DrawTrajectoryWithAlpha(graphics, screenPoints, alpha);
     }
 
-    // 시작점과 끝점 표시
+    // Draw start and end markers
     if (screenPoints.size() > 0) {
         CBrush startBrush(RGB(0, 255, 0));
         CBrush* pOldBrush = dc.SelectObject(&startBrush);
@@ -900,82 +1273,69 @@ void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
     }
 }
 
-
-// GDI+ 포인트 그리기
-void CXIMEASensorDiagDlg::DrawTrajectoryPointsGDIPlus(Graphics& graphics,
-    const std::vector<CPoint>& screenPoints,
-    int alpha)
+void CXIMEASensorDiagDlg::DrawTrajectoryLine(CDC& dc, const std::vector<CPoint>& points)
 {
-    const int POINT_INTERVAL = std::max(1, static_cast<int>(screenPoints.size() / 20));
-
-    Color fillColor(alpha, GetRValue(m_trajectoryStyle.lineColor),
-        GetGValue(m_trajectoryStyle.lineColor),
-        GetBValue(m_trajectoryStyle.lineColor));
-    SolidBrush brush(fillColor);
-
-    for (size_t i = 0; i < screenPoints.size(); i += POINT_INTERVAL) {
-        int size = m_trajectoryStyle.pointSize;
-        graphics.FillEllipse(&brush,
-            screenPoints[i].x - size,
-            screenPoints[i].y - size,
-            size * 2, size * 2);
+    if (points.size() < 2) {
+        return;
     }
-}
-
-
-// 단순 선 그리기
-void CXIMEASensorDiagDlg::DrawTrajectoryLine(CDC& dc, const std::vector<CPoint>& screenPoints)
-{
-    if (screenPoints.size() < 2) return;
 
     CPen pen(PS_SOLID, m_trajectoryStyle.lineWidth, m_trajectoryStyle.lineColor);
     CPen* pOldPen = dc.SelectObject(&pen);
 
-    dc.MoveTo(screenPoints[0]);
-    for (size_t i = 1; i < screenPoints.size(); ++i) {
-        dc.LineTo(screenPoints[i]);
+    dc.MoveTo(points[0]);
+    for (size_t i = 1; i < points.size(); ++i) {
+        dc.LineTo(points[i]);
     }
 
     dc.SelectObject(pOldPen);
 }
 
-// 개별 포인트 그리기
-void CXIMEASensorDiagDlg::DrawTrajectoryPoints(CDC& dc, const std::vector<CPoint>& screenPoints)
+void CXIMEASensorDiagDlg::DrawTrajectoryPoints(CDC& dc, const std::vector<CPoint>& points)
 {
-    // 일정 간격으로 포인트 표시
-    const int POINT_INTERVAL = std::max(1, static_cast<int>(screenPoints.size() / 20));
+    const int POINT_INTERVAL = std::max(1, static_cast<int>(points.size() / 20));
 
     CBrush brush(m_trajectoryStyle.lineColor);
     CBrush* pOldBrush = dc.SelectObject(&brush);
 
-    for (size_t i = 0; i < screenPoints.size(); i += POINT_INTERVAL) {
+    for (size_t i = 0; i < points.size(); i += POINT_INTERVAL) {
         int size = m_trajectoryStyle.pointSize;
-        dc.Ellipse(screenPoints[i].x - size, screenPoints[i].y - size,
-            screenPoints[i].x + size, screenPoints[i].y + size);
+        dc.Ellipse(points[i].x - size, points[i].y - size,
+            points[i].x + size, points[i].y + size);
     }
 
     dc.SelectObject(pOldBrush);
 }
 
-// 페이드 아웃 시작
-void CXIMEASensorDiagDlg::StartTrajectoryFadeOut()
+void CXIMEASensorDiagDlg::DrawTrajectoryWithAlpha(Gdiplus::Graphics& graphics,
+    const std::vector<CPoint>& points,
+    int alpha)
 {
-    m_trajectoryAlpha = 255;
-    SetTimer(TIMER_TRAJECTORY_FADE, FADE_DURATION_MS / FADE_STEPS, nullptr);
+    if (points.size() < 2) {
+        return;
+    }
 
-    TRACE(_T("Started trajectory fade out\n"));
+    Color lineColor(alpha,
+        GetRValue(m_trajectoryStyle.lineColor),
+        GetGValue(m_trajectoryStyle.lineColor),
+        GetBValue(m_trajectoryStyle.lineColor));
+
+    Pen pen(lineColor, static_cast<REAL>(m_trajectoryStyle.lineWidth));
+
+    // Convert to GDI+ points
+    std::vector<Point> gdiPoints;
+    gdiPoints.reserve(points.size());
+
+    for (const auto& pt : points) {
+        gdiPoints.emplace_back(pt.x, pt.y);
+    }
+
+    graphics.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
 }
 
-void CXIMEASensorDiagDlg::StopTrajectoryFadeOut()
+CPoint CXIMEASensorDiagDlg::ConvertToScreenCoordinates(const cv::Point2f& point,
+    const CRect& displayRect)
 {
-    KillTimer(TIMER_TRAJECTORY_FADE);
-    m_trajectoryAlpha = 255;
-}
-
-// 좌표 변환
-CPoint CXIMEASensorDiagDlg::ConvertToScreenCoordinates(const cv::Point2f& point, const CRect& displayRect)
-{
-    // 현재 디스플레이 버퍼의 크기 가져오기
+    // Get current display buffer dimensions
     int displayIdx = m_displayBufferIndex.load();
     FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
 
@@ -990,84 +1350,720 @@ CPoint CXIMEASensorDiagDlg::ConvertToScreenCoordinates(const cv::Point2f& point,
     int x = static_cast<int>(point.x * scaleX);
     int y = static_cast<int>(point.y * scaleY);
 
-    // 경계 검사 추가
+    // Boundary check
     x = std::max(0, std::min(x, displayRect.Width() - 1));
     y = std::max(0, std::min(y, displayRect.Height() - 1));
 
     return CPoint(x, y);
 }
 
-void CXIMEASensorDiagDlg::OnShotCompleted(const ShotCompletedInfo* info)
+// ============================================================================
+// Dynamic ROI
+// ============================================================================
+void CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI()
 {
-    // 궤적 기록 중지
-    StopTrajectoryRecording();
-
-    // 페이드 아웃 시작
-    StartTrajectoryFadeOut();
-
-    // 상태 표시
-    CString msg;
-    msg.Format(_T("Shot Completed! Distance: %.1f px, Avg Speed: %.1f px/s"),
-        info->totalDistance, info->avgVelocity);
-
-    if (m_staticStatus) {
-        m_staticStatus->SetWindowText(msg);
-    }
-
-    TRACE(_T("Shot completed - Total distance: %.1f pixels\n"), info->totalDistance);
-}
-
-void CXIMEASensorDiagDlg::OnFrameReceivedCallback(const FrameInfo& frameInfo)
-{
-    // Skip frame if we're falling behind
-    if (ShouldSkipFrame()) {
+    if (!m_ui.checkEnableDynamicROI || !m_isStreaming) {
         return;
     }
 
-    // Get the write buffer
-    int writeIdx = m_writeBufferIndex.load();
-    FrameBuffer& writeBuffer = m_frameBuffers[writeIdx];
+    BOOL isChecked = (m_ui.checkEnableDynamicROI->GetCheck() == BST_CHECKED);
 
-    // Only update if buffer is not being read
-    if (!writeBuffer.ready.exchange(false)) {
-        int requiredSize = frameInfo.width * frameInfo.height;
-
-        // 재할당이 필요한 경우
-        writeBuffer.reallocate(requiredSize);
-
-        if (frameInfo.data && requiredSize > 0) {
-            memcpy(writeBuffer.data.get(), frameInfo.data, requiredSize);
-            writeBuffer.width = frameInfo.width;
-            writeBuffer.height = frameInfo.height;
-        }
-
-        writeBuffer.ready = true;
-
-        // Swap buffers
-        SwapBuffers();
-
-        // Post update message only if not too many pending
-        if (m_pendingFrameUpdates.fetch_add(1) < MAX_PENDING_FRAMES) {
-            PostMessage(WM_UPDATE_FRAME);
-        }
-        else {
-            m_pendingFrameUpdates.fetch_sub(1);
-        }
+    if (isChecked) {
+        EnableDynamicROI();
     }
-
-    // Update FPS display
-    m_frameCount++;
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastFPSUpdate).count();
-
-    if (elapsed >= 500) {  // Update every 500ms
-        m_currentFPS = (m_frameCount * 1000.0) / elapsed;
-        m_frameCount = 0;
-        m_lastFPSUpdate = now;
-        PostMessage(WM_UPDATE_FPS, 0, (LPARAM)(m_currentFPS * 10));
+    else {
+        DisableDynamicROI();
     }
 }
 
+void CXIMEASensorDiagDlg::EnableDynamicROI()
+{
+    // Get current configuration
+    DynamicROIConfig config;
+    Camera_GetDynamicROIConfig(&config);
+
+    // Update from UI
+    config.enabled = true;
+    config.showROIOverlay = (m_ui.checkShowROIOverlay &&
+        m_ui.checkShowROIOverlay->GetCheck() == BST_CHECKED);
+
+    if (m_ui.sliderROIMultiplier) {
+        config.roiSizeMultiplier = m_ui.sliderROIMultiplier->GetPos() / 10.0f;
+    }
+
+    // Apply configuration
+    Camera_SetDynamicROIConfig(&config);
+    Camera_EnableDynamicROI(true);
+
+    // Start update timer
+    SetTimer(TIMER_DYNAMIC_ROI_UPDATE, UI_UPDATE_INTERVAL_MS, nullptr);
+
+    TRACE(_T("Dynamic ROI enabled\n"));
+}
+
+void CXIMEASensorDiagDlg::DisableDynamicROI()
+{
+    Camera_EnableDynamicROI(false);
+    KillTimer(TIMER_DYNAMIC_ROI_UPDATE);
+
+    UpdateDynamicROIDisplay();
+
+    TRACE(_T("Dynamic ROI disabled\n"));
+}
+
+void CXIMEASensorDiagDlg::UpdateDynamicROIDisplay()
+{
+    DynamicROIInfo info;
+    if (!Camera_GetDynamicROIInfo(&info)) {
+        return;
+    }
+
+    if (m_ui.roiStatus) {
+        m_ui.roiStatus->SetWindowText(info.active ? _T("Active") : _T("Inactive"));
+    }
+
+    if (m_ui.roiSize) {
+        if (info.active) {
+            CString sizeStr;
+            sizeStr.Format(_T("%dx%d"), info.width, info.height);
+            m_ui.roiSize->SetWindowText(sizeStr);
+        }
+        else {
+            m_ui.roiSize->SetWindowText(_T("-"));
+        }
+    }
+
+    if (m_ui.roiReduction) {
+        if (info.active) {
+            CString reductionStr;
+            reductionStr.Format(_T("%.1f%%"), info.processingTimeReduction);
+            m_ui.roiReduction->SetWindowText(reductionStr);
+        }
+        else {
+            m_ui.roiReduction->SetWindowText(_T("0%"));
+        }
+    }
+}
+
+void CXIMEASensorDiagDlg::DrawDynamicROIOverlay(CDC& dc, const CRect& rect)
+{
+    DynamicROIConfig config;
+    DynamicROIInfo info;
+
+    if (!Camera_GetDynamicROIConfig(&config) || !config.showROIOverlay) {
+        return;
+    }
+
+    if (!Camera_GetDynamicROIInfo(&info) || !info.active) {
+        return;
+    }
+
+    // Get display buffer dimensions
+    int displayIdx = m_displayBufferIndex.load();
+    FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
+
+    if (displayBuffer.width == 0 || displayBuffer.height == 0) {
+        return;
+    }
+
+    float scaleX = static_cast<float>(rect.Width()) / displayBuffer.width;
+    float scaleY = static_cast<float>(rect.Height()) / displayBuffer.height;
+
+    // Calculate ROI rectangle
+    int x = static_cast<int>((info.centerX - info.width / 2) * scaleX);
+    int y = static_cast<int>((info.centerY - info.height / 2) * scaleY);
+    int w = static_cast<int>(info.width * scaleX);
+    int h = static_cast<int>(info.height * scaleY);
+
+    // Draw ROI boundary
+    CPen pen(PS_DASH, 2, RGB(255, 128, 0)); // Orange dashed line
+    CPen* pOldPen = dc.SelectObject(&pen);
+    CBrush* pOldBrush = static_cast<CBrush*>(dc.SelectStockObject(NULL_BRUSH));
+
+    dc.Rectangle(x, y, x + w, y + h);
+
+    // Draw ROI info
+    dc.SetBkMode(TRANSPARENT);
+    dc.SetTextColor(RGB(255, 128, 0));
+
+    CString roiText;
+    roiText.Format(_T("ROI: %dx%d (%.1f%% reduction)"),
+        info.width, info.height, info.processingTimeReduction);
+    dc.TextOut(x + 2, y + 2, roiText);
+
+    dc.SelectObject(pOldPen);
+    dc.SelectObject(pOldBrush);
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedCheckShowROIOverlay()
+{
+    if (!m_ui.checkShowROIOverlay) {
+        return;
+    }
+
+    DynamicROIConfig config;
+    if (Camera_GetDynamicROIConfig(&config)) {
+        config.showROIOverlay = (m_ui.checkShowROIOverlay->GetCheck() == BST_CHECKED);
+        Camera_SetDynamicROIConfig(&config);
+    }
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedButtonResetROI()
+{
+    Camera_ResetDynamicROI();
+    UpdateDynamicROIDisplay();
+
+    TRACE(_T("Dynamic ROI reset\n"));
+}
+
+// ============================================================================
+// Timer Handlers
+// ============================================================================
+void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
+{
+    switch (nIDEvent) {
+    case TIMER_UPDATE_STATISTICS:
+        if (m_isStreaming) {
+            UpdateStatistics();
+        }
+        break;
+
+    case TIMER_FRAME_UPDATE:
+        if (m_pendingFrameUpdates > 0 && m_ui.pictureCtrl) {
+            CRect rect;
+            m_ui.pictureCtrl->GetWindowRect(&rect);
+            ScreenToClient(&rect);
+            InvalidateRect(&rect, FALSE);
+        }
+        break;
+
+    case TIMER_BALL_STATE_UPDATE:
+        UpdateBallStateDisplay();
+        break;
+
+    case TIMER_DYNAMIC_ROI_UPDATE:
+        UpdateDynamicROIDisplay();
+        break;
+
+    case TIMER_TRAJECTORY_FADE:
+        UpdateTrajectoryFade();
+        break;
+    }
+
+    CDialogEx::OnTimer(nIDEvent);
+}
+
+void CXIMEASensorDiagDlg::UpdateStatistics()
+{
+    unsigned long totalFrames, droppedFrames;
+    double avgFPS, minFPS, maxFPS;
+
+    if (Camera_GetStatistics(&totalFrames, &droppedFrames, &avgFPS, &minFPS, &maxFPS)) {
+        CString str;
+        str.Format(_T("Total: %lu, Dropped: %lu, Avg FPS: %.1f"),
+            totalFrames, droppedFrames, avgFPS);
+
+        if (m_ui.status) {
+            m_ui.status->SetWindowText(str);
+        }
+    }
+}
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+void CXIMEASensorDiagDlg::HandleUSBError()
+{
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_lastUSBError).count();
+
+    // Reset error count if enough time has passed
+    if (elapsed > USB_ERROR_RESET_TIME_MS) {
+        m_usbErrorCount = 0;
+    }
+
+    m_lastUSBError = now;
+    m_usbErrorCount++;
+
+    // If too many errors, attempt recovery
+    if (m_usbErrorCount >= MAX_USB_ERRORS) {
+        TRACE(_T("Too many USB errors. Attempting to restart camera...\n"));
+
+        // Stop and restart
+        PostMessage(WM_COMMAND, MAKEWPARAM(IDC_BUTTON_STOP, BN_CLICKED), 0);
+
+        // Set timer to restart after delay
+        SetTimer(3000, 2000, nullptr); // Timer ID 3000, 2 second delay
+    }
+}
+
+void CXIMEASensorDiagDlg::ResetUSBErrorCount()
+{
+    m_usbErrorCount = 0;
+    m_lastUSBError = std::chrono::steady_clock::now();
+}
+
+void CXIMEASensorDiagDlg::ShowError(const CString& message)
+{
+    // Avoid showing message box for recoverable errors
+    if (message.Find(_T("Device not ready")) != -1 ||
+        message.Find(_T("USB")) != -1) {
+        TRACE(_T("Recoverable error: %s\n"), message.GetString());
+        return;
+    }
+
+    MessageBox(message, _T("Camera Error"), MB_OK | MB_ICONERROR);
+}
+
+
+bool CXIMEASensorDiagDlg::HandleCameraError(CameraError error, const CString& message)
+{
+    bool handled = false;
+
+    switch (error) {
+    case CameraError::DEVICE_NOT_FOUND:
+    {
+        // Device disconnected - stop streaming
+        PostMessage(WM_COMMAND, MAKEWPARAM(IDC_BUTTON_STOP, BN_CLICKED), 0);
+        MessageBox(_T("Camera device was disconnected. Please reconnect and try again."),
+            _T("Device Error"), MB_OK | MB_ICONWARNING);
+        handled = true;
+    }
+    break;
+
+    case CameraError::DEVICE_NOT_READY:
+    case CameraError::TIMEOUT:
+    {
+        // USB/Timeout errors - attempt recovery
+        HandleUSBError();
+        handled = true;
+    }
+    break;
+
+    case CameraError::FRAME_GRAB_ERROR:
+    {
+        // Frame grab error - log but continue
+        TRACE(_T("Frame grab error: %s\n"), message.GetString());
+        handled = true;
+    }
+    break;
+
+    case CameraError::PARAMETER_ERROR:
+    {
+        // Parameter error - sync UI with camera
+        SyncSlidersWithCamera();
+        ShowError(_T("Invalid parameter. Settings have been reset to current values."));
+        handled = true;
+    }
+    break;
+
+    case CameraError::MEMORY_ERROR:
+    {
+        // Memory error - critical
+        StopCamera();
+        MessageBox(_T("Memory allocation error. Camera has been stopped."),
+            _T("Critical Error"), MB_OK | MB_ICONERROR);
+        handled = true;
+    }
+    break;
+
+    case CameraError::OPEN_FAILED:
+    case CameraError::START_FAILED:
+    {
+        // Start/Open failed - already handled by caller
+        handled = false;
+    }
+    break;
+
+    default:
+    {
+        // Unknown error
+        TRACE(_T("Unhandled camera error: %d - %s\n"),
+            static_cast<int>(error), message.GetString());
+        handled = false;
+    }
+    break;
+    }
+
+    return handled;
+}
+
+void CXIMEASensorDiagDlg::ScheduleCameraRestart()
+{
+    m_pendingCameraRestart = true;
+    m_lastDeviceIndex = m_ui.comboDevices->GetCurSel();
+
+    // Schedule restart after delay
+    SetTimer(DialogConstants::TIMER_CAMERA_RESTART,
+        DialogConstants::CAMERA_RESTART_DELAY_MS, nullptr);
+}
+
+void CXIMEASensorDiagDlg::ExecuteCameraRestart()
+{
+    if (!m_pendingCameraRestart || m_lastDeviceIndex < 0) {
+        return;
+    }
+
+    m_pendingCameraRestart = false;
+
+    // Attempt to restart camera
+    if (StartCamera(m_lastDeviceIndex)) {
+        TRACE(_T("Camera successfully restarted after USB error\n"));
+        ResetUSBErrorCount();
+    }
+    else {
+        MessageBox(_T("Failed to restart camera. Please check the connection."),
+            _T("Camera Error"), MB_OK | MB_ICONERROR);
+    }
+}
+
+// ============================================================================
+// Snapshot Handling
+// ============================================================================
+void CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot()
+{
+    if (!m_isStreaming) {
+        AfxMessageBox(_T("Camera is not running!"));
+        return;
+    }
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+    if (Camera_IsContinuousCapturing()) {
+        AfxMessageBox(_T("Already in continuous capture mode!"));
+        return;
+    }
+
+    BOOL isContinuous = (m_ui.checkContinuous &&
+        m_ui.checkContinuous->GetCheck() == BST_CHECKED);
+
+    if (isContinuous) {
+        HandleContinuousCapture();
+    }
+    else
+#endif
+    {
+        HandleSingleSnapshot();
+    }
+}
+
+void CXIMEASensorDiagDlg::HandleSingleSnapshot()
+{
+    SnapshotDefaults defaults;
+    Camera_GetSnapshotDefaults(&defaults);
+
+    // Ask for format
+    int result = MessageBox(_T("Select image format:\n\nPNG (Yes) - Lossless format\nJPG (No) - Compressed format"),
+        _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
+
+    if (result == IDCANCEL) {
+        return;
+    }
+
+    defaults.format = (result == IDYES) ? 0 : 1;
+    Camera_SetSnapshotDefaults(&defaults);
+
+    // Generate filename
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    CString filename;
+    const char* extension = (defaults.format == 0) ? "png" : "jpg";
+    filename.Format(_T("snapshot_%04d%02d%02d_%02d%02d%02d.%s"),
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+        CString(extension));
+
+    // Save snapshot
+    CStringA filenameA(filename);
+    bool saveSuccess = Camera_SaveSnapshotWithDefaults(filenameA.GetString());
+
+    if (saveSuccess) {
+        int width = 0, height = 0;
+        Camera_GetROI(nullptr, nullptr, &width, &height);
+
+        CString msg;
+        msg.Format(_T("Snapshot saved: %s\nSize: %dx%d\nFormat: %s\nQuality: %d%%"),
+            filename.GetString(), width, height,
+            (defaults.format == 0) ? _T("PNG") : _T("JPG"),
+            defaults.quality);
+        AfxMessageBox(msg);
+    }
+    else {
+        AfxMessageBox(_T("Failed to save image!"));
+    }
+}
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+void CXIMEASensorDiagDlg::HandleContinuousCapture()
+{
+    ContinuousCaptureConfig config;
+    Camera_GetContinuousCaptureDefaults(&config);
+
+    // Ask for format
+    int result = MessageBox(_T("Select image format:\n\nPNG (Yes) - Lossless, larger files\nJPG (No) - Compressed, smaller files"),
+        _T("Image Format"), MB_YESNOCANCEL | MB_ICONQUESTION);
+
+    if (result == IDCANCEL) {
+        return;
+    }
+
+    config.imageFormat = (result == IDYES) ? 0 : 1;
+    Camera_SetContinuousCaptureDefaults(&config);
+
+    // Set progress callback
+    Camera_SetContinuousCaptureProgressCallback(ContinuousCaptureProgressCallback);
+
+    TRACE(_T("Starting continuous capture for %.1f seconds with ball detection\n"),
+        config.durationSeconds);
+
+    if (Camera_StartContinuousCaptureWithDefaults()) {
+        // Disable controls during capture
+        if (m_ui.btnSnapshot) {
+            m_ui.btnSnapshot->EnableWindow(FALSE);
+        }
+        if (m_ui.checkContinuous) {
+            m_ui.checkContinuous->EnableWindow(FALSE);
+        }
+
+        // Update status
+        if (m_ui.status) {
+            CString status;
+            status.Format(_T("Continuous capture (%.1fs) with ball detection in progress..."),
+                config.durationSeconds);
+            m_ui.status->SetWindowText(status);
+        }
+
+        TRACE(_T("Continuous capture started successfully\n"));
+    }
+    else {
+        AfxMessageBox(_T("Failed to start continuous capture!"));
+        TRACE(_T("Failed to start continuous capture\n"));
+    }
+}
+#endif
+
+// ============================================================================
+// Message Handlers
+// ============================================================================
+LRESULT CXIMEASensorDiagDlg::OnUpdateFrame(WPARAM wParam, LPARAM lParam)
+{
+    m_pendingFrameUpdates.fetch_sub(1);
+
+    if (!IsIconic() && m_ui.pictureCtrl && m_ui.pictureCtrl->GetSafeHwnd()) {
+        CRect rect;
+        m_ui.pictureCtrl->GetWindowRect(&rect);
+        ScreenToClient(&rect);
+        InvalidateRect(&rect, FALSE);
+    }
+
+    return 0;
+}
+
+LRESULT CXIMEASensorDiagDlg::OnUpdateStatus(WPARAM wParam, LPARAM lParam)
+{
+    CString* pMsg = reinterpret_cast<CString*>(lParam);
+    if (pMsg && m_ui.status) {
+        m_ui.status->SetWindowText(*pMsg);
+        delete pMsg;
+    }
+    return 0;
+}
+
+LRESULT CXIMEASensorDiagDlg::OnUpdateError(WPARAM wParam, LPARAM lParam)
+{
+    CString* pMsg = reinterpret_cast<CString*>(lParam);
+    if (pMsg) {
+        ShowError(*pMsg);
+        delete pMsg;
+    }
+    return 0;
+}
+
+LRESULT CXIMEASensorDiagDlg::OnUpdateFPS(WPARAM wParam, LPARAM lParam)
+{
+    double fps = lParam / 10.0;
+    CString str;
+    str.Format(_T("%.1f"), fps);
+
+    if (m_ui.fps) {
+        m_ui.fps->SetWindowText(str);
+    }
+    return 0;
+}
+
+LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
+{
+    RealtimeDetectionResult result;
+    {
+        std::lock_guard<std::mutex> lock(m_detectionMutex);
+        result = m_lastDetectionResult;
+    }
+
+    // Update position display
+    if (result.ballFound && result.ballCount > 0) {
+        CString posStr;
+        posStr.Format(_T("X: %d, Y: %d"),
+            static_cast<int>(result.balls[0].centerX),
+            static_cast<int>(result.balls[0].centerY));
+
+        if (m_ui.ballPosition) {
+            m_ui.ballPosition->SetWindowText(posStr);
+        }
+
+        CString infoStr;
+        infoStr.Format(_T("Radius: %d px, Confidence: %.1f%%, Time: %.1f ms"),
+            static_cast<int>(result.balls[0].radius),
+            result.balls[0].confidence * 100.0f,
+            result.detectionTimeMs);
+
+        if (m_ui.ballInfo) {
+            m_ui.ballInfo->SetWindowText(infoStr);
+        }
+    }
+    else {
+        if (m_ui.ballPosition) {
+            m_ui.ballPosition->SetWindowText(_T("Not detected"));
+        }
+        if (m_ui.ballInfo) {
+            m_ui.ballInfo->SetWindowText(_T("-"));
+        }
+    }
+
+    // Update detection FPS periodically
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_lastDetectionStatsUpdate).count();
+
+    if (elapsed >= 1000) {
+        int processedFrames = 0;
+        double avgProcessingTime = 0.0;
+        double detectionFPS = 0.0;
+
+        Camera_GetRealtimeDetectionStats(&processedFrames, &avgProcessingTime, &detectionFPS);
+
+        if (m_ui.detectionFPS) {
+            CString fpsStr;
+            fpsStr.Format(_T("%.1f"), detectionFPS);
+            m_ui.detectionFPS->SetWindowText(fpsStr);
+        }
+
+        m_lastDetectionStatsUpdate = now;
+    }
+
+    return 0;
+}
+
+LRESULT CXIMEASensorDiagDlg::OnUpdateBallState(WPARAM wParam, LPARAM lParam)
+{
+    BallState newState = static_cast<BallState>(wParam);
+    HandleBallStateChange(newState, BallState::NOT_DETECTED);
+    UpdateBallStateDisplay();
+
+    return 0;
+}
+
+LRESULT CXIMEASensorDiagDlg::OnUpdateDynamicROI(WPARAM wParam, LPARAM lParam)
+{
+    UpdateDynamicROIDisplay();
+    return 0;
+}
+
+LRESULT CXIMEASensorDiagDlg::OnUpdateShotCompleted(WPARAM wParam, LPARAM lParam)
+{
+    const ShotCompletedInfo* info = reinterpret_cast<const ShotCompletedInfo*>(lParam);
+    if (info) {
+        OnShotCompleted(info);
+    }
+    return 0;
+}
+
+LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM lParam)
+{
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+    HandleContinuousCaptureComplete();
+#endif
+    return 0;
+}
+
+#ifdef ENABLE_CONTINUOUS_CAPTURE
+void CXIMEASensorDiagDlg::HandleContinuousCaptureComplete()
+{
+    int totalFrames = 0, savedFrames = 0, droppedFrames = 0;
+    double duration = 0.0;
+    char folderPath[256] = { 0 };
+
+    bool success = Camera_GetContinuousCaptureResult(&totalFrames, &savedFrames,
+        &droppedFrames, &duration,
+        folderPath, sizeof(folderPath));
+
+    // Re-enable controls
+    if (m_ui.btnSnapshot) {
+        m_ui.btnSnapshot->EnableWindow(TRUE);
+    }
+    if (m_ui.checkContinuous) {
+        m_ui.checkContinuous->EnableWindow(TRUE);
+    }
+
+    // Build result message
+    CString msg;
+    if (success) {
+        msg.Format(_T("Continuous capture completed!\n\n")
+            _T("Total frames: %d\n")
+            _T("Saved frames: %d\n")
+            _T("Dropped frames: %d\n")
+            _T("Duration: %.3f sec\n")
+            _T("Average FPS: %.1f\n")
+            _T("Folder: %s"),
+            totalFrames, savedFrames, droppedFrames,
+            duration, totalFrames / duration,
+            CString(folderPath).GetString());
+
+        // Add ball detection results if continuous mode
+        BOOL isContinuous = (m_ui.checkContinuous &&
+            m_ui.checkContinuous->GetCheck() == BST_CHECKED);
+
+        if (isContinuous) {
+            AppendBallDetectionResults(msg);
+        }
+    }
+    else {
+        msg = _T("Continuous capture failed!");
+    }
+
+    AfxMessageBox(msg);
+
+    // Reset status
+    if (m_ui.status) {
+        m_ui.status->SetWindowText(_T("Capturing..."));
+    }
+}
+
+void CXIMEASensorDiagDlg::AppendBallDetectionResults(CString& msg)
+{
+    int framesWithBalls = 0;
+    int totalBallsDetected = 0;
+    float averageConfidence = 0.0f;
+    char detectionFolder[256] = { 0 };
+
+    if (Camera_GetContinuousCaptureDetectionResult(&framesWithBalls, &totalBallsDetected,
+        &averageConfidence, detectionFolder,
+        sizeof(detectionFolder))) {
+        CString detectionMsg;
+        detectionMsg.Format(_T("\n\nBall Detection Results:\n")
+            _T("Frames with balls: %d\n")
+            _T("Total balls detected: %d\n")
+            _T("Average confidence: %.1f%%\n")
+            _T("Detection images: %s"),
+            framesWithBalls, totalBallsDetected,
+            averageConfidence * 100.0f,
+            CString(detectionFolder).GetString());
+        msg += detectionMsg;
+    }
+}
+#endif
+
+// ============================================================================
+// Callback Implementations
+// ============================================================================
 void CXIMEASensorDiagDlg::OnStateChangedCallback(CameraState newState, CameraState oldState)
 {
     CString* pMsg = new CString();
@@ -1087,39 +2083,7 @@ void CXIMEASensorDiagDlg::OnStateChangedCallback(CameraState newState, CameraSta
         break;
     }
 
-    PostMessage(WM_UPDATE_STATUS, 0, (LPARAM)pMsg);
-}
-
-void CXIMEASensorDiagDlg::HandleUSBError()
-{
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - m_lastUSBError).count();
-
-    // Reset error count if enough time has passed
-    if (elapsed > USB_ERROR_RESET_TIME_MS) {
-        m_usbErrorCount = 0;
-    }
-
-    m_lastUSBError = now;
-    m_usbErrorCount++;
-
-    // If too many errors, stop and restart
-    if (m_usbErrorCount >= MAX_USB_ERRORS) {
-        TRACE(_T("Too many USB errors. Attempting to restart camera...\n"));
-
-        // Post stop and restart messages
-        PostMessage(WM_COMMAND, MAKEWPARAM(IDC_BUTTON_STOP, BN_CLICKED), 0);
-
-        // Set timer to restart after a delay
-        SetTimer(3000, 2000, nullptr); // Timer ID 3000, 2 second delay
-    }
-}
-
-void CXIMEASensorDiagDlg::ResetUSBErrorCount()
-{
-    m_usbErrorCount = 0;
-    m_lastUSBError = std::chrono::steady_clock::now();
+    PostMessage(WM_UPDATE_STATUS, 0, reinterpret_cast<LPARAM>(pMsg));
 }
 
 void CXIMEASensorDiagDlg::OnErrorCallback(CameraError error, const std::string& errorMessage)
@@ -1129,16 +2093,16 @@ void CXIMEASensorDiagDlg::OnErrorCallback(CameraError error, const std::string& 
         error == CameraError::TIMEOUT ||
         errorMessage.find("USB") != std::string::npos ||
         errorMessage.find("Device not ready") != std::string::npos) {
-
         HandleUSBError();
     }
 
+    // Handle disconnection
     if (errorMessage.find("Camera disconnected") != std::string::npos) {
         PostMessage(WM_COMMAND, MAKEWPARAM(IDC_BUTTON_STOP, BN_CLICKED), 0);
     }
 
     CString* pMsg = new CString(errorMessage.c_str());
-    PostMessage(WM_UPDATE_ERROR, (WPARAM)error, (LPARAM)pMsg);
+    PostMessage(WM_UPDATE_ERROR, static_cast<WPARAM>(error), reinterpret_cast<LPARAM>(pMsg));
 }
 
 void CXIMEASensorDiagDlg::OnPropertyChangedCallback(const std::string& propertyName,
@@ -1148,363 +2112,6 @@ void CXIMEASensorDiagDlg::OnPropertyChangedCallback(const std::string& propertyN
         CString(propertyName.c_str()), CString(value.c_str()));
 }
 
-LRESULT CXIMEASensorDiagDlg::OnUpdateFrame(WPARAM wParam, LPARAM lParam)
-{
-    m_pendingFrameUpdates.fetch_sub(1);
-
-    if (IsIconic()) {
-        return 0;
-    }
-
-    // Picture Control만 다시 그리기
-    if (m_pictureCtrl && m_pictureCtrl->GetSafeHwnd()) {
-        CRect rect;
-        m_pictureCtrl->GetWindowRect(&rect);
-        ScreenToClient(&rect);
-        InvalidateRect(&rect, FALSE);
-    }
-
-    return 0;
-}
-
-LRESULT CXIMEASensorDiagDlg::OnUpdateStatus(WPARAM wParam, LPARAM lParam)
-{
-    CString* pMsg = (CString*)lParam;
-    if (pMsg && m_staticStatus) {
-        m_staticStatus->SetWindowText(*pMsg);
-        delete pMsg;
-    }
-    return 0;
-}
-
-LRESULT CXIMEASensorDiagDlg::OnUpdateError(WPARAM wParam, LPARAM lParam)
-{
-    CString* pMsg = (CString*)lParam;
-    if (pMsg) {
-        ShowError(*pMsg);
-        delete pMsg;
-    }
-    return 0;
-}
-
-LRESULT CXIMEASensorDiagDlg::OnUpdateFPS(WPARAM wParam, LPARAM lParam)
-{
-    double fps = lParam / 10.0;
-    CString str;
-    str.Format(_T("%.1f"), fps);
-
-    if (m_staticFPS) {
-        m_staticFPS->SetWindowText(str);
-    }
-    return 0;
-}
-
-void CXIMEASensorDiagDlg::DrawFrame()
-{
-    if (!m_pictureCtrl || !m_pictureCtrl->GetSafeHwnd()) return;
-
-    // 메모리 DC 초기화 확인
-    if (!m_bMemDCReady) {
-        InitializeMemoryDC();
-        if (!m_bMemDCReady) return;
-    }
-
-    CRect rect;
-    m_pictureCtrl->GetClientRect(&rect);
-
-    // 크기가 변경되었으면 메모리 DC 재생성
-    if (rect != m_lastPictureRect) {
-        CleanupMemoryDC();
-        InitializeMemoryDC();
-    }
-
-    // Get display buffer
-    int displayIdx = m_displayBufferIndex.load();
-    FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
-
-    if (!displayBuffer.ready || !displayBuffer.data ||
-        displayBuffer.width <= 0 || displayBuffer.height <= 0) {
-        return;
-    }
-
-    // 프레임 간격 체크
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - m_lastRenderTime).count();
-
-    if (elapsed < 16) { // 60 FPS 제한
-        return;
-    }
-    m_lastRenderTime = now;
-
-    // === 메모리 DC에 그리기 시작 ===
-
-    // 1. 카메라 이미지 그리기
-    // 그레이스케일 8비트 이미지를 위한 BITMAPINFO 구조체 생성
-    constexpr int PALETTE_SIZE = 256;
-    const size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + PALETTE_SIZE * sizeof(RGBQUAD);
-
-    std::unique_ptr<uint8_t[]> bmpInfoBuffer;
-    try {
-        bmpInfoBuffer.reset(new uint8_t[bmpInfoSize]);
-    }
-    catch (const std::bad_alloc&) {
-        TRACE(_T("Failed to allocate memory for BITMAPINFO\n"));
-        return;
-    }
-
-    BITMAPINFO* pBmpInfo = reinterpret_cast<BITMAPINFO*>(bmpInfoBuffer.get());
-    memset(pBmpInfo, 0, bmpInfoSize);
-
-    // BITMAPINFOHEADER 설정
-    BITMAPINFOHEADER& header = pBmpInfo->bmiHeader;
-    header.biSize = sizeof(BITMAPINFOHEADER);
-    header.biWidth = displayBuffer.width;
-    header.biHeight = -displayBuffer.height;  // Top-down DIB
-    header.biPlanes = 1;
-    header.biBitCount = 8;
-    header.biCompression = BI_RGB;
-    header.biSizeImage = displayBuffer.width * displayBuffer.height;
-    header.biClrUsed = PALETTE_SIZE;
-    header.biClrImportant = PALETTE_SIZE;
-
-    // 그레이스케일 팔레트 설정
-    RGBQUAD* pPalette = pBmpInfo->bmiColors;
-    for (int i = 0; i < PALETTE_SIZE; i++) {
-        pPalette[i].rgbBlue = static_cast<BYTE>(i);
-        pPalette[i].rgbGreen = static_cast<BYTE>(i);
-        pPalette[i].rgbRed = static_cast<BYTE>(i);
-        pPalette[i].rgbReserved = 0;
-    }
-
-    // 메모리 DC에 이미지 그리기
-    int oldStretchMode = SetStretchBltMode(m_memDC.GetSafeHdc(), HALFTONE);
-    SetBrushOrgEx(m_memDC.GetSafeHdc(), 0, 0, NULL);
-
-    int result = StretchDIBits(
-        m_memDC.GetSafeHdc(),
-        0, 0, rect.Width(), rect.Height(),
-        0, 0, displayBuffer.width, displayBuffer.height,
-        displayBuffer.data.get(),
-        pBmpInfo,
-        DIB_RGB_COLORS,
-        SRCCOPY
-    );
-
-    SetStretchBltMode(m_memDC.GetSafeHdc(), oldStretchMode);
-
-    // 2. 궤적 오버레이 그리기
-    if (m_showTrajectory && m_trajectoryAlpha > 0) {
-        DrawTrajectory(m_memDC, rect);
-    }
-
-    // 3. Detection 오버레이 그리기
-    if (Camera_IsRealtimeDetectionEnabled()) {
-        DrawDetectionOverlay(m_memDC, rect);
-    }
-
-    // 4. Dynamic ROI 오버레이 그리기
-    if (Camera_IsDynamicROIEnabled()) {
-        DrawDynamicROIOverlay(m_memDC, rect);
-    }
-
-    // === 화면에 복사 ===
-    CClientDC dc(m_pictureCtrl);
-    dc.BitBlt(0, 0, rect.Width(), rect.Height(), &m_memDC, 0, 0, SRCCOPY);
-
-    m_lastFrameDrawTime = std::chrono::steady_clock::now();
-}
-
-
-void CXIMEASensorDiagDlg::ShowError(const CString& message)
-{
-    // Avoid showing message box if it's a recoverable USB error
-    if (message.Find(_T("Device not ready")) != -1 ||
-        message.Find(_T("USB")) != -1) {
-        TRACE(_T("Recoverable error: %s\n"), message.GetString());
-        return;
-    }
-
-    MessageBox(message, _T("Camera Error"), MB_OK | MB_ICONERROR);
-}
-
-void CXIMEASensorDiagDlg::OnPaint()
-{
-    if (IsIconic()) {
-        CPaintDC dc(this);
-        SendMessage(WM_ICONERASEBKGND, reinterpret_cast<WPARAM>(dc.GetSafeHdc()), 0);
-    }
-    else {
-        CDialogEx::OnPaint();  // 기본 그리기 수행
-
-        // 프레임만 다시 그리기
-        if (m_isStreaming) {
-            DrawFrame();
-        }
-    }
-}
-
-HCURSOR CXIMEASensorDiagDlg::OnQueryDragIcon()
-{
-    return static_cast<HCURSOR>(AfxGetApp()->LoadStandardIcon(IDI_APPLICATION));
-}
-
-void CXIMEASensorDiagDlg::ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state)
-{
-    if (s_pThis) {
-        s_pThis->OnContinuousCaptureProgress(currentFrame, elapsedSeconds, state);
-    }
-}
-
-void CXIMEASensorDiagDlg::OnContinuousCaptureProgress(int currentFrame, double elapsedSeconds, int state)
-{
-    if (state == 1) {  // CAPTURING
-        CString status;
-        status.Format(_T("Continuous capture: %d frames (%.1f sec)"), currentFrame, elapsedSeconds);
-
-        if (m_staticStatus && ::IsWindow(m_staticStatus->GetSafeHwnd())) {
-            m_staticStatus->SetWindowText(status);
-        }
-    }
-    else if (state == 3) {  // COMPLETED
-        PostMessage(WM_CONTINUOUS_CAPTURE_COMPLETE);
-    }
-}
-
-LRESULT CXIMEASensorDiagDlg::OnContinuousCaptureComplete(WPARAM wParam, LPARAM lParam)
-{
-    int totalFrames = 0, savedFrames = 0, droppedFrames = 0;
-    double duration = 0.0;
-    char folderPath[256] = { 0 };
-
-    bool success = Camera_GetContinuousCaptureResult(&totalFrames, &savedFrames,
-        &droppedFrames, &duration,
-        folderPath, sizeof(folderPath));
-
-    if (m_btnSnapshot) m_btnSnapshot->EnableWindow(TRUE);
-    if (m_checkContinuous) m_checkContinuous->EnableWindow(TRUE);
-
-    CString msg;
-    if (success) {
-        msg.Format(_T("Continuous capture completed!\n\n")
-            _T("Total frames: %d\n")
-            _T("Saved frames: %d\n")
-            _T("Dropped frames: %d\n")
-            _T("Duration: %.3f sec\n")
-            _T("Average FPS: %.1f\n")
-            _T("Folder: %s"),
-            totalFrames, savedFrames, droppedFrames,
-            duration, totalFrames / duration,
-            CString(folderPath).GetString());
-
-        BOOL isContinuous = (m_checkContinuous && m_checkContinuous->GetCheck() == BST_CHECKED);
-        if (isContinuous) {
-            int framesWithBalls = 0;
-            int totalBallsDetected = 0;
-            float averageConfidence = 0.0f;
-            char detectionFolder[256] = { 0 };
-
-            if (Camera_GetContinuousCaptureDetectionResult(&framesWithBalls, &totalBallsDetected,
-                &averageConfidence, detectionFolder, sizeof(detectionFolder))) {
-                CString detectionMsg;
-                detectionMsg.Format(_T("\n\nBall Detection Results:\n")
-                    _T("Frames with balls: %d\n")
-                    _T("Total balls detected: %d\n")
-                    _T("Average confidence: %.1f%%\n")
-                    _T("Detection images: %s"),
-                    framesWithBalls, totalBallsDetected,
-                    averageConfidence * 100.0f,
-                    CString(detectionFolder).GetString());
-                msg += detectionMsg;
-            }
-        }
-    }
-    else {
-        msg = _T("Continuous capture failed!");
-    }
-
-    AfxMessageBox(msg);
-
-    if (m_staticStatus) {
-        m_staticStatus->SetWindowText(_T("Capturing..."));
-    }
-
-    return 0;
-}
-
-void CXIMEASensorDiagDlg::OnEnChangeEditExposure()
-{
-    if (!m_editExposure || !m_sliderExposure) return;
-
-    CString str;
-    m_editExposure->GetWindowText(str);
-    int exposure = _ttoi(str);
-
-    if (exposure >= CameraDefaults::MIN_EXPOSURE_US && exposure <= CameraDefaults::MAX_EXPOSURE_US) {
-        m_sliderExposure->SetPos(exposure);
-
-        if (m_isStreaming) {
-            Camera_SetExposure(exposure);
-        }
-    }
-}
-
-void CXIMEASensorDiagDlg::OnEnChangeEditGain()
-{
-    if (!m_editGain || !m_sliderGain) return;
-
-    CString str;
-    m_editGain->GetWindowText(str);
-    float gain = (float)_ttof(str);
-
-    if (gain >= CameraDefaults::MIN_GAIN_DB && gain <= CameraDefaults::MAX_GAIN_DB) {
-        m_sliderGain->SetPos((int)(gain * 10));
-
-        if (m_isStreaming) {
-            Camera_SetGain(gain);
-        }
-    }
-}
-
-void CXIMEASensorDiagDlg::OnEnChangeEditFramerate()
-{
-    if (!m_editFramerate || !m_sliderFramerate) return;
-
-    CString str;
-    m_editFramerate->GetWindowText(str);
-    float fps = (float)_ttof(str);
-
-    if (fps >= CameraDefaults::MIN_FPS && fps <= CameraDefaults::MAX_FPS) {
-        m_sliderFramerate->SetPos((int)(fps * 10));
-
-        if (m_isStreaming) {
-            if (!Camera_SetFrameRate(fps)) {
-                int currentExposure = Camera_GetExposure();
-                float maxPossibleFPS = 1000000.0f / currentExposure;
-
-                CString msg;
-                msg.Format(_T("Cannot set %.1f FPS with current exposure time (%d us).\nMaximum possible FPS: %.1f"),
-                    fps, currentExposure, maxPossibleFPS);
-                MessageBox(msg, _T("FPS Limitation"), MB_OK | MB_ICONWARNING);
-
-                float currentFPS = Camera_GetFrameRate();
-                m_sliderFramerate->SetPos((int)(currentFPS * 10));
-                CString strFPS;
-                strFPS.Format(_T("%.1f"), currentFPS);
-                m_editFramerate->SetWindowText(strFPS);
-            }
-        }
-    }
-}
-
-void CXIMEASensorDiagDlg::RealtimeDetectionCallback(const RealtimeDetectionResult* result, void* userContext)
-{
-    CXIMEASensorDiagDlg* pDlg = static_cast<CXIMEASensorDiagDlg*>(userContext);
-    if (pDlg && result) {
-        pDlg->OnRealtimeDetectionResult(result);
-    }
-}
-
 void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResult* result)
 {
     {
@@ -1512,7 +2119,7 @@ void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResul
         m_lastDetectionResult = *result;
     }
 
-    // 공이 움직이는 중이고 검출되었다면 궤적에 추가
+    // Add to trajectory if recording
     if (m_isRecordingTrajectory && result && result->ballFound && result->ballCount > 0) {
         BallState currentState = Camera_GetBallState();
         if (currentState == BallState::MOVING || currentState == BallState::STABILIZING) {
@@ -1525,148 +2132,81 @@ void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResul
     PostMessage(WM_UPDATE_BALL_DETECTION);
 }
 
-LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
+void CXIMEASensorDiagDlg::OnBallStateChanged(BallState newState, BallState oldState,
+    const BallStateInfo* info)
 {
-    RealtimeDetectionResult result;
-    {
-        std::lock_guard<std::mutex> lock(m_detectionMutex);
-        result = m_lastDetectionResult;
-    }
+    // Post message for UI update
+    PostMessage(WM_UPDATE_BALL_STATE, static_cast<WPARAM>(newState),
+        reinterpret_cast<LPARAM>(info));
 
-    if (result.ballFound && result.ballCount > 0) {
-        CString posStr;
-        posStr.Format(_T("X: %d, Y: %d"),
-            static_cast<int>(result.balls[0].centerX),
-            static_cast<int>(result.balls[0].centerY));
-
-        if (m_staticBallPosition) {
-            m_staticBallPosition->SetWindowText(posStr);
-        }
-
-        CString infoStr;
-        infoStr.Format(_T("Radius: %d px, Confidence: %.1f%%, Time: %.1f ms"),
-            static_cast<int>(result.balls[0].radius),
-            result.balls[0].confidence * 100.0f,
-            result.detectionTimeMs);
-
-        if (m_staticBallInfo) {
-            m_staticBallInfo->SetWindowText(infoStr);
-        }
-    }
-    else {
-        if (m_staticBallPosition) {
-            m_staticBallPosition->SetWindowText(_T("Not detected"));
-        }
-        if (m_staticBallInfo) {
-            m_staticBallInfo->SetWindowText(_T("-"));
-        }
-    }
-
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - m_lastDetectionStatsUpdate).count();
-
-    if (elapsed >= 1000) {
-        int processedFrames = 0;
-        double avgProcessingTime = 0.0;
-        double detectionFPS = 0.0;
-
-        Camera_GetRealtimeDetectionStats(&processedFrames, &avgProcessingTime, &detectionFPS);
-
-        if (m_staticDetectionFPS) {
-            CString fpsStr;
-            fpsStr.Format(_T("%.1f"), detectionFPS);
-            m_staticDetectionFPS->SetWindowText(fpsStr);
-        }
-
-        m_lastDetectionStatsUpdate = now;
-    }
-
-    return 0;
-}
-
-
-void CXIMEASensorDiagDlg::DrawDetectionOverlay(CDC& dc, const CRect& rect)
-{
-    RealtimeDetectionResult result;
-    {
-        std::lock_guard<std::mutex> lock(m_detectionMutex);
-        result = m_lastDetectionResult;
-    }
-
-    // 현재 볼 상태 가져오기
-    BallState currentState = Camera_GetBallState();
-
-    if (result.ballFound && result.ballCount > 0) {
-        // Get display buffer dimensions for proper scaling
-        int displayIdx = m_displayBufferIndex.load();
-        FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
-
-        if (displayBuffer.width == 0 || displayBuffer.height == 0) {
-            return;
-        }
-
-        float scaleX = (float)rect.Width() / displayBuffer.width;
-        float scaleY = (float)rect.Height() / displayBuffer.height;
-
-        // 상태별 색상과 두께 설정
-        COLORREF penColor = GetBallStateColor(currentState);
-        int penWidth = (currentState == BallState::READY) ? 4 : 3;
-
-        CPen pen(PS_SOLID, penWidth, penColor);
-        CPen* pOldPen = dc.SelectObject(&pen);
-        CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
-
-        int x, y, radius;
-        for (int i = 0; i < result.ballCount; i++) {
-            x = (int)(result.balls[i].centerX * scaleX);
-            y = (int)(result.balls[i].centerY * scaleY);
-            radius = (int)(result.balls[i].radius * scaleX);
-
-            // 원만 그리고 십자가는 제거
-            dc.Ellipse(x - radius, y - radius, x + radius, y + radius);
-
-            // 연주황색 십자가 표시 제거 (주석 처리)
-            CPen yellowPen(PS_SOLID, 2, RGB(255, 200, 100));
-            dc.SelectObject(&yellowPen);
-            dc.MoveTo(x - 5, y);
-            dc.LineTo(x + 5, y);
-            dc.MoveTo(x, y - 5);
-            dc.LineTo(x, y + 5);
-            dc.SelectObject(&pen);
-
-
-            // 신뢰도가 높을 때만 표시
-            if (result.balls[i].confidence > 0.8f) {
-                CString confStr;
-                confStr.Format(_T("%.0f%%"), result.balls[i].confidence * 100);
-                dc.SetBkMode(TRANSPARENT);
-                dc.SetTextColor(RGB(0, 255, 0));
-                dc.TextOut(x + radius + 5, y - 10, confStr);
-            }
-        }
-
-        // READY 상태면 추가 표시
-        if (currentState == BallState::READY) {
-            dc.SetTextColor(RGB(0, 255, 0));
-            dc.SetBkMode(TRANSPARENT);
-
-            CFont font;
-            font.CreateFont(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, 0,
-                ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, _T("Arial"));
-
-            CFont* pOldFont = dc.SelectObject(&font);
-            dc.TextOut(x - 20, y + radius + 10, _T("READY"));
-            dc.SelectObject(pOldFont);
-        }
-
-        dc.SelectObject(pOldPen);
-        dc.SelectObject(pOldBrush);
+    // Handle state transitions
+    if (newState == BallState::READY && oldState != BallState::READY) {
+        MessageBeep(MB_OK);
+        TRACE(_T("Ball is READY!\n"));
     }
 }
 
-// 볼 상태 변경 콜백 (static)
+void CXIMEASensorDiagDlg::HandleBallStateChange(BallState newState, BallState oldState)
+{
+    static BallState previousState = BallState::NOT_DETECTED;
+
+    // Start trajectory recording on READY -> MOVING transition
+    if (previousState == BallState::READY && newState == BallState::MOVING) {
+        StartTrajectoryRecording();
+        TRACE(_T("Ball started moving - trajectory recording started\n"));
+    }
+
+    previousState = newState;
+}
+
+void CXIMEASensorDiagDlg::OnShotCompleted(const ShotCompletedInfo* info)
+{
+    // Stop recording
+    StopTrajectoryRecording();
+
+    // Start fade out
+    StartTrajectoryFadeOut();
+
+    // Update status
+    CString msg;
+    msg.Format(_T("Shot Completed! Distance: %.1f px, Avg Speed: %.1f px/s"),
+        info->totalDistance, info->avgVelocity);
+
+    if (m_ui.status) {
+        m_ui.status->SetWindowText(msg);
+    }
+
+    TRACE(_T("Shot completed - Total distance: %.1f pixels\n"), info->totalDistance);
+}
+
+void CXIMEASensorDiagDlg::OnContinuousCaptureProgress(int currentFrame, double elapsedSeconds, int state)
+{
+    if (state == 1) {  // CAPTURING
+        CString status;
+        status.Format(_T("Continuous capture: %d frames (%.1f sec)"),
+            currentFrame, elapsedSeconds);
+
+        if (m_ui.status && ::IsWindow(m_ui.status->GetSafeHwnd())) {
+            m_ui.status->SetWindowText(status);
+        }
+    }
+    else if (state == 3) {  // COMPLETED
+        PostMessage(WM_CONTINUOUS_CAPTURE_COMPLETE);
+    }
+}
+
+// ============================================================================
+// Static Callback Wrappers
+// ============================================================================
+void CXIMEASensorDiagDlg::RealtimeDetectionCallback(const RealtimeDetectionResult* result,
+    void* userContext)
+{
+    CXIMEASensorDiagDlg* pDlg = static_cast<CXIMEASensorDiagDlg*>(userContext);
+    if (pDlg && result) {
+        pDlg->OnRealtimeDetectionResult(result);
+    }
+}
+
 void CXIMEASensorDiagDlg::BallStateChangeCallback(BallState newState, BallState oldState,
     const BallStateInfo* info, void* userContext)
 {
@@ -1676,7 +2216,6 @@ void CXIMEASensorDiagDlg::BallStateChangeCallback(BallState newState, BallState 
     }
 }
 
-// Shot completed 콜백
 void CXIMEASensorDiagDlg::ShotCompletedCallback(const ShotCompletedInfo* info, void* userContext)
 {
     CXIMEASensorDiagDlg* pDlg = static_cast<CXIMEASensorDiagDlg*>(userContext);
@@ -1685,327 +2224,135 @@ void CXIMEASensorDiagDlg::ShotCompletedCallback(const ShotCompletedInfo* info, v
     }
 }
 
-// 볼 상태 변경 핸들러
-void CXIMEASensorDiagDlg::OnBallStateChanged(BallState newState, BallState oldState,
-    const BallStateInfo* info)
+void CXIMEASensorDiagDlg::ContinuousCaptureProgressCallback(int currentFrame,
+    double elapsedSeconds, int state)
 {
-    // UI 업데이트를 위해 메시지 포스트
-    PostMessage(WM_UPDATE_BALL_STATE, static_cast<WPARAM>(newState),
-        reinterpret_cast<LPARAM>(info));
-
-    // READY 상태 전환 시 알림
-    if (newState == BallState::READY && oldState != BallState::READY) {
-        MessageBeep(MB_OK);
-        TRACE(_T("Ball is READY!\n"));
+    if (s_pThis) {
+        s_pThis->OnContinuousCaptureProgress(currentFrame, elapsedSeconds, state);
     }
 }
 
-// 실시간 탐지 활성화 수정
-void CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection()
+// ============================================================================
+// Misc Handlers
+// ============================================================================
+HCURSOR CXIMEASensorDiagDlg::OnQueryDragIcon()
 {
-    if (!m_checkRealtimeDetection || !m_isStreaming) return;
+    return static_cast<HCURSOR>(AfxGetApp()->LoadStandardIcon(IDI_APPLICATION));
+}
 
-    BOOL isChecked = (m_checkRealtimeDetection->GetCheck() == BST_CHECKED);
+void CXIMEASensorDiagDlg::OnBnClickedButtonRefresh()
+{
+    UpdateDeviceList();
+}
 
-    if (isChecked) {
-        // 실시간 탐지 콜백 설정
-        Camera_SetRealtimeDetectionCallback(RealtimeDetectionCallback, this);
+void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
+{
+    AfxMessageBox(_T("Settings dialog not implemented yet."));
+}
 
-        if (Camera_EnableRealtimeDetection(true)) {
-            m_lastDetectionStatsUpdate = std::chrono::steady_clock::now();
+void CXIMEASensorDiagDlg::OnCbnSelchangeComboDevices()
+{
+    // Device selection changed - no action needed unless streaming
+}
 
-            // 볼 상태 추적 활성화
-            Camera_SetBallStateChangeCallback(BallStateChangeCallback, this);
-            Camera_EnableBallStateTracking(true);
-
-            // 볼 상태 업데이트 타이머 시작
-            SetTimer(TIMER_BALL_STATE_UPDATE, 100, nullptr);  // 100ms 간격
-
-            if (m_btnResetTracking) {
-                m_btnResetTracking->EnableWindow(TRUE);
-            }
-
-            if (m_staticBallPosition) {
-                m_staticBallPosition->SetWindowText(_T("Detecting..."));
-            }
-            if (m_staticBallState) {
-                m_staticBallState->SetWindowText(_T("NOT DETECTED"));
-            }
-
-            TRACE(_T("Real-time ball detection and state tracking enabled\n"));
-        }
-        else {
-            AfxMessageBox(_T("Failed to enable real-time detection!"));
-            m_checkRealtimeDetection->SetCheck(BST_UNCHECKED);
-        }
+// ============================================================================
+// Parameter Edit Controls
+// ============================================================================
+void CXIMEASensorDiagDlg::OnEnChangeEditExposure()
+{
+    if (!m_ui.editExposure || !m_ui.sliderExposure) {
+        return;
     }
-    else {
-        // 볼 상태 추적 비활성화
-        Camera_EnableBallStateTracking(false);
-        Camera_SetBallStateChangeCallback(nullptr, nullptr);
 
-        Camera_EnableRealtimeDetection(false);
-        Camera_SetRealtimeDetectionCallback(nullptr, nullptr);
+    CString str;
+    m_ui.editExposure->GetWindowText(str);
+    int exposure = _ttoi(str);
 
-        KillTimer(TIMER_BALL_STATE_UPDATE);
+    if (exposure >= CameraDefaults::MIN_EXPOSURE_US &&
+        exposure <= CameraDefaults::MAX_EXPOSURE_US) {
+        m_ui.sliderExposure->SetPos(exposure);
 
-        if (m_btnResetTracking) {
-            m_btnResetTracking->EnableWindow(FALSE);
+        if (m_isStreaming) {
+            Camera_SetExposure(exposure);
         }
-
-        if (m_staticBallPosition) {
-            m_staticBallPosition->SetWindowText(_T("Not detected"));
-        }
-        if (m_staticBallInfo) {
-            m_staticBallInfo->SetWindowText(_T("-"));
-        }
-        if (m_staticDetectionFPS) {
-            m_staticDetectionFPS->SetWindowText(_T("0.0"));
-        }
-        if (m_staticBallState) {
-            m_staticBallState->SetWindowText(_T("NOT DETECTED"));
-        }
-        if (m_staticStateTime) {
-            m_staticStateTime->SetWindowText(_T("0 ms"));
-        }
-        if (m_staticStableTime) {
-            m_staticStableTime->SetWindowText(_T("0 ms"));
-        }
-
-        TRACE(_T("Real-time ball detection and state tracking disabled\n"));
     }
 }
 
-// 볼 상태 표시 업데이트
-void CXIMEASensorDiagDlg::UpdateBallStateDisplay()
+void CXIMEASensorDiagDlg::OnEnChangeEditGain()
 {
-    if (!Camera_IsBallStateTrackingEnabled()) return;
+    if (!m_ui.editGain || !m_ui.sliderGain) {
+        return;
+    }
 
-    BallStateInfo info;
-    if (Camera_GetBallStateInfo(&info)) {
-        // 현재 상태 표시
-        if (m_staticBallState) {
-            CString stateStr = GetBallStateDisplayString(info.currentState);
+    CString str;
+    m_ui.editGain->GetWindowText(str);
+    float gain = static_cast<float>(_ttof(str));
 
-            // READY 상태에서 실패 카운터 정보 추가 (디버그용)
-            if (info.currentState == BallState::READY) {
-                // 필요시 실패 카운터 정보도 표시 가능
-                // stateStr += _T(" (stable)");
-            }
+    if (gain >= CameraDefaults::MIN_GAIN_DB &&
+        gain <= CameraDefaults::MAX_GAIN_DB) {
+        m_ui.sliderGain->SetPos(static_cast<int>(gain * 10));
 
-            m_staticBallState->SetWindowText(stateStr);
+        if (m_isStreaming) {
+            Camera_SetGain(gain);
         }
+    }
+}
 
-        // 현재 상태 지속 시간
-        int timeInState = Camera_GetTimeInCurrentState();
-        if (m_staticStateTime) {
-            CString timeStr;
-            if (timeInState < 1000) {
-                timeStr.Format(_T("%d ms"), timeInState);
-            }
-            else {
-                timeStr.Format(_T("%.1f s"), timeInState / 1000.0f);
-            }
-            m_staticStateTime->SetWindowText(timeStr);
-        }
+void CXIMEASensorDiagDlg::OnEnChangeEditFramerate()
+{
+    if (!m_ui.editFramerate || !m_ui.sliderFramerate) {
+        return;
+    }
 
-        // 안정화 시간 (STABILIZING, READY, STOPPED 상태에서만)
-        if (m_staticStableTime) {
-            if (info.currentState == BallState::STABILIZING ||
-                info.currentState == BallState::READY ||
-                info.currentState == BallState::STOPPED) {
-                CString stableStr;
-                if (info.stableDurationMs < 1000) {
-                    stableStr.Format(_T("%d ms"), info.stableDurationMs);
-                }
-                else {
-                    stableStr.Format(_T("%.1f s"), info.stableDurationMs / 1000.0f);
-                }
-                m_staticStableTime->SetWindowText(stableStr);
-            }
-            else {
-                m_staticStableTime->SetWindowText(_T("0 ms"));
+    CString str;
+    m_ui.editFramerate->GetWindowText(str);
+    float fps = static_cast<float>(_ttof(str));
+
+    if (fps >= CameraDefaults::MIN_FPS &&
+        fps <= CameraDefaults::MAX_FPS) {
+        m_ui.sliderFramerate->SetPos(static_cast<int>(fps * 10));
+
+        if (m_isStreaming) {
+            if (!Camera_SetFrameRate(fps)) {
+                HandleFrameRateError(fps);
             }
         }
     }
 }
 
-// 볼 상태 업데이트 메시지 핸들러
-LRESULT CXIMEASensorDiagDlg::OnUpdateBallState(WPARAM wParam, LPARAM lParam)
+void CXIMEASensorDiagDlg::HandleFrameRateError(float requestedFPS)
 {
-    BallState newState = static_cast<BallState>(wParam);
+    int currentExposure = Camera_GetExposure();
+    float maxPossibleFPS = 1000000.0f / currentExposure;
 
-    // 현재 상태 가져오기 - Camera_GetBallState()는 현재 상태를 반환
-    static BallState previousState = BallState::NOT_DETECTED;
-
-    // READY에서 MOVING으로 전환 시 궤적 기록 시작
-    if (previousState == BallState::READY && newState == BallState::MOVING) {
-        StartTrajectoryRecording();
-        TRACE(_T("Ball started moving - trajectory recording started\n"));
-    }
-
-    // 상태 저장
-    previousState = newState;
-
-    // 즉시 상태 업데이트
-    UpdateBallStateDisplay();
-
-    // 상태별 추가 동작
-    switch (newState) {
-    case BallState::READY:
-        TRACE(_T("Ball is in READY state!\n"));
-        break;
-    case BallState::MOVING:
-        TRACE(_T("Ball started moving\n"));
-        break;
-    }
-
-    return 0;
-}
-
-
-// 볼 추적 리셋 버튼 핸들러
-void CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking()
-{
-    Camera_ResetBallStateTracking();
-    UpdateBallStateDisplay();
-
-    CString msg = _T("Ball state tracking has been reset.");
-    SetDlgItemText(IDC_STATIC_STATUS, msg);
-
-    TRACE(_T("Ball state tracking reset\n"));
-}
-
-// 볼 추적 설정 버튼 핸들러
-void CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking()
-{
-    // 현재 설정 가져오기
-    BallStateConfig config;
-    Camera_GetBallStateConfig(&config);
-
-    // 간단한 설정 다이얼로그 (실제로는 별도 다이얼로그 클래스 생성 권장)
     CString msg;
-    msg.Format(_T("Ball State Tracking Configuration:\n\n")
-        _T("Position Tolerance: %.1f pixels\n")
-        _T("Movement Threshold: %.1f pixels\n")
-        _T("Stable Time: %d ms\n")
-        _T("Min Consecutive Detections: %d\n\n")
-        _T("Default values are optimized for most cases."),
-        config.positionTolerance,
-        config.movementThreshold,
-        config.stableTimeMs,
-        config.minConsecutiveDetections);
+    msg.Format(_T("Cannot set %.1f FPS with current exposure time (%d us).\n")
+        _T("Maximum possible FPS: %.1f"),
+        requestedFPS, currentExposure, maxPossibleFPS);
 
-    AfxMessageBox(msg, MB_OK | MB_ICONINFORMATION);
-}
+    MessageBox(msg, _T("FPS Limitation"), MB_OK | MB_ICONWARNING);
 
-// 볼 상태 문자열 변환
-CString CXIMEASensorDiagDlg::GetBallStateDisplayString(BallState state)
-{
-    switch (state) {
-    case BallState::NOT_DETECTED:
-        return _T("NOT DETECTED");
-    case BallState::MOVING:
-        return _T("MOVING");
-    case BallState::STABILIZING:
-        return _T("STABILIZING...");
-    case BallState::READY:
-        return _T("READY");
-    case BallState::STOPPED:
-        return _T("STOPPED");
-    default:
-        return _T("UNKNOWN");
-    }
-}
+    // Reset to current value
+    float currentFPS = Camera_GetFrameRate();
+    m_ui.sliderFramerate->SetPos(static_cast<int>(currentFPS * 10));
 
-// 볼 상태별 색상
-COLORREF CXIMEASensorDiagDlg::GetBallStateColor(BallState state)
-{
-    switch (state) {
-    case BallState::NOT_DETECTED:
-        return RGB(128, 128, 128);  // 회색
-    case BallState::MOVING:
-        return RGB(255, 165, 0);    // 주황색
-    case BallState::STABILIZING:
-        return RGB(255, 255, 0);    // 노란색
-    case BallState::READY:
-        return RGB(0, 255, 0);      // 초록색
-    case BallState::STOPPED:
-        return RGB(0, 128, 255);    // 파란색
-    default:
-        return RGB(255, 0, 0);      // 빨간색
-    }
-}
-
-
-void CXIMEASensorDiagDlg::OnBnClickedCheckEnableDynamicROI()
-{
-    if (!m_checkEnableDynamicROI || !m_isStreaming) return;
-
-    BOOL isChecked = (m_checkEnableDynamicROI->GetCheck() == BST_CHECKED);
-
-    if (isChecked) {
-        // 현재 설정 가져오기
-        DynamicROIConfig config;
-        Camera_GetDynamicROIConfig(&config);
-
-        // UI에서 설정 읽기
-        config.enabled = true;
-        config.showROIOverlay = (m_checkShowROIOverlay &&
-            m_checkShowROIOverlay->GetCheck() == BST_CHECKED);
-
-        if (m_sliderROIMultiplier) {
-            config.roiSizeMultiplier = m_sliderROIMultiplier->GetPos() / 10.0f;
-        }
-
-        // 설정 적용
-        Camera_SetDynamicROIConfig(&config);
-        Camera_EnableDynamicROI(true);
-
-        // 타이머 시작
-        SetTimer(TIMER_DYNAMIC_ROI_UPDATE, 100, nullptr);
-
-        TRACE(_T("Dynamic ROI enabled\n"));
-    }
-    else {
-        Camera_EnableDynamicROI(false);
-        KillTimer(TIMER_DYNAMIC_ROI_UPDATE);
-
-        UpdateDynamicROIDisplay();
-
-        TRACE(_T("Dynamic ROI disabled\n"));
-    }
-}
-
-void CXIMEASensorDiagDlg::OnBnClickedCheckShowROIOverlay()
-{
-    if (!m_checkShowROIOverlay) return;
-
-    DynamicROIConfig config;
-    if (Camera_GetDynamicROIConfig(&config)) {
-        config.showROIOverlay = (m_checkShowROIOverlay->GetCheck() == BST_CHECKED);
-        Camera_SetDynamicROIConfig(&config);
-    }
-}
-
-void CXIMEASensorDiagDlg::OnBnClickedButtonResetROI()
-{
-    Camera_ResetDynamicROI();
-    UpdateDynamicROIDisplay();
-
-    TRACE(_T("Dynamic ROI reset\n"));
+    CString strFPS;
+    strFPS.Format(_T("%.1f"), currentFPS);
+    m_ui.editFramerate->SetWindowText(strFPS);
 }
 
 void CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier()
 {
-    if (!m_editROIMultiplier || !m_sliderROIMultiplier) return;
+    if (!m_ui.editROIMultiplier || !m_ui.sliderROIMultiplier) {
+        return;
+    }
 
     CString str;
-    m_editROIMultiplier->GetWindowText(str);
-    float multiplier = (float)_ttof(str);
+    m_ui.editROIMultiplier->GetWindowText(str);
+    float multiplier = static_cast<float>(_ttof(str));
 
-    if (multiplier >= 6.0f && multiplier <= 10.0f) {
-        m_sliderROIMultiplier->SetPos((int)(multiplier * 10));
+    if (multiplier >= 6.0f && multiplier <= 16.0f) {
+        m_ui.sliderROIMultiplier->SetPos(static_cast<int>(multiplier * 10));
 
         if (Camera_IsDynamicROIEnabled()) {
             DynamicROIConfig config;
@@ -2017,139 +2364,146 @@ void CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier()
     }
 }
 
-void CXIMEASensorDiagDlg::UpdateDynamicROIDisplay()
+// ============================================================================
+// Slider Control
+// ============================================================================
+void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
 {
-    DynamicROIInfo info;
-    if (Camera_GetDynamicROIInfo(&info)) {
-        if (m_staticROIStatus) {
-            m_staticROIStatus->SetWindowText(info.active ? _T("Active") : _T("Inactive"));
-        }
-        
-        if (m_staticROISize) {
-            if (info.active) {
-                CString sizeStr;
-                sizeStr.Format(_T("%dx%d"), info.width, info.height);
-                m_staticROISize->SetWindowText(sizeStr);
-            } else {
-                m_staticROISize->SetWindowText(_T("-"));
-            }
-        }
-        
-        if (m_staticROIReduction) {
-            if (info.active) {
-                CString reductionStr;
-                reductionStr.Format(_T("%.1f%%"), info.processingTimeReduction);
-                m_staticROIReduction->SetWindowText(reductionStr);
-            } else {
-                m_staticROIReduction->SetWindowText(_T("0%"));
-            }
-        }
-    }
-}
+    CSliderCtrl* pSlider = reinterpret_cast<CSliderCtrl*>(pScrollBar);
 
-void CXIMEASensorDiagDlg::DrawDynamicROIOverlay(CDC& dc, const CRect& rect)
-{
-    DynamicROIConfig config;
-    DynamicROIInfo info;
-
-    if (!Camera_GetDynamicROIConfig(&config) || !config.showROIOverlay) {
+    // Handle ROI multiplier slider
+    if (pSlider == m_ui.sliderROIMultiplier) {
+        HandleROIMultiplierSlider();
+        CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
         return;
     }
 
-    if (!Camera_GetDynamicROIInfo(&info) || !info.active) {
+    // Handle parameter sliders only when streaming
+    if (!m_isStreaming) {
+        UpdateParameterEditsFromSliders(pSlider);
+        CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
         return;
     }
 
-    // Get display buffer dimensions for proper scaling
-    int displayIdx = m_displayBufferIndex.load();
-    FrameBuffer& displayBuffer = m_frameBuffers[displayIdx];
+    // Handle parameter sliders during streaming
+    if (pSlider == m_ui.sliderExposure) {
+        HandleExposureSlider();
+    }
+    else if (pSlider == m_ui.sliderGain) {
+        HandleGainSlider();
+    }
+    else if (pSlider == m_ui.sliderFramerate) {
+        HandleFramerateSlider();
+    }
 
-    if (displayBuffer.width == 0 || displayBuffer.height == 0) {
+    CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
+}
+
+void CXIMEASensorDiagDlg::HandleROIMultiplierSlider()
+{
+    if (!m_ui.sliderROIMultiplier) {
         return;
     }
 
-    float scaleX = (float)rect.Width() / displayBuffer.width;
-    float scaleY = (float)rect.Height() / displayBuffer.height;
+    float multiplier = m_ui.sliderROIMultiplier->GetPos() / 10.0f;
 
-    // Calculate ROI rectangle
-    int x = (int)((info.centerX - info.width / 2) * scaleX);
-    int y = (int)((info.centerY - info.height / 2) * scaleY);
-    int w = (int)(info.width * scaleX);
-    int h = (int)(info.height * scaleY);
-
-    // Draw ROI boundary
-    CPen pen(PS_DASH, 2, RGB(255, 128, 0)); // Orange dashed line
-    CPen* pOldPen = dc.SelectObject(&pen);
-    CBrush* pOldBrush = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
-
-    dc.Rectangle(x, y, x + w, y + h);
-
-    // Draw ROI info
-    dc.SetBkMode(TRANSPARENT);
-    dc.SetTextColor(RGB(255, 128, 0));
-
-    CString roiText;
-    roiText.Format(_T("ROI: %dx%d (%.1f%% reduction)"),
-        info.width, info.height, info.processingTimeReduction);
-    dc.TextOut(x + 2, y + 2, roiText);
-
-    dc.SelectObject(pOldPen);
-    dc.SelectObject(pOldBrush);
-}
-
-
-LRESULT CXIMEASensorDiagDlg::OnUpdateDynamicROI(WPARAM wParam, LPARAM lParam)
-{
-    UpdateDynamicROIDisplay();
-    return 0;
-}
-
-// Shot completed 메시지 핸들러
-LRESULT CXIMEASensorDiagDlg::OnUpdateShotCompleted(WPARAM wParam, LPARAM lParam)
-{
-    const ShotCompletedInfo* info = reinterpret_cast<const ShotCompletedInfo*>(lParam);
-    if (info) {
-        OnShotCompleted(info);
+    // Update edit control
+    if (m_ui.editROIMultiplier) {
+        CString str;
+        str.Format(_T("%.1f"), multiplier);
+        m_ui.editROIMultiplier->SetWindowText(str);
     }
-    return 0;
+
+    // Apply if Dynamic ROI is enabled
+    if (Camera_IsDynamicROIEnabled()) {
+        DynamicROIConfig config;
+        if (Camera_GetDynamicROIConfig(&config)) {
+            config.roiSizeMultiplier = multiplier;
+            Camera_SetDynamicROIConfig(&config);
+        }
+    }
 }
 
-// 궤적 기록 시작
-void CXIMEASensorDiagDlg::StartTrajectoryRecording()
+void CXIMEASensorDiagDlg::UpdateParameterEditsFromSliders(CSliderCtrl* pSlider)
 {
-    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
-
-    m_trajectoryPoints.clear();
-    m_isRecordingTrajectory = true;
-    m_showTrajectory = true;
-    m_trajectoryAlpha = 255;
-
-    // 페이드 아웃 타이머가 실행 중이면 중지
-    KillTimer(TIMER_TRAJECTORY_FADE);
-
-    TRACE(_T("Started trajectory recording\n"));
+    if (pSlider == m_ui.sliderExposure && m_ui.editExposure) {
+        int exposure = m_ui.sliderExposure->GetPos();
+        CString str;
+        str.Format(_T("%d"), exposure);
+        m_ui.editExposure->SetWindowText(str);
+    }
+    else if (pSlider == m_ui.sliderGain && m_ui.editGain) {
+        float gain = m_ui.sliderGain->GetPos() / 10.0f;
+        CString str;
+        str.Format(_T("%.1f"), gain);
+        m_ui.editGain->SetWindowText(str);
+    }
+    else if (pSlider == m_ui.sliderFramerate && m_ui.editFramerate) {
+        float fps = m_ui.sliderFramerate->GetPos() / 10.0f;
+        CString str;
+        str.Format(_T("%.1f"), fps);
+        m_ui.editFramerate->SetWindowText(str);
+    }
 }
 
-// 궤적 기록 중지
-void CXIMEASensorDiagDlg::StopTrajectoryRecording()
+void CXIMEASensorDiagDlg::HandleExposureSlider()
 {
-    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+    int exposure = m_ui.sliderExposure->GetPos();
 
-    m_isRecordingTrajectory = false;
-
-    TRACE(_T("Stopped trajectory recording - %zu points recorded\n"),
-        m_trajectoryPoints.size());
+    if (Camera_SetExposure(exposure)) {
+        if (m_ui.editExposure) {
+            CString str;
+            str.Format(_T("%d"), exposure);
+            m_ui.editExposure->SetWindowText(str);
+        }
+    }
+    else {
+        // Revert to current value
+        int currentExposure = Camera_GetExposure();
+        m_ui.sliderExposure->SetPos(currentExposure);
+        if (m_ui.editExposure) {
+            CString str;
+            str.Format(_T("%d"), currentExposure);
+            m_ui.editExposure->SetWindowText(str);
+        }
+    }
 }
 
-// 궤적 지우기
-void CXIMEASensorDiagDlg::ClearTrajectory()
+void CXIMEASensorDiagDlg::HandleGainSlider()
 {
-    std::lock_guard<std::mutex> lock(m_trajectoryMutex);
+    float gain = m_ui.sliderGain->GetPos() / 10.0f;
 
-    m_trajectoryPoints.clear();
-    m_isRecordingTrajectory = false;
-    m_showTrajectory = false;
-    m_trajectoryAlpha = 255;
+    if (Camera_SetGain(gain)) {
+        if (m_ui.editGain) {
+            CString str;
+            str.Format(_T("%.1f"), gain);
+            m_ui.editGain->SetWindowText(str);
+        }
+    }
+    else {
+        // Revert to current value
+        float currentGain = Camera_GetGain();
+        m_ui.sliderGain->SetPos(static_cast<int>(currentGain * 10));
+        if (m_ui.editGain) {
+            CString str;
+            str.Format(_T("%.1f"), currentGain);
+            m_ui.editGain->SetWindowText(str);
+        }
+    }
+}
 
-    KillTimer(TIMER_TRAJECTORY_FADE);
+void CXIMEASensorDiagDlg::HandleFramerateSlider()
+{
+    float fps = m_ui.sliderFramerate->GetPos() / 10.0f;
+
+    if (Camera_SetFrameRate(fps)) {
+        if (m_ui.editFramerate) {
+            CString str;
+            str.Format(_T("%.1f"), fps);
+            m_ui.editFramerate->SetWindowText(str);
+        }
+    }
+    else {
+        HandleFrameRateError(fps);
+    }
 }
