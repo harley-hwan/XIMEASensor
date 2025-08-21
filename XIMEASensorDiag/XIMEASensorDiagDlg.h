@@ -198,6 +198,27 @@ private:
     float m_lastScaleX;
     float m_lastScaleY;
 
+    // 메모리 DC와 비트맵 (m_pictureCtrl 전용)
+    CDC m_memDC;
+    CBitmap m_memBitmap;
+    CBitmap* m_pOldBitmap;
+    bool m_bMemDCReady;
+
+    // 궤적 오버레이 전용 (옵션)
+    CDC m_overlayDC;
+    CBitmap m_overlayBitmap;
+    CBitmap* m_pOldOverlayBitmap;
+    bool m_bOverlayNeedsUpdate;
+
+    // 렌더링 최적화
+    std::chrono::steady_clock::time_point m_lastRenderTime;
+    CRect m_lastPictureRect;
+
+    // 간소화된 메서드
+    void CleanupMemoryDC();
+    void DrawFrameToMemDC();
+
+
     // 정적 콜백 함수
     static void RealtimeDetectionCallback(const RealtimeDetectionResult* result, void* userContext);
     static void ContinuousCaptureProgressCallback(int currentFrame, double elapsedSeconds, int state);
@@ -214,6 +235,7 @@ private:
     void ShowError(const CString& message);
     void SyncSlidersWithCamera();
     void LoadDefaultSettings();
+    void InitializeMemoryDC();
     void InitializeFrameBuffers();
     void SwapBuffers();
     bool ShouldSkipFrame();

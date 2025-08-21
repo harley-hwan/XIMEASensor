@@ -36,7 +36,11 @@ CXIMEASensorDiagDlg::CXIMEASensorDiagDlg(CWnd* pParent)
     m_showTrajectory(false),
     m_trajectoryAlpha(255),
     m_lastScaleX(1.0f),
-    m_lastScaleY(1.0f)
+    m_lastScaleY(1.0f),
+    m_pOldBitmap(nullptr),
+    m_pOldOverlayBitmap(nullptr),
+    m_bMemDCReady(false),
+    m_bOverlayNeedsUpdate(true)
 {
     m_cameraCallback = std::make_unique<CameraCallback>();
     memset(&m_lastDetectionResult, 0, sizeof(m_lastDetectionResult));
@@ -102,6 +106,42 @@ void CXIMEASensorDiagDlg::LoadDefaultSettings()
 {
     Camera_GetDefaultSettings(&m_defaultExposureUs, &m_defaultGainDb, &m_defaultFps);
 }
+
+
+void CXIMEASensorDiagDlg::InitializeMemoryDC()
+{
+    if (!m_pictureCtrl || !m_pictureCtrl->GetSafeHwnd()) return;
+
+    CClientDC dc(m_pictureCtrl);
+    CRect rect;
+    m_pictureCtrl->GetClientRect(&rect);
+
+    // Picture Control 영역만큼의 메모리 DC 생성
+    if (!m_memDC.GetSafeHdc()) {
+        m_memDC.CreateCompatibleDC(&dc);
+        m_memBitmap.CreateCompatibleBitmap(&dc, rect.Width(), rect.Height());
+        m_pOldBitmap = m_memDC.SelectObject(&m_memBitmap);
+
+        // 초기 배경을 회색으로 채우기
+        m_memDC.FillSolidRect(rect, RGB(128, 128, 128));
+    }
+
+    m_lastPictureRect = rect;
+    m_bMemDCReady = true;
+}
+
+// 메모리 DC 정리
+void CXIMEASensorDiagDlg::CleanupMemoryDC()
+{
+    if (m_memDC.GetSafeHdc()) {
+        m_memDC.SelectObject(m_pOldBitmap);
+        m_memBitmap.DeleteObject();
+        m_memDC.DeleteDC();
+    }
+
+    m_bMemDCReady = false;
+}
+
 
 BOOL CXIMEASensorDiagDlg::OnInitDialog()
 {
@@ -260,8 +300,6 @@ BOOL CXIMEASensorDiagDlg::OnInitDialog()
     // Shot completed 콜백 등록
     Camera_SetShotCompletedCallback(ShotCompletedCallback, this);
 
-    InitializeFrameBuffers();
-
     UpdateDeviceList();
     UpdateUI(false);
     SetTimer(TIMER_UPDATE_STATISTICS, 1000, nullptr);
@@ -296,6 +334,8 @@ void CXIMEASensorDiagDlg::OnDestroy()
 
     KillTimer(TIMER_UPDATE_STATISTICS);
     KillTimer(TIMER_FRAME_UPDATE);
+
+    CleanupMemoryDC();
 
     if (m_isStreaming) {
         Camera_Stop();
@@ -703,9 +743,11 @@ void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
         }
     }
     else if (nIDEvent == TIMER_FRAME_UPDATE) {
-        // Redraw frame if there's a pending update
-        if (m_pendingFrameUpdates > 0) {
-            DrawFrame();
+        if (m_pendingFrameUpdates > 0 && m_pictureCtrl) {
+            CRect rect;
+            m_pictureCtrl->GetWindowRect(&rect);
+            ScreenToClient(&rect);
+            InvalidateRect(&rect, FALSE);
         }
     }
     else if (nIDEvent == TIMER_BALL_STATE_UPDATE) {
@@ -794,7 +836,6 @@ void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
 
     if (m_trajectoryPoints.size() < 2) return;
 
-    // NULL 체크 추가
     HDC hdc = dc.GetSafeHdc();
     if (!hdc) return;
 
@@ -806,88 +847,59 @@ void CXIMEASensorDiagDlg::DrawTrajectory(CDC& dc, const CRect& rect)
         screenPoints.push_back(ConvertToScreenCoordinates(point.position, rect));
     }
 
-    // 페이드 아웃을 위한 알파값 계산
+    // 페이드 아웃을 위한 알파값
     int alpha = m_trajectoryAlpha.load();
 
-    // 직접 화면 DC에 그리기 (알파 블렌딩 없이)
     if (alpha == 255) {
-        // 완전 불투명일 때는 직접 그리기
-        DrawTrajectoryLine(dc, screenPoints);
+        // 완전 불투명일 때는 GDI 사용
+        CPen pen(PS_SOLID, m_trajectoryStyle.lineWidth, m_trajectoryStyle.lineColor);
+        CPen* pOldPen = dc.SelectObject(&pen);
 
-        if (m_trajectoryStyle.showPoints) {
-            DrawTrajectoryPoints(dc, screenPoints);
+        dc.MoveTo(screenPoints[0]);
+        for (size_t i = 1; i < screenPoints.size(); ++i) {
+            dc.LineTo(screenPoints[i]);
         }
+
+        dc.SelectObject(pOldPen);
     }
-    else if (alpha > 0) {  // alpha가 0보다 클 때만 그리기
-        // 페이드 아웃 중일 때는 GDI+ 사용하여 반투명 그리기
-        try {
-            Graphics graphics(hdc);
-            if (graphics.GetLastStatus() != Ok) {
-                // GDI+ 실패 시 GDI로 폴백
-                DrawTrajectoryLine(dc, screenPoints);
-                return;
+    else if (alpha > 0) {
+        // 페이드 아웃 중일 때 GDI+ 사용
+        Graphics graphics(hdc);
+        graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+
+        Color lineColor(alpha, GetRValue(m_trajectoryStyle.lineColor),
+            GetGValue(m_trajectoryStyle.lineColor),
+            GetBValue(m_trajectoryStyle.lineColor));
+        Pen pen(lineColor, static_cast<REAL>(m_trajectoryStyle.lineWidth));
+
+        if (screenPoints.size() >= 2) {
+            std::vector<Point> gdiPoints;
+            gdiPoints.reserve(screenPoints.size());
+
+            for (const auto& pt : screenPoints) {
+                gdiPoints.push_back(Point(pt.x, pt.y));
             }
 
-            graphics.SetSmoothingMode(SmoothingModeAntiAlias);
-
-            // 알파값이 적용된 펜 생성
-            Color lineColor(alpha, GetRValue(m_trajectoryStyle.lineColor),
-                GetGValue(m_trajectoryStyle.lineColor),
-                GetBValue(m_trajectoryStyle.lineColor));
-            Pen pen(lineColor, static_cast<REAL>(m_trajectoryStyle.lineWidth));
-
-            // 선 그리기 - 안전성 검사 추가
-            if (screenPoints.size() >= 2 && pen.GetLastStatus() == Ok) {
-                std::vector<Point> gdiPoints;
-                gdiPoints.reserve(screenPoints.size());
-
-                for (const auto& pt : screenPoints) {
-                    gdiPoints.push_back(Point(pt.x, pt.y));
-                }
-
-                // DrawLines 호출 전 검증
-                if (!gdiPoints.empty()) {
-                    graphics.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
-                }
-            }
-
-            if (m_trajectoryStyle.showPoints) {
-                DrawTrajectoryPointsGDIPlus(graphics, screenPoints, alpha);
-            }
-        }
-        catch (...) {
-            // GDI+ 예외 발생 시 GDI로 폴백
-            DrawTrajectoryLine(dc, screenPoints);
+            graphics.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
         }
     }
 
     // 시작점과 끝점 표시
     if (screenPoints.size() > 0) {
-        // 시작점 - 초록색 원
         CBrush startBrush(RGB(0, 255, 0));
         CBrush* pOldBrush = dc.SelectObject(&startBrush);
         dc.Ellipse(screenPoints.front().x - 8, screenPoints.front().y - 8,
             screenPoints.front().x + 8, screenPoints.front().y + 8);
 
-        // 끝점 - 빨간색 원
         CBrush endBrush(RGB(255, 0, 0));
         dc.SelectObject(&endBrush);
         dc.Ellipse(screenPoints.back().x - 8, screenPoints.back().y - 8,
             screenPoints.back().x + 8, screenPoints.back().y + 8);
 
         dc.SelectObject(pOldBrush);
-
-        // 궤적 정보 텍스트
-        if (m_trajectoryAlpha > 128) {
-            dc.SetBkMode(TRANSPARENT);
-            dc.SetTextColor(RGB(255, 255, 0));
-
-            CString info;
-            info.Format(_T("Points: %zu"), m_trajectoryPoints.size());
-            dc.TextOut(10, rect.bottom - 40, info);
-        }
     }
 }
+
 
 // GDI+ 포인트 그리기
 void CXIMEASensorDiagDlg::DrawTrajectoryPointsGDIPlus(Graphics& graphics,
@@ -1138,15 +1150,20 @@ void CXIMEASensorDiagDlg::OnPropertyChangedCallback(const std::string& propertyN
 
 LRESULT CXIMEASensorDiagDlg::OnUpdateFrame(WPARAM wParam, LPARAM lParam)
 {
-    // Decrement pending count
     m_pendingFrameUpdates.fetch_sub(1);
 
-    // Don't draw if minimized
     if (IsIconic()) {
         return 0;
     }
 
-    DrawFrame();
+    // Picture Control만 다시 그리기
+    if (m_pictureCtrl && m_pictureCtrl->GetSafeHwnd()) {
+        CRect rect;
+        m_pictureCtrl->GetWindowRect(&rect);
+        ScreenToClient(&rect);
+        InvalidateRect(&rect, FALSE);
+    }
+
     return 0;
 }
 
@@ -1184,11 +1201,22 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateFPS(WPARAM wParam, LPARAM lParam)
 
 void CXIMEASensorDiagDlg::DrawFrame()
 {
-    if (!m_pictureCtrl) return;
+    if (!m_pictureCtrl || !m_pictureCtrl->GetSafeHwnd()) return;
 
-    CClientDC dc(m_pictureCtrl);
+    // 메모리 DC 초기화 확인
+    if (!m_bMemDCReady) {
+        InitializeMemoryDC();
+        if (!m_bMemDCReady) return;
+    }
+
     CRect rect;
     m_pictureCtrl->GetClientRect(&rect);
+
+    // 크기가 변경되었으면 메모리 DC 재생성
+    if (rect != m_lastPictureRect) {
+        CleanupMemoryDC();
+        InitializeMemoryDC();
+    }
 
     // Get display buffer
     int displayIdx = m_displayBufferIndex.load();
@@ -1199,14 +1227,23 @@ void CXIMEASensorDiagDlg::DrawFrame()
         return;
     }
 
-    // Mark last draw time
-    m_lastFrameDrawTime = std::chrono::steady_clock::now();
+    // 프레임 간격 체크
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_lastRenderTime).count();
 
+    if (elapsed < 16) { // 60 FPS 제한
+        return;
+    }
+    m_lastRenderTime = now;
+
+    // === 메모리 DC에 그리기 시작 ===
+
+    // 1. 카메라 이미지 그리기
     // 그레이스케일 8비트 이미지를 위한 BITMAPINFO 구조체 생성
     constexpr int PALETTE_SIZE = 256;
     const size_t bmpInfoSize = sizeof(BITMAPINFOHEADER) + PALETTE_SIZE * sizeof(RGBQUAD);
 
-    // 일반 new 사용 (예외 발생 가능)
     std::unique_ptr<uint8_t[]> bmpInfoBuffer;
     try {
         bmpInfoBuffer.reset(new uint8_t[bmpInfoSize]);
@@ -1216,7 +1253,6 @@ void CXIMEASensorDiagDlg::DrawFrame()
         return;
     }
 
-    // BITMAPINFO 포인터로 캐스팅
     BITMAPINFO* pBmpInfo = reinterpret_cast<BITMAPINFO*>(bmpInfoBuffer.get());
     memset(pBmpInfo, 0, bmpInfoSize);
 
@@ -1224,13 +1260,11 @@ void CXIMEASensorDiagDlg::DrawFrame()
     BITMAPINFOHEADER& header = pBmpInfo->bmiHeader;
     header.biSize = sizeof(BITMAPINFOHEADER);
     header.biWidth = displayBuffer.width;
-    header.biHeight = -displayBuffer.height;  // Top-down DIB (음수 = top-down)
+    header.biHeight = -displayBuffer.height;  // Top-down DIB
     header.biPlanes = 1;
-    header.biBitCount = 8;  // 8비트 그레이스케일
+    header.biBitCount = 8;
     header.biCompression = BI_RGB;
     header.biSizeImage = displayBuffer.width * displayBuffer.height;
-    header.biXPelsPerMeter = 0;
-    header.biYPelsPerMeter = 0;
     header.biClrUsed = PALETTE_SIZE;
     header.biClrImportant = PALETTE_SIZE;
 
@@ -1243,45 +1277,45 @@ void CXIMEASensorDiagDlg::DrawFrame()
         pPalette[i].rgbReserved = 0;
     }
 
-    // 고품질 스트레칭 모드 설정
-    HDC hdc = dc.GetSafeHdc();
-    int oldStretchMode = SetStretchBltMode(hdc, HALFTONE);
-    SetBrushOrgEx(hdc, 0, 0, NULL);
+    // 메모리 DC에 이미지 그리기
+    int oldStretchMode = SetStretchBltMode(m_memDC.GetSafeHdc(), HALFTONE);
+    SetBrushOrgEx(m_memDC.GetSafeHdc(), 0, 0, NULL);
 
-    // 이미지 그리기 - displayBuffer.data.get()으로 실제 포인터 얻기
     int result = StretchDIBits(
-        hdc,
-        0, 0, rect.Width(), rect.Height(),  // 대상 영역
-        0, 0, displayBuffer.width, displayBuffer.height,  // 소스 영역
-        displayBuffer.data.get(),  // unique_ptr에서 실제 포인터 얻기
+        m_memDC.GetSafeHdc(),
+        0, 0, rect.Width(), rect.Height(),
+        0, 0, displayBuffer.width, displayBuffer.height,
+        displayBuffer.data.get(),
         pBmpInfo,
         DIB_RGB_COLORS,
         SRCCOPY
     );
 
-    if (result == GDI_ERROR) {
-        DWORD error = GetLastError();
-        TRACE(_T("StretchDIBits failed with error: %d\n"), error);
-    }
+    SetStretchBltMode(m_memDC.GetSafeHdc(), oldStretchMode);
 
-    // 스트레칭 모드 복원
-    SetStretchBltMode(hdc, oldStretchMode);
-
-    // 궤적 그리기 (Detection overlay 전에)
+    // 2. 궤적 오버레이 그리기
     if (m_showTrajectory && m_trajectoryAlpha > 0) {
-        DrawTrajectory(dc, rect);
+        DrawTrajectory(m_memDC, rect);
     }
 
-    // Detection overlay 그리기
+    // 3. Detection 오버레이 그리기
     if (Camera_IsRealtimeDetectionEnabled()) {
-        DrawDetectionOverlay(dc, rect);
+        DrawDetectionOverlay(m_memDC, rect);
     }
 
-    // Dynamic ROI overlay 그리기
+    // 4. Dynamic ROI 오버레이 그리기
     if (Camera_IsDynamicROIEnabled()) {
-        DrawDynamicROIOverlay(dc, rect);
+        DrawDynamicROIOverlay(m_memDC, rect);
     }
+
+    // === 화면에 복사 ===
+    CClientDC dc(m_pictureCtrl);
+    dc.BitBlt(0, 0, rect.Width(), rect.Height(), &m_memDC, 0, 0, SRCCOPY);
+
+    m_lastFrameDrawTime = std::chrono::steady_clock::now();
 }
+
+
 void CXIMEASensorDiagDlg::ShowError(const CString& message)
 {
     // Avoid showing message box if it's a recoverable USB error
@@ -1301,8 +1335,12 @@ void CXIMEASensorDiagDlg::OnPaint()
         SendMessage(WM_ICONERASEBKGND, reinterpret_cast<WPARAM>(dc.GetSafeHdc()), 0);
     }
     else {
-        CDialogEx::OnPaint();
-        DrawFrame();
+        CDialogEx::OnPaint();  // 기본 그리기 수행
+
+        // 프레임만 다시 그리기
+        if (m_isStreaming) {
+            DrawFrame();
+        }
     }
 }
 
