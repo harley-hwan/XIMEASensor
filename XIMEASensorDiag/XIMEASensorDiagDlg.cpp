@@ -277,6 +277,13 @@ void CXIMEASensorDiagDlg::OnDestroy()
 {
     CDialogEx::OnDestroy();
 
+    // Clear any remaining trajectory
+    ClearTrajectory();
+
+    // Reset ball state tracking
+    m_ballStateTracking = BallStateTracking();
+
+    // Continue with normal cleanup...
     CleanupCamera();
     CleanupTimers();
     CleanupGraphics();
@@ -1127,6 +1134,39 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonConfigureTracking()
     AfxMessageBox(msg, MB_OK | MB_ICONINFORMATION);
 }
 
+
+void CXIMEASensorDiagDlg::CheckForStuckStates()
+{
+    if (!m_ballStateTracking.shotInProgress) {
+        return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    auto timeSinceMovingStart = std::chrono::duration_cast<std::chrono::seconds>(
+        now - m_ballStateTracking.movingStartTime).count();
+
+    // If shot has been in progress for more than 30 seconds, assume it's stuck
+    const int MAX_SHOT_DURATION_SECONDS = 30;
+
+    if (timeSinceMovingStart > MAX_SHOT_DURATION_SECONDS) {
+        TRACE(_T("Shot timeout - clearing stuck trajectory\n"));
+
+        // Force clear the trajectory
+        StopTrajectoryRecording();
+        ClearTrajectory();
+
+        // Reset tracking
+        m_ballStateTracking.shotInProgress = false;
+        m_ballStateTracking.waitingForStop = false;
+
+        // Update status
+        if (m_ui.status) {
+            m_ui.status->SetWindowText(_T("Shot timeout - ready for new shot"));
+        }
+    }
+}
+
+
 // ============================================================================
 // Trajectory Visualization
 // ============================================================================
@@ -1164,7 +1204,18 @@ void CXIMEASensorDiagDlg::ClearTrajectory()
     m_showTrajectory = false;
     m_trajectoryAlpha = 255;
 
-    KillTimer(TIMER_TRAJECTORY_FADE);
+    // Reset ball state tracking
+    m_ballStateTracking.shotInProgress = false;
+    m_ballStateTracking.waitingForStop = false;
+
+    KillTimer(DialogConstants::TIMER_TRAJECTORY_FADE);
+
+    // Force redraw to clear any remaining trajectory
+    if (m_ui.pictureCtrl) {
+        CRect rect;
+        m_ui.pictureCtrl->GetClientRect(&rect);
+        InvalidateRect(&rect, FALSE);
+    }
 }
 
 void CXIMEASensorDiagDlg::AddTrajectoryPoint(float x, float y, float confidence)
@@ -1522,13 +1573,13 @@ void CXIMEASensorDiagDlg::OnBnClickedButtonResetROI()
 void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
 {
     switch (nIDEvent) {
-    case TIMER_UPDATE_STATISTICS:
+    case DialogConstants::TIMER_UPDATE_STATISTICS:
         if (m_isStreaming) {
             UpdateStatistics();
         }
         break;
 
-    case TIMER_FRAME_UPDATE:
+    case DialogConstants::TIMER_FRAME_UPDATE:
         if (m_pendingFrameUpdates > 0 && m_ui.pictureCtrl) {
             CRect rect;
             m_ui.pictureCtrl->GetWindowRect(&rect);
@@ -1537,16 +1588,24 @@ void CXIMEASensorDiagDlg::OnTimer(UINT_PTR nIDEvent)
         }
         break;
 
-    case TIMER_BALL_STATE_UPDATE:
+    case DialogConstants::TIMER_BALL_STATE_UPDATE:
         UpdateBallStateDisplay();
+
+        // Check for stuck states
+        CheckForStuckStates();
         break;
 
-    case TIMER_DYNAMIC_ROI_UPDATE:
+    case DialogConstants::TIMER_DYNAMIC_ROI_UPDATE:
         UpdateDynamicROIDisplay();
         break;
 
-    case TIMER_TRAJECTORY_FADE:
+    case DialogConstants::TIMER_TRAJECTORY_FADE:
         UpdateTrajectoryFade();
+        break;
+
+    case DialogConstants::TIMER_CAMERA_RESTART:
+        KillTimer(DialogConstants::TIMER_CAMERA_RESTART);
+        ExecuteCameraRestart();
         break;
     }
 
@@ -1955,7 +2014,12 @@ LRESULT CXIMEASensorDiagDlg::OnUpdateBallDetection(WPARAM wParam, LPARAM lParam)
 LRESULT CXIMEASensorDiagDlg::OnUpdateBallState(WPARAM wParam, LPARAM lParam)
 {
     BallState newState = static_cast<BallState>(wParam);
-    HandleBallStateChange(newState, BallState::NOT_DETECTED);
+    BallState oldState = m_ballStateTracking.currentState;
+
+    // Handle state change
+    HandleBallStateChange(newState, oldState);
+
+    // Update display
     UpdateBallStateDisplay();
 
     return 0;
@@ -2119,9 +2183,11 @@ void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResul
         m_lastDetectionResult = *result;
     }
 
-    // Add to trajectory if recording
+    // Add to trajectory if recording and ball is in appropriate state
     if (m_isRecordingTrajectory && result && result->ballFound && result->ballCount > 0) {
         BallState currentState = Camera_GetBallState();
+
+        // Only record trajectory during MOVING and STABILIZING states
         if (currentState == BallState::MOVING || currentState == BallState::STABILIZING) {
             AddTrajectoryPoint(result->balls[0].centerX,
                 result->balls[0].centerY,
@@ -2135,28 +2201,156 @@ void CXIMEASensorDiagDlg::OnRealtimeDetectionResult(const RealtimeDetectionResul
 void CXIMEASensorDiagDlg::OnBallStateChanged(BallState newState, BallState oldState,
     const BallStateInfo* info)
 {
+    // Validate state transition
+    if (!IsValidShotSequence(newState, oldState)) {
+        TRACE(_T("Warning: Unexpected state transition %s -> %s\n"),
+            GetBallStateDisplayString(oldState).GetString(),
+            GetBallStateDisplayString(newState).GetString());
+    }
+
     // Post message for UI update
     PostMessage(WM_UPDATE_BALL_STATE, static_cast<WPARAM>(newState),
         reinterpret_cast<LPARAM>(info));
+}
 
-    // Handle state transitions
-    if (newState == BallState::READY && oldState != BallState::READY) {
+void CXIMEASensorDiagDlg::HandleBallStateChange(BallState newState, BallState oldState)
+{
+    // Update tracking structure
+    m_ballStateTracking.previousState = m_ballStateTracking.currentState;
+    m_ballStateTracking.currentState = newState;
+    m_ballStateTracking.lastStateChangeTime = std::chrono::steady_clock::now();
+
+    // Log state transition
+    TRACE(_T("Ball State: %s -> %s\n"),
+        GetBallStateDisplayString(oldState).GetString(),
+        GetBallStateDisplayString(newState).GetString());
+
+    // Handle specific transitions
+    switch (oldState) {
+    case BallState::READY:
+        if (newState == BallState::MOVING) {
+            // Shot started
+            HandleShotStarted();
+        }
+        break;
+
+    case BallState::MOVING:
+        if (newState == BallState::STABILIZING) {
+            // Ball is slowing down
+            m_ballStateTracking.waitingForStop = true;
+        }
+        else if (newState == BallState::READY) {
+            // Abnormal transition - ball went back to ready without stopping
+            HandleIncompleteShotSequence();
+        }
+        break;
+
+    case BallState::STABILIZING:
+        if (newState == BallState::STOPPED) {
+            // Normal shot completion
+            m_ballStateTracking.shotInProgress = false;
+            m_ballStateTracking.waitingForStop = false;
+            // OnShotCompleted will be called by the camera system
+        }
+        else if (newState == BallState::READY) {
+            // Incomplete shot - ball stabilized but didn't stop properly
+            HandleIncompleteShotSequence();
+        }
+        else if (newState == BallState::MOVING) {
+            // Ball started moving again
+            TRACE(_T("Ball resumed movement during stabilization\n"));
+        }
+        break;
+
+    case BallState::STOPPED:
+        if (newState == BallState::READY) {
+            // Normal reset after shot completion
+            m_ballStateTracking.shotInProgress = false;
+        }
+        break;
+    }
+
+    // Special handling for READY state
+    if (newState == BallState::READY) {
         MessageBeep(MB_OK);
         TRACE(_T("Ball is READY!\n"));
     }
 }
 
-void CXIMEASensorDiagDlg::HandleBallStateChange(BallState newState, BallState oldState)
-{
-    static BallState previousState = BallState::NOT_DETECTED;
 
-    // Start trajectory recording on READY -> MOVING transition
-    if (previousState == BallState::READY && newState == BallState::MOVING) {
-        StartTrajectoryRecording();
-        TRACE(_T("Ball started moving - trajectory recording started\n"));
+void CXIMEASensorDiagDlg::HandleShotStarted()
+{
+    m_ballStateTracking.shotInProgress = true;
+    m_ballStateTracking.waitingForStop = false;
+    m_ballStateTracking.movingStartTime = std::chrono::steady_clock::now();
+
+    StartTrajectoryRecording();
+    TRACE(_T("Shot started - trajectory recording initiated\n"));
+}
+
+
+void CXIMEASensorDiagDlg::StartIncompleteShotFadeOut()
+{
+    m_trajectoryAlpha = 255;
+
+    // Use shorter fade duration for incomplete shots (1.5 seconds instead of 3)
+    const int INCOMPLETE_FADE_DURATION_MS = 1500;
+    const int INCOMPLETE_FADE_STEPS = 30;
+
+    SetTimer(DialogConstants::TIMER_TRAJECTORY_FADE,
+        INCOMPLETE_FADE_DURATION_MS / INCOMPLETE_FADE_STEPS, nullptr);
+
+    TRACE(_T("Started incomplete shot trajectory fade out\n"));
+}
+
+
+void CXIMEASensorDiagDlg::HandleIncompleteShotSequence()
+{
+    TRACE(_T("Incomplete shot detected - clearing trajectory\n"));
+
+    // Stop recording
+    StopTrajectoryRecording();
+
+    // Reset shot tracking
+    m_ballStateTracking.shotInProgress = false;
+    m_ballStateTracking.waitingForStop = false;
+
+    // Fade out trajectory if visible
+    if (m_showTrajectory && m_trajectoryAlpha > 0) {
+        // Start fade out with shorter duration for incomplete shots
+        StartIncompleteShotFadeOut();
     }
 
-    previousState = newState;
+    // Optional: Show message to user
+    if (m_ui.status) {
+        m_ui.status->SetWindowText(_T("Shot incomplete - ball returned to ready position"));
+    }
+}
+
+bool CXIMEASensorDiagDlg::IsValidShotSequence(BallState newState, BallState oldState) const
+{
+    // Define valid state transitions
+    const std::pair<BallState, BallState> validTransitions[] = {
+        {BallState::NOT_DETECTED, BallState::READY},
+        {BallState::NOT_DETECTED, BallState::MOVING},
+        {BallState::READY, BallState::MOVING},
+        {BallState::READY, BallState::NOT_DETECTED},
+        {BallState::MOVING, BallState::STABILIZING},
+        {BallState::MOVING, BallState::STOPPED},
+        {BallState::STABILIZING, BallState::STOPPED},
+        {BallState::STABILIZING, BallState::MOVING},  // Ball can resume movement
+        {BallState::STOPPED, BallState::READY},
+        {BallState::STOPPED, BallState::MOVING},
+        {BallState::STOPPED, BallState::NOT_DETECTED}
+    };
+
+    for (const auto& transition : validTransitions) {
+        if (transition.first == oldState && transition.second == newState) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void CXIMEASensorDiagDlg::OnShotCompleted(const ShotCompletedInfo* info)

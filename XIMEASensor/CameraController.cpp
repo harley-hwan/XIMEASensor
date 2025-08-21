@@ -526,8 +526,7 @@ void CameraController::CaptureLoop() {
                         // ROI 데이터만 저장
                         item.frameData.resize(m_currentROI.width * m_currentROI.height);
                         for (int y = 0; y < m_currentROI.height; y++) {
-                            const unsigned char* srcRow = (unsigned char*)image.bp +
-                                (m_currentROI.y + y) * image.width + m_currentROI.x;
+                            const unsigned char* srcRow = (unsigned char*)image.bp + (m_currentROI.y + y) * image.width + m_currentROI.x;
                             unsigned char* dstRow = item.frameData.data() + y * m_currentROI.width;
                             memcpy(dstRow, srcRow, m_currentROI.width);     // Access violation reading error (vcruntime140d.dll)
                         }

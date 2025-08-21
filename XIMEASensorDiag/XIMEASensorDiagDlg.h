@@ -203,6 +203,16 @@ private:
     DynamicROIInfo m_lastROIInfo{};
     std::mutex m_roiMutex;
 
+    // 2025-08-21: Ball state tracking
+    struct BallStateTracking {
+        BallState previousState = BallState::NOT_DETECTED;
+        BallState currentState = BallState::NOT_DETECTED;
+        bool shotInProgress = false;
+        bool waitingForStop = false;
+        std::chrono::steady_clock::time_point movingStartTime;
+        std::chrono::steady_clock::time_point lastStateChangeTime;
+    } m_ballStateTracking;
+
     // ============================================================================
     // Trajectory Visualization
     // ============================================================================
@@ -379,6 +389,15 @@ private:
     CString GetBallStateDisplayString(BallState state) const;
     COLORREF GetBallStateColor(BallState state) const;
     void HandleBallStateChange(BallState newState, BallState oldState);
+    // 2025-08-21
+    bool IsValidShotSequence(BallState newState, BallState oldState) const;
+    void HandleIncompleteShotSequence();
+
+    //123123
+    void HandleShotStarted();
+    void StartIncompleteShotFadeOut();
+
+    void CheckForStuckStates();
 
     // ============================================================================
     // Error Handling
