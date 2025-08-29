@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "XIMEACameraImpl.h"
+#include "HikVisionCameraImpl.h"
 #include <stdexcept>
 
 namespace Camera {
@@ -10,8 +11,7 @@ namespace Camera {
             return std::make_unique<XIMEACameraImpl>();
 
         case CameraType::HIKVISION:
-            // return std::make_unique<HIKVISIONCameraImpl>();
-            throw std::runtime_error("HIKVISION camera not implemented yet");
+            return std::make_unique<HikVisionCameraImpl>();
 
         default:
             throw std::runtime_error("Unknown camera type");

@@ -109,6 +109,9 @@ typedef void(*InternalShotCompletedCallback)(const ShotTrajectoryData* trajector
 
 class CameraController {
 private:
+    Camera::CameraFactory::CameraType m_currentCameraType =
+        Camera::CameraFactory::CameraType::XIMEA;
+
     // singleton
     static std::unique_ptr<CameraController> instance;
     static std::mutex instanceMutex;
@@ -493,6 +496,13 @@ public:
 
     // Set camera type (must be called before OpenCamera)
     void SetCameraType(Camera::CameraFactory::CameraType type);
+
+    bool OpenCameraAuto();  // 2025-08-29
+
+    // Get current camera type
+    Camera::CameraFactory::CameraType GetCurrentCameraType() const {
+        return m_currentCameraType;
+    }
 
     // camera control
     bool OpenCamera(int deviceIndex);

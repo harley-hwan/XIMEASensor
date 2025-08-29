@@ -415,6 +415,9 @@ extern "C" {
     // ------------------------------------------------------------------------
     // Camera Control
     // ------------------------------------------------------------------------
+    
+    // 2025-08-29
+    XIMEASENSOR_API bool Camera_OpenAuto();
 
     // Open camera device
     XIMEASENSOR_API bool Camera_Open(int deviceIndex);
@@ -443,6 +446,12 @@ extern "C" {
     // ------------------------------------------------------------------------
     // Camera Parameters
     // ------------------------------------------------------------------------
+
+    // Get currently selected camera type
+    XIMEASENSOR_API int Camera_GetCurrentCameraType();
+
+    // Set specific camera type before opening
+    XIMEASENSOR_API bool Camera_SetCameraType(int cameraType);
 
     // Set exposure time
     XIMEASENSOR_API bool Camera_SetExposure(int microsec);

@@ -125,6 +125,13 @@ private:
         CStatic* ballInfo = nullptr;
         CStatic* detectionFPS = nullptr;
 
+        // Camera type controls
+        CButton* radioAutoDetect = nullptr;
+        CButton* radioXIMEA = nullptr;
+        CButton* radioHikVision = nullptr;
+        CStatic* cameraTypeLabel = nullptr;
+        CStatic* cameraType = nullptr;
+
         // Parameter controls
         CSliderCtrl* sliderExposure = nullptr;
         CSliderCtrl* sliderGain = nullptr;
@@ -162,6 +169,10 @@ private:
     // Camera connection
     std::unique_ptr<CameraCallback> m_cameraCallback;
     std::atomic<bool> m_isStreaming{ false };
+
+    // Camera type management
+    int m_currentCameraType = -1;  // -1=auto, 0=XIMEA, 1=HikVision
+    bool m_autoDetectMode = true;
 
     // Default settings
     struct DefaultSettings {
@@ -203,7 +214,7 @@ private:
     DynamicROIInfo m_lastROIInfo{};
     std::mutex m_roiMutex;
 
-    // 2025-08-21: Ball state tracking
+    // Ball state tracking
     struct BallStateTracking {
         BallState previousState = BallState::NOT_DETECTED;
         BallState currentState = BallState::NOT_DETECTED;
@@ -280,6 +291,11 @@ protected:
     afx_msg void OnBnClickedButtonSettings();
     afx_msg void OnCbnSelchangeComboDevices();
 
+    // Camera type selection
+    afx_msg void OnBnClickedRadioAutoDetect();
+    afx_msg void OnBnClickedRadioXimea();
+    afx_msg void OnBnClickedRadioHikvision();
+
     // Feature toggles
     afx_msg void OnBnClickedCheckRealtimeDetection();
     afx_msg void OnBnClickedButtonResetTracking();
@@ -335,12 +351,14 @@ private:
     void UpdateBallStateDisplay();
     void UpdateDynamicROIDisplay();
     void SyncSlidersWithCamera();
+    void UpdateCameraTypeDisplay(int cameraType);
 
     // ============================================================================
     // Camera Control
     // ============================================================================
 private:
     bool StartCamera(int deviceIndex);
+    bool StartCameraAuto();
     void StopCamera();
     bool ApplyCameraSettings();
     bool SetCameraParameter(int exposureUs, float gainDb, float fps);
@@ -389,14 +407,10 @@ private:
     CString GetBallStateDisplayString(BallState state) const;
     COLORREF GetBallStateColor(BallState state) const;
     void HandleBallStateChange(BallState newState, BallState oldState);
-    // 2025-08-21
     bool IsValidShotSequence(BallState newState, BallState oldState) const;
     void HandleIncompleteShotSequence();
-
-    //123123
     void HandleShotStarted();
     void StartIncompleteShotFadeOut();
-
     void CheckForStuckStates();
 
     // ============================================================================

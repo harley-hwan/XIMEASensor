@@ -50,6 +50,11 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     ON_BN_CLICKED(IDC_BUTTON_SNAPSHOT, &CXIMEASensorDiagDlg::OnBnClickedButtonSnapshot)
     ON_BN_CLICKED(IDC_BUTTON_SETTINGS, &CXIMEASensorDiagDlg::OnBnClickedButtonSettings)
 
+    // Camera type selection
+    ON_BN_CLICKED(IDC_RADIO_AUTO_DETECT, &CXIMEASensorDiagDlg::OnBnClickedRadioAutoDetect)
+    ON_BN_CLICKED(IDC_RADIO_XIMEA, &CXIMEASensorDiagDlg::OnBnClickedRadioXimea)
+    ON_BN_CLICKED(IDC_RADIO_HIKVISION, &CXIMEASensorDiagDlg::OnBnClickedRadioHikvision)
+
     // Feature controls
     ON_BN_CLICKED(IDC_CHECK_REALTIME_DETECTION, &CXIMEASensorDiagDlg::OnBnClickedCheckRealtimeDetection)
     ON_BN_CLICKED(IDC_BUTTON_RESET_TRACKING, &CXIMEASensorDiagDlg::OnBnClickedButtonResetTracking)
@@ -131,6 +136,22 @@ bool CXIMEASensorDiagDlg::InitializeControls()
         m_ui.btnRefresh = (CButton*)GetDlgItem(IDC_BUTTON_REFRESH);
         m_ui.btnSettings = (CButton*)GetDlgItem(IDC_BUTTON_SETTINGS);
         m_ui.comboDevices = (CComboBox*)GetDlgItem(IDC_COMBO_DEVICES);
+
+        // Camera type controls
+        m_ui.radioAutoDetect = (CButton*)GetDlgItem(IDC_RADIO_AUTO_DETECT);
+        m_ui.radioXIMEA = (CButton*)GetDlgItem(IDC_RADIO_XIMEA);
+        m_ui.radioHikVision = (CButton*)GetDlgItem(IDC_RADIO_HIKVISION);
+        m_ui.cameraTypeLabel = (CStatic*)GetDlgItem(IDC_STATIC_CAMERA_TYPE_LABEL);
+        m_ui.cameraType = (CStatic*)GetDlgItem(IDC_STATIC_CAMERA_TYPE);
+
+        // Set default to auto-detect
+        if (m_ui.radioAutoDetect) {
+            m_ui.radioAutoDetect->SetCheck(BST_CHECKED);
+        }
+
+        if (m_ui.cameraType) {
+            m_ui.cameraType->SetWindowText(_T("No camera"));
+        }
 
         // Status controls
         m_ui.status = (CStatic*)GetDlgItem(IDC_STATIC_STATUS);
@@ -386,27 +407,82 @@ void CXIMEASensorDiagDlg::UpdateDeviceList()
 
     m_ui.comboDevices->ResetContent();
 
-    int deviceCount = Camera_GetDeviceCount();
-    if (deviceCount == 0) {
-        m_ui.comboDevices->AddString(_T("No devices found"));
-        m_ui.comboDevices->EnableWindow(FALSE);
-        return;
-    }
+    // If auto-detect mode, show both camera types
+    if (m_autoDetectMode) {
+        // Check both camera types
+        int totalDevices = 0;
 
-    for (int i = 0; i < deviceCount; i++) {
-        char name[256] = { 0 };
-        char serial[256] = { 0 };
+        // Check XIMEA devices
+        Camera_SetCameraType(0);
+        int ximeaCount = Camera_GetDeviceCount();
 
-        if (Camera_GetDeviceInfo(i, name, sizeof(name), serial, sizeof(serial))) {
-            CString deviceStr;
-            deviceStr.Format(_T("%d: %s (S/N: %s)"), i,
-                CString(name), CString(serial));
-            m_ui.comboDevices->AddString(deviceStr);
+        for (int i = 0; i < ximeaCount; i++) {
+            char name[256] = { 0 };
+            char serial[256] = { 0 };
+
+            if (Camera_GetDeviceInfo(i, name, sizeof(name), serial, sizeof(serial))) {
+                CString deviceStr;
+                deviceStr.Format(_T("[XIMEA] %s (S/N: %s)"),
+                    CString(name), CString(serial));
+                m_ui.comboDevices->AddString(deviceStr);
+                totalDevices++;
+            }
+        }
+
+        // Check HikVision devices
+        Camera_SetCameraType(1);
+        int hikCount = Camera_GetDeviceCount();
+
+        for (int i = 0; i < hikCount; i++) {
+            char name[256] = { 0 };
+            char serial[256] = { 0 };
+
+            if (Camera_GetDeviceInfo(i, name, sizeof(name), serial, sizeof(serial))) {
+                CString deviceStr;
+                deviceStr.Format(_T("[HikVision] %s (S/N: %s)"),
+                    CString(name), CString(serial));
+                m_ui.comboDevices->AddString(deviceStr);
+                totalDevices++;
+            }
+        }
+
+        if (totalDevices == 0) {
+            m_ui.comboDevices->AddString(_T("No devices found"));
+            m_ui.comboDevices->EnableWindow(FALSE);
+        }
+        else {
+            m_ui.comboDevices->SetCurSel(0);
+            m_ui.comboDevices->EnableWindow(TRUE);
         }
     }
+    else {
+        // Manual mode - show only selected camera type
+        if (m_currentCameraType >= 0) {
+            Camera_SetCameraType(m_currentCameraType);
+        }
 
-    m_ui.comboDevices->SetCurSel(0);
-    m_ui.comboDevices->EnableWindow(TRUE);
+        int deviceCount = Camera_GetDeviceCount();
+        if (deviceCount == 0) {
+            m_ui.comboDevices->AddString(_T("No devices found"));
+            m_ui.comboDevices->EnableWindow(FALSE);
+            return;
+        }
+
+        for (int i = 0; i < deviceCount; i++) {
+            char name[256] = { 0 };
+            char serial[256] = { 0 };
+
+            if (Camera_GetDeviceInfo(i, name, sizeof(name), serial, sizeof(serial))) {
+                CString deviceStr;
+                deviceStr.Format(_T("%d: %s (S/N: %s)"), i,
+                    CString(name), CString(serial));
+                m_ui.comboDevices->AddString(deviceStr);
+            }
+        }
+
+        m_ui.comboDevices->SetCurSel(0);
+        m_ui.comboDevices->EnableWindow(TRUE);
+    }
 }
 
 // ============================================================================
@@ -414,23 +490,41 @@ void CXIMEASensorDiagDlg::UpdateDeviceList()
 // ============================================================================
 void CXIMEASensorDiagDlg::OnBnClickedButtonStart()
 {
-    int deviceIndex = m_ui.comboDevices->GetCurSel();
-    if (deviceIndex < 0) {
-        AfxMessageBox(_T("Please select a device!"));
-        return;
+    // Check if auto-detect mode
+    if (m_autoDetectMode) {
+        if (!StartCameraAuto()) {
+            AfxMessageBox(_T("Failed to auto-detect and start camera!"));
+        }
     }
+    else {
+        // Manual mode - use selected device
+        int deviceIndex = m_ui.comboDevices->GetCurSel();
+        if (deviceIndex < 0) {
+            AfxMessageBox(_T("Please select a device!"));
+            return;
+        }
 
-    if (!StartCamera(deviceIndex)) {
-        AfxMessageBox(_T("Failed to start camera!"));
+        if (!StartCamera(deviceIndex)) {
+            AfxMessageBox(_T("Failed to start camera!"));
+        }
     }
 }
 
 bool CXIMEASensorDiagDlg::StartCamera(int deviceIndex)
 {
+    // Set camera type if manually selected
+    if (!m_autoDetectMode && m_currentCameraType >= 0) {
+        Camera_SetCameraType(m_currentCameraType);
+    }
+
     // Open camera
     if (!Camera_Open(deviceIndex)) {
         return false;
     }
+
+    // Update camera type display
+    int cameraType = Camera_GetCurrentCameraType();
+    UpdateCameraTypeDisplay(cameraType);
 
     // Apply default settings
     if (!ApplyCameraSettings()) {
@@ -456,6 +550,60 @@ bool CXIMEASensorDiagDlg::StartCamera(int deviceIndex)
     m_lastFPSUpdate = std::chrono::steady_clock::now();
     m_lastFrameDrawTime = std::chrono::steady_clock::now();
     ResetUSBErrorCount();
+
+    return true;
+}
+
+
+bool CXIMEASensorDiagDlg::StartCameraAuto()
+{
+    // Show progress
+    if (m_ui.status) {
+        m_ui.status->SetWindowText(_T("Auto-detecting camera..."));
+    }
+
+    // Try auto-detect
+    if (!Camera_OpenAuto()) {
+        if (m_ui.status) {
+            m_ui.status->SetWindowText(_T("No camera detected"));
+        }
+        return false;
+    }
+
+    // Get detected camera type
+    int cameraType = Camera_GetCurrentCameraType();
+    UpdateCameraTypeDisplay(cameraType);
+
+    // Apply settings and start
+    if (!ApplyCameraSettings()) {
+        Camera_Close();
+        return false;
+    }
+
+    SyncSlidersWithCamera();
+
+    if (!Camera_Start()) {
+        Camera_Close();
+        return false;
+    }
+
+    // Update state
+    m_isStreaming = true;
+    UpdateUI(true);
+
+    // Reset counters
+    m_frameCount = 0;
+    m_lastFPSUpdate = std::chrono::steady_clock::now();
+    m_lastFrameDrawTime = std::chrono::steady_clock::now();
+    ResetUSBErrorCount();
+
+    // Update status
+    CString status;
+    status.Format(_T("Capturing from %s camera..."),
+        cameraType == 0 ? _T("XIMEA") : _T("HikVision"));
+    if (m_ui.status) {
+        m_ui.status->SetWindowText(status);
+    }
 
     return true;
 }
@@ -505,9 +653,28 @@ void CXIMEASensorDiagDlg::StopCamera()
 // ============================================================================
 bool CXIMEASensorDiagDlg::ApplyCameraSettings()
 {
-    return SetCameraParameter(m_defaultSettings.exposureUs,
-        m_defaultSettings.gainDb,
-        m_defaultSettings.fps);
+    int cameraType = Camera_GetCurrentCameraType();
+
+    // Apply settings based on camera type
+    bool success = true;
+
+    if (cameraType == 0) {  // XIMEA
+        // XIMEA supports all parameters normally
+        success &= Camera_SetExposure(m_defaultSettings.exposureUs);
+        success &= Camera_SetGain(m_defaultSettings.gainDb);
+        success &= Camera_SetFrameRate(m_defaultSettings.fps);
+    }
+    else if (cameraType == 1) {  // HikVision
+        // HikVision might have different parameter ranges
+        success &= Camera_SetExposure(m_defaultSettings.exposureUs);
+        success &= Camera_SetGain(m_defaultSettings.gainDb);
+
+        // HikVision might have different FPS capabilities
+        float maxFPS = (m_defaultSettings.fps > 120.0f) ? 120.0f : m_defaultSettings.fps;
+        success &= Camera_SetFrameRate(maxFPS);
+    }
+
+    return success;
 }
 
 bool CXIMEASensorDiagDlg::SetCameraParameter(int exposureUs, float gainDb, float fps)
@@ -563,6 +730,27 @@ void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
             m_ui.editFramerate->SetWindowText(strFPS);
         }
     }
+}
+
+void CXIMEASensorDiagDlg::UpdateCameraTypeDisplay(int cameraType)
+{
+    if (m_ui.cameraType) {
+        CString typeStr;
+        switch (cameraType) {
+        case 0:
+            typeStr = _T("XIMEA (USB)");
+            break;
+        case 1:
+            typeStr = _T("HikVision (Ethernet)");
+            break;
+        default:
+            typeStr = _T("Unknown");
+            break;
+        }
+        m_ui.cameraType->SetWindowText(typeStr);
+    }
+
+    m_currentCameraType = cameraType;
 }
 
 // ============================================================================
@@ -2436,7 +2624,33 @@ HCURSOR CXIMEASensorDiagDlg::OnQueryDragIcon()
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonRefresh()
 {
+    // Show refresh status
+    if (m_ui.status) {
+        m_ui.status->SetWindowText(_T("Refreshing device list..."));
+    }
+
+    // Update device list
     UpdateDeviceList();
+
+    // Update status
+    if (m_ui.status) {
+        int count = m_ui.comboDevices->GetCount();
+        if (count > 0) {
+            CString firstItem;
+            m_ui.comboDevices->GetLBText(0, firstItem);
+            if (firstItem != _T("No devices found")) {
+                CString status;
+                status.Format(_T("Found %d device(s)"), count);
+                m_ui.status->SetWindowText(status);
+            }
+            else {
+                m_ui.status->SetWindowText(_T("No devices found"));
+            }
+        }
+        else {
+            m_ui.status->SetWindowText(_T("No devices found"));
+        }
+    }
 }
 
 void CXIMEASensorDiagDlg::OnBnClickedButtonSettings()
@@ -2448,6 +2662,78 @@ void CXIMEASensorDiagDlg::OnCbnSelchangeComboDevices()
 {
     // Device selection changed - no action needed unless streaming
 }
+
+void CXIMEASensorDiagDlg::OnBnClickedRadioAutoDetect()
+{
+    if (m_isStreaming) {
+        AfxMessageBox(_T("Please stop the camera before changing mode."));
+        if (m_currentCameraType == -1) {
+            m_ui.radioAutoDetect->SetCheck(BST_CHECKED);
+        }
+        else if (m_currentCameraType == 0) {
+            m_ui.radioXIMEA->SetCheck(BST_CHECKED);
+        }
+        else {
+            m_ui.radioHikVision->SetCheck(BST_CHECKED);
+        }
+        return;
+    }
+
+    m_autoDetectMode = true;
+    m_currentCameraType = -1;
+
+    // Update device list
+    UpdateDeviceList();
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedRadioXimea()
+{
+    if (m_isStreaming) {
+        AfxMessageBox(_T("Please stop the camera before changing type."));
+        if (m_currentCameraType == -1) {
+            m_ui.radioAutoDetect->SetCheck(BST_CHECKED);
+        }
+        else if (m_currentCameraType == 0) {
+            m_ui.radioXIMEA->SetCheck(BST_CHECKED);
+        }
+        else {
+            m_ui.radioHikVision->SetCheck(BST_CHECKED);
+        }
+        return;
+    }
+
+    m_autoDetectMode = false;
+    m_currentCameraType = 0;
+    Camera_SetCameraType(0);
+
+    // Update device list
+    UpdateDeviceList();
+}
+
+void CXIMEASensorDiagDlg::OnBnClickedRadioHikvision()
+{
+    if (m_isStreaming) {
+        AfxMessageBox(_T("Please stop the camera before changing type."));
+        if (m_currentCameraType == -1) {
+            m_ui.radioAutoDetect->SetCheck(BST_CHECKED);
+        }
+        else if (m_currentCameraType == 0) {
+            m_ui.radioXIMEA->SetCheck(BST_CHECKED);
+        }
+        else {
+            m_ui.radioHikVision->SetCheck(BST_CHECKED);
+        }
+        return;
+    }
+
+    m_autoDetectMode = false;
+    m_currentCameraType = 1;
+    Camera_SetCameraType(1);
+
+    // Update device list
+    UpdateDeviceList();
+}
+
 
 // ============================================================================
 // Parameter Edit Controls

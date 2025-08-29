@@ -46,6 +46,14 @@
 #define IDC_CHECK_SHOW_ROI_OVERLAY      1067
 #define IDC_BUTTON_RESET_ROI            1068
 
+// Camera type selection controls
+#define IDC_GROUPBOX_CAMERA_TYPE        1070
+#define IDC_RADIO_AUTO_DETECT           1071
+#define IDC_RADIO_XIMEA                 1072
+#define IDC_RADIO_HIKVISION             1073
+#define IDC_STATIC_CAMERA_TYPE_LABEL    1074
+#define IDC_STATIC_CAMERA_TYPE          1075
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED

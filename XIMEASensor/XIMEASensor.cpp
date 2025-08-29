@@ -32,7 +32,7 @@ static void* g_shotCompletedContext = nullptr;
 
 namespace CameraDefaults {
     // Default operational parameters
-    const int EXPOSURE_US = 4000;        // 4ms default exposure time
+    const int EXPOSURE_US = 200;        // 4ms default exposure time
     const float GAIN_DB = 10.0f;          // 0dB default gain (no amplification)
     const float FRAMERATE_FPS = 120.0f;   // 60 FPS default frame rate
 
@@ -208,6 +208,17 @@ bool Camera_GetDeviceInfo(int index, char* name, int nameSize, char* serial, int
 // CAMERA CONTROL FUNCTIONS
 // ============================================================================
 
+// 2025-08-29
+bool Camera_OpenAuto() {
+    try {
+        return CameraController::GetInstance().OpenCameraAuto();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_OpenAuto: " + std::string(e.what()));
+        return false;
+    }
+
+}
 // Open a camera device by index
 bool Camera_Open(int deviceIndex) {
     try {
@@ -289,6 +300,31 @@ bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* hei
 // CAMERA PARAMETER SETTERS
 // ============================================================================
 
+// 2025-08-29
+bool Camera_SetCameraType(int cameraType) {
+    try {
+        Camera::CameraFactory::CameraType type;
+        switch (cameraType) {
+        case 0:
+            type = Camera::CameraFactory::CameraType::XIMEA;
+            break;
+        case 1:
+            type = Camera::CameraFactory::CameraType::HIKVISION;
+            break;
+        default:
+            LOG_ERROR("Invalid camera type");
+            return false;
+        }
+
+        CameraController::GetInstance().SetCameraType(type);
+        return true;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetCameraType: " + std::string(e.what()));
+        return false;
+    }
+}
+
 // Set camera exposure time
 bool Camera_SetExposure(int microsec) {
     try {
@@ -347,6 +383,19 @@ bool Camera_SetTriggerMode(bool enabled) {
 // ============================================================================
 // CAMERA PARAMETER GETTERS
 // ============================================================================
+
+// 2025-08-29
+
+int Camera_GetCurrentCameraType() {
+    try {
+        auto type = CameraController::GetInstance().GetCurrentCameraType();
+        return static_cast<int>(type);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetCurrentCameraType: " + std::string(e.what()));
+        return -1;
+    }
+}
 
 // Get current exposure time
 int Camera_GetExposure() {

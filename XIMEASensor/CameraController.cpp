@@ -174,6 +174,27 @@ void CameraController::SetCameraType(Camera::CameraFactory::CameraType type) {
     LOG_INFO("Camera type set to: " + std::to_string(static_cast<int>(type)));
 }
 
+bool CameraController::OpenCameraAuto() {
+    // First try HikVision (Ethernet)
+    SetCameraType(Camera::CameraFactory::CameraType::HIKVISION);
+
+    if (GetConnectedDeviceCount() > 0) {
+        LOG_INFO("HikVision camera detected");
+        return OpenCamera(0);
+    }
+
+    // Then try XIMEA (USB)
+    SetCameraType(Camera::CameraFactory::CameraType::XIMEA);
+
+    if (GetConnectedDeviceCount() > 0) {
+        LOG_INFO("XIMEA camera detected");
+        return OpenCamera(0);
+    }
+
+    LOG_ERROR("No camera detected");
+    return false;
+}
+
 bool CameraController::OpenCamera(int deviceIndex) {
     LOG_INFO("Opening camera with index: " + std::to_string(deviceIndex));
 
