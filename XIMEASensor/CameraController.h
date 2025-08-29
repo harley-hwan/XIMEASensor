@@ -462,8 +462,7 @@ private:
 
     void RealtimeDetectionWorker();
     void ProcessRealtimeDetection(const unsigned char* data, int width, int height, int frameIndex);
-    void ProcessRealtimeDetectionWithROI(const unsigned char* data, int width, int height,
-        int frameIndex, bool isROI, const cv::Rect& roiRect);
+    void ProcessRealtimeDetectionWithROI(const unsigned char* data, int width, int height, int frameIndex, bool isROI, const cv::Rect& roiRect);
 
     // Ball state tracking methods - ENHANCED
     void UpdateBallState(const RealtimeDetectionResult* result);

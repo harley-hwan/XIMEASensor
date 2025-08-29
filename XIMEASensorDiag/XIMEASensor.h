@@ -163,7 +163,7 @@ struct XIMEASENSOR_API BallStateConfig {
         , stabilizingTimeMs(2000)      // 증가
         , minConsecutiveDetections(5)
         , enableStateCallback(true)
-        , maxMissedDetections(2)
+        , maxMissedDetections(100000)  // HikVision 자꾸 끊겨서 임의 설정
         , missedDetectionTimeoutMs(500)
         , minMovingFrames(15)          // 0.25초 @ 60fps
         , requiredStableFrames(15)     // 0.25초 @ 60fps
