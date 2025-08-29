@@ -136,28 +136,20 @@ bool Camera_Initialize(const char* logPath, int logLevel) {
 
 // Shutdown camera system
 void Camera_Shutdown() {
-    LOG_INFO("XIMEASensor DLL shutting down");
-
-    // Destroy camera controller first
+    LOG_INFO("Camera_Shutdown called");
+    
     try {
+        // 1. 컨트롤러 인스턴스가 존재하는지 확인
         CameraController::Destroy();
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Exception during CameraController::Destroy: " + std::string(e.what()));
-    }
-    catch (...) {
-        LOG_ERROR("Unknown exception during CameraController::Destroy");
-    }
-
-    // Then destroy logger
-    try {
+        
+        // 2. 로거 종료
         Logger::Destroy();
     }
     catch (const std::exception& e) {
-        std::cerr << "Exception during Logger::Destroy: " << e.what() << std::endl;
+        std::cerr << "Exception in Camera_Shutdown: " << e.what() << std::endl;
     }
     catch (...) {
-        std::cerr << "Unknown exception during Logger::Destroy" << std::endl;
+        std::cerr << "Unknown exception in Camera_Shutdown" << std::endl;
     }
 }
 
@@ -232,6 +224,8 @@ bool Camera_Open(int deviceIndex) {
 
 // Close the currently open camera
 void Camera_Close() {
+    LOG_INFO("Camera_Close called");
+
     try {
         CameraController::GetInstance().CloseCamera();
     }

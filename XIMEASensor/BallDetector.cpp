@@ -82,7 +82,7 @@ thread_local std::unique_ptr<BallDetector::DetectionContext> BallDetector::t_con
 BallDetector::DetectionParams::DetectionParams() {
     // Initialize all members in one go to improve cache locality
     minRadius = 5;
-    maxRadius = 20;
+    maxRadius = 15;
     minCircularity = 0.70f;
     dp = 2.0;
     minDist = 40.0;
@@ -111,7 +111,7 @@ BallDetector::DetectionParams::DetectionParams() {
     fastMode = true;
     useROI = false;
     roiScale = 0.75f;
-    downscaleFactor = 2;
+    downscaleFactor = 1;
     useParallel = true;
     maxCandidates = 15;
     processingThreads = std::max(2u, std::thread::hardware_concurrency() / 2);
@@ -212,8 +212,7 @@ public:
     cv::Mat computeEdgeMapOptimized(const cv::Mat& image, int method = 0);
     std::vector<cv::Vec3f> detectCirclesHoughOptimized(const cv::Mat& image, const DetectionParams& params);
     bool quickValidateCircleOptimized(const cv::Mat& image, const cv::Vec3f& circle, const DetectionParams& params);
-    float calculateConfidenceOptimized(const cv::Mat& image, const cv::Vec3f& circle,
-        const DetectionParams& params, const cv::Mat& edgeMap = cv::Mat());
+    float calculateConfidenceOptimized(const cv::Mat& image, const cv::Vec3f& circle, const DetectionParams& params, const cv::Mat& edgeMap = cv::Mat());
     float calculateCircularityOptimized(const cv::Mat& image, const cv::Vec3f& circle, const DetectionParams& params);
     float calculateEdgeStrengthOptimized(const cv::Mat& edgeMap, const cv::Vec3f& circle);
     cv::Mat extractROIOptimized(const cv::Mat& image, float scale);
@@ -285,8 +284,7 @@ BallDetector::BallDetector()
     cv::setUseOptimized(true);
 
     LOG_INFO("BallDetector initialized with optimized TBB support");
-    LOG_INFO("Performance profiling: " +
-        std::string(m_performanceProfilingEnabled ? "ENABLED" : "DISABLED"));
+    LOG_INFO("Performance profiling: " + std::string(m_performanceProfilingEnabled ? "ENABLED" : "DISABLED"));
 
     InitializeDefaultParams();
     m_lastMetrics.Reset();

@@ -532,33 +532,96 @@ void CameraController::CaptureLoop() {
 
                 if (queueLock.owns_lock() && m_detectionQueue.size() < 5) {
                     DetectionQueueItem item;
-                    item.frameData.resize(imageSize);
-                    memcpy(item.frameData.data(), image.bp, imageSize);
                     item.frameInfo = frameInfo;
 
                     // 현재 ROI 상태 저장
                     if (m_usingDynamicROI && m_dynamicROIEnabled.load()) {
                         std::lock_guard<std::mutex> roiLock(m_dynamicROIMutex);
 
-                        // 전체 프레임에서 ROI 추출
-                        item.isROI = true;
-                        item.roiRect = m_currentROI;
+                        // ROI 유효성 검사 및 경계 조정
+                        cv::Rect validROI = m_currentROI;
 
-                        // ROI 데이터만 저장
-                        item.frameData.resize(m_currentROI.width * m_currentROI.height);
-                        for (int y = 0; y < m_currentROI.height; y++) {
-                            const unsigned char* srcRow = (unsigned char*)image.bp + (m_currentROI.y + y) * image.width + m_currentROI.x;
-                            unsigned char* dstRow = item.frameData.data() + y * m_currentROI.width;
-                            memcpy(dstRow, srcRow, m_currentROI.width);     // Access violation reading error (vcruntime140d.dll)
+                        // Convert image dimensions to signed int for safe comparison
+                        int imgWidth = static_cast<int>(image.width);
+                        int imgHeight = static_cast<int>(image.height);
+
+                        // ROI가 이미지 경계를 벗어나지 않도록 조정
+                        validROI.x = std::max(0, std::min(validROI.x, imgWidth - 1));
+                        validROI.y = std::max(0, std::min(validROI.y, imgHeight - 1));
+
+                        // ROI 크기 조정
+                        if (validROI.x + validROI.width > imgWidth) {
+                            validROI.width = imgWidth - validROI.x;
+                        }
+                        if (validROI.y + validROI.height > imgHeight) {
+                            validROI.height = imgHeight - validROI.y;
                         }
 
-                        // frameInfo 업데이트
-                        item.frameInfo.width = m_currentROI.width;
-                        item.frameInfo.height = m_currentROI.height;
+                        // 최소 크기 보장
+                        validROI.width = std::max(1, validROI.width);
+                        validROI.height = std::max(1, validROI.height);
+
+                        // ROI가 유효한 경우에만 추출
+                        if (validROI.width > 0 && validROI.height > 0 &&
+                            validROI.x >= 0 && validROI.y >= 0 &&
+                            validROI.x + validROI.width <= imgWidth &&
+                            validROI.y + validROI.height <= imgHeight) {
+
+                            item.isROI = true;
+                            item.roiRect = validROI;
+
+                            // ROI 데이터 버퍼 할당
+                            size_t roiSize = static_cast<size_t>(validROI.width) * validROI.height;
+                            item.frameData.resize(roiSize);
+
+                            // 안전한 ROI 데이터 복사
+                            for (int y = 0; y < validROI.height; y++) {
+                                // 소스 행 위치 계산 및 범위 확인
+                                int srcY = validROI.y + y;
+                                if (srcY >= 0 && srcY < imgHeight) {
+                                    const unsigned char* srcRow = static_cast<const unsigned char*>(image.bp) +
+                                        srcY * imgWidth + validROI.x;
+                                    unsigned char* dstRow = item.frameData.data() +
+                                        y * validROI.width;
+
+                                    // 복사할 바이트 수 확인
+                                    size_t copyBytes = static_cast<size_t>(validROI.width);
+
+                                    // 안전한 메모리 복사
+                                    memcpy(dstRow, srcRow, copyBytes);
+                                }
+                                else {
+                                    // 범위를 벗어난 경우 0으로 채움
+                                    unsigned char* dstRow = item.frameData.data() +
+                                        y * validROI.width;
+                                    memset(dstRow, 0, static_cast<size_t>(validROI.width));
+                                }
+                            }
+
+                            // frameInfo 업데이트
+                            item.frameInfo.width = validROI.width;
+                            item.frameInfo.height = validROI.height;
+
+                            LOG_DEBUG("ROI extracted: offset(" + std::to_string(validROI.x) + "," +
+                                std::to_string(validROI.y) + "), size(" +
+                                std::to_string(validROI.width) + "x" +
+                                std::to_string(validROI.height) + ")");
+                        }
+                        else {
+                            // ROI가 유효하지 않은 경우 전체 프레임 사용
+                            LOG_WARNING("Invalid ROI detected, using full frame");
+                            item.isROI = false;
+                            item.roiRect = cv::Rect(0, 0, imgWidth, imgHeight);
+                            item.frameData.resize(imageSize);
+                            memcpy(item.frameData.data(), image.bp, imageSize);
+                        }
                     }
                     else {
+                        // Dynamic ROI 비활성화 시 전체 프레임 사용
                         item.isROI = false;
-                        item.roiRect = cv::Rect(0, 0, image.width, image.height);
+                        item.roiRect = cv::Rect(0, 0, static_cast<int>(image.width), static_cast<int>(image.height));
+                        item.frameData.resize(imageSize);
+                        memcpy(item.frameData.data(), image.bp, imageSize);
                     }
 
                     m_detectionQueue.push(std::move(item));
@@ -2412,21 +2475,18 @@ bool CameraController::ShouldUpdateROI(const cv::Rect& newROI) {
         std::abs(newROI.height - m_currentROI.height) > SIZE_THRESHOLD;
 }
 
-cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, float radius, BallState state) {
+cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY,
+    float radius, BallState state) {
     float roiMultiplier = m_dynamicROIConfig.roiSizeMultiplier;
 
     // Adjust multiplier based on state
     switch (state) {
     case BallState::READY:
-        // Smaller ROI for stationary ball
         roiMultiplier = m_dynamicROIConfig.roiSizeMultiplier;
         break;
-
     case BallState::MOVING:
-        // Larger ROI to accommodate sudden movements
         roiMultiplier = m_dynamicROIConfig.roiSizeMultiplier * 2.0f;
         break;
-
     default:
         break;
     }
@@ -2446,15 +2506,16 @@ cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, flo
     int size = static_cast<int>(roiSize);
     size = (size / 2) * 2;
 
-    // Calculate position
+    // Calculate position with boundary checks
     int halfSize = size / 2;
     int x = static_cast<int>(centerX) - halfSize;
     int y = static_cast<int>(centerY) - halfSize;
 
-    // Clamp to image boundaries
+    // Ensure ROI stays within image bounds
     x = std::max(0, x);
     y = std::max(0, y);
 
+    // Adjust size if ROI extends beyond image boundaries
     if (x + size > width) {
         size = width - x;
     }
@@ -2462,20 +2523,24 @@ cv::Rect CameraController::CalculateDynamicROI(float centerX, float centerY, flo
         size = height - y;
     }
 
-    // Ensure minimum size
+    // Ensure minimum size after boundary adjustments
     const int MIN_ROI_SIZE = static_cast<int>(m_dynamicROIConfig.minROISize);
     if (size < MIN_ROI_SIZE) {
-        if (x > 0 && x + size < width) {
-            int expand = MIN_ROI_SIZE - size;
-            x = std::max(0, x - expand / 2);
-            size = MIN_ROI_SIZE;
+        // Try to expand in the opposite direction if possible
+        if (x > 0 && width - x >= MIN_ROI_SIZE) {
+            x = std::max(0, x - (MIN_ROI_SIZE - size) / 2);
+            size = std::min(MIN_ROI_SIZE, width - x);
         }
-        if (y > 0 && y + size < height) {
-            int expand = MIN_ROI_SIZE - size;
-            y = std::max(0, y - expand / 2);
-            size = MIN_ROI_SIZE;
+        if (y > 0 && height - y >= MIN_ROI_SIZE) {
+            y = std::max(0, y - (MIN_ROI_SIZE - size) / 2);
+            size = std::min(MIN_ROI_SIZE, height - y);
         }
     }
+
+    // Final validation
+    x = std::max(0, std::min(x, width - 1));
+    y = std::max(0, std::min(y, height - 1));
+    size = std::max(1, std::min(size, std::min(width - x, height - y)));
 
     return cv::Rect(x, y, size, size);
 }

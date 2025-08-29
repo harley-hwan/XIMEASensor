@@ -1,4 +1,5 @@
 #pragma once
+#include "pch.h"
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -530,12 +531,10 @@ public:
     CameraStatistics GetStatistics() const { return stats; }
     void ResetStatistics() { stats.Reset(); }
 
-#ifdef ENABE_CONTINUOUS_CAPTURE
+#ifdef ENABLE_CONTINUOUS_CAPTURE
     ContinuousCaptureManager* GetContinuousCaptureManager() {
         return m_continuousCapture.get();
     }
-#else
-    void* GetContinuousCaptureManager() { return nullptr; }
 #endif
 
     // callback

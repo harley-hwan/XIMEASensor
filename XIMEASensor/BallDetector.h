@@ -29,9 +29,7 @@ struct BallInfo {
     float edgeStrength;      // Edge response strength
     float motionScore;       // Motion consistency score for tracking
 
-    BallInfo() : radius(0.0f), confidence(0.0f), frameIndex(0),
-        circularity(1.0f), brightness(0.0f), edgeStrength(0.0f), motionScore(0.0f) {
-    }
+    BallInfo() : radius(0.0f), confidence(0.0f), frameIndex(0), circularity(1.0f), brightness(0.0f), edgeStrength(0.0f), motionScore(0.0f) { }
 };
 
 // Detection result structure
@@ -212,26 +210,18 @@ private:
 
     // Private methods
     void InitializeDefaultParams();
-    std::vector<cv::Vec3f> detectByContours(const cv::Mat& binary,
-        const cv::Mat& grayImage, float downscaleFactor);
-    std::vector<cv::Vec3f> detectByContoursOptimized(const cv::Mat& binary,
-        const cv::Mat& grayImage, float downscaleFactor);
-    std::vector<cv::Vec3f> detectByTemplate(const cv::Mat& image,
-        float downscaleFactor);
-    std::vector<cv::Vec3f> detectByTemplateOptimized(const cv::Mat& image,
-        float downscaleFactor);
-    void selectBestBalls(const std::vector<BallInfo>& validBalls,
-        BallDetectionResult& result);
-    void selectBestBallsOptimized(const std::vector<BallInfo>& validBalls,
-        BallDetectionResult& result);
+    std::vector<cv::Vec3f> detectByContours(const cv::Mat& binary, const cv::Mat& grayImage, float downscaleFactor);
+    std::vector<cv::Vec3f> detectByContoursOptimized(const cv::Mat& binary, const cv::Mat& grayImage, float downscaleFactor);
+    std::vector<cv::Vec3f> detectByTemplate(const cv::Mat& image, float downscaleFactor);
+    std::vector<cv::Vec3f> detectByTemplateOptimized(const cv::Mat& image, float downscaleFactor);
+    void selectBestBalls(const std::vector<BallInfo>& validBalls, BallDetectionResult& result);
+    void selectBestBallsOptimized(const std::vector<BallInfo>& validBalls, BallDetectionResult& result);
     void updateTracking(const BallDetectionResult& result);
     void updateTrackingOptimized(std::vector<BallInfo>& validBalls);
     void predictNextPosition(TrackingInfo& track);
     float calculateMotionConsistency(const BallInfo& ball, const TrackingInfo& track);
-    void saveDebugImages(const unsigned char* imageData, int width, int height,
-        int frameIndex, const BallDetectionResult& result);
-    void saveDebugImagesAsync(const unsigned char* imageData, int width, int height,
-        int frameIndex, const BallDetectionResult& result);
+    void saveDebugImages(const unsigned char* imageData, int width, int height, int frameIndex, const BallDetectionResult& result);
+    void saveDebugImagesAsync(const unsigned char* imageData, int width, int height, int frameIndex, const BallDetectionResult& result);
 
 public:
     BallDetector();
@@ -262,8 +252,7 @@ public:
 
     // Thread-safe detection
     void SetCurrentCaptureFolder(const std::string& folder);
-    BallDetectionResult DetectBall(const unsigned char* imageData,
-        int width, int height, int frameIndex = 0);
+    BallDetectionResult DetectBall(const unsigned char* imageData, int width, int height, int frameIndex = 0);
 
     // Template management
     bool InitializeTemplate(const cv::Mat& templateImage);
@@ -274,11 +263,7 @@ public:
     std::vector<TrackingInfo> GetActiveTracks() const;
 
     // Visualization
-    bool SaveDetectionImage(const unsigned char* originalImage,
-        int width, int height,
-        const BallDetectionResult& result,
-        const std::string& outputPath,
-        bool saveAsColor = false);
+    bool SaveDetectionImage(const unsigned char* originalImage, int width, int height, const BallDetectionResult& result, const std::string& outputPath, bool saveAsColor = false);
 
     // Thread-safe performance metrics
     PerformanceMetrics GetLastPerformanceMetrics() const {

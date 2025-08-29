@@ -6,77 +6,135 @@
 
 namespace Camera {
 
-    HikVisionCameraImpl::HikVisionCameraImpl() {
-        memset(&m_deviceList, 0, sizeof(m_deviceList));
+    HikVisionCameraImpl::HikVisionCameraImpl()
+        : m_deviceHandle(nullptr)
+        , m_connected(false)
+        , m_acquiring(false)
+        , m_lastFrameNumber(0)
+        , m_callbackRegistered(false) {
+        memset(&m_deviceInfo, 0, sizeof(m_deviceInfo));
     }
 
     HikVisionCameraImpl::~HikVisionCameraImpl() {
-        // Cleanup any open handles
+        // 소멸자에서 안전한 정리
+        if (m_acquiring.load()) {
+            StopAcquisition(m_deviceHandle);
+        }
+        if (m_connected.load()) {
+            CloseDevice(m_deviceHandle);
+        }
     }
 
     ReturnCode HikVisionCameraImpl::OpenDevice(int deviceIndex, void** handle) {
         if (!handle) return ReturnCode::INVALID_ARG;
+        *handle = nullptr;
 
-        // Enumerate devices if needed
-        uint32_t count = 0;
-        ReturnCode ret = GetNumberDevices(&count);
-        if (ret != ReturnCode::OK) return ret;
+        // 이미 연결된 경우
+        if (m_connected.load()) {
+            LOG_WARNING("Device already connected");
+            return ReturnCode::INVALID_HANDLE;
+        }
 
-        if (deviceIndex >= static_cast<int>(count)) {
+        // 디바이스 목록 가져오기
+        MV_CC_DEVICE_INFO_LIST stDeviceList;
+        memset(&stDeviceList, 0, sizeof(MV_CC_DEVICE_INFO_LIST));
+
+        int nRet = MV_CC_EnumDevices(MV_GIGE_DEVICE | MV_USB_DEVICE, &stDeviceList);
+        if (MV_OK != nRet) {
+            SetError("Failed to enumerate devices");
+            return ReturnCode::NO_DEVICES_FOUND;
+        }
+
+        if (deviceIndex >= stDeviceList.nDeviceNum) {
+            SetError("Invalid device index");
             return ReturnCode::INVALID_ARG;
         }
 
-        std::lock_guard<std::mutex> lock(m_deviceListMutex);
+        // 디바이스 정보 저장
+        m_deviceInfo = *(stDeviceList.pDeviceInfo[deviceIndex]);
 
-        MV_CC_DEVICE_INFO* pDeviceInfo = m_deviceList.pDeviceInfo[deviceIndex];
-        if (!pDeviceInfo) return ReturnCode::INVALID_ARG;
-
-        // Create handle structure
-        auto* hikHandle = new HikHandle();
-        hikHandle->deviceInfo = *pDeviceInfo;
-        hikHandle->isAcquiring = false;
-        hikHandle->lastFrameNumber = 0;
-
-        // Create HikVision handle
-        int mvRet = MV_CC_CreateHandle(&hikHandle->deviceHandle, pDeviceInfo);
-        if (mvRet != MV_OK) {
-            delete hikHandle;
-            LOG_ERROR("Failed to create HikVision handle: " + std::to_string(mvRet));
-            return ConvertMvError(mvRet);
+        // 핸들 생성
+        nRet = MV_CC_CreateHandle(&m_deviceHandle, &m_deviceInfo);
+        if (MV_OK != nRet) {
+            SetError("Failed to create device handle");
+            return ConvertMvError(nRet);
         }
 
-        // Open device
-        mvRet = MV_CC_OpenDevice(hikHandle->deviceHandle);
-        if (mvRet != MV_OK) {
-            MV_CC_DestroyHandle(hikHandle->deviceHandle);
-            delete hikHandle;
-            LOG_ERROR("Failed to open HikVision device: " + std::to_string(mvRet));
-            return ConvertMvError(mvRet);
+        // 디바이스 열기
+        nRet = MV_CC_OpenDevice(m_deviceHandle);
+        if (MV_OK != nRet) {
+            MV_CC_DestroyHandle(m_deviceHandle);
+            m_deviceHandle = nullptr;
+            SetError("Failed to open device");
+            return ConvertMvError(nRet);
         }
 
-        // Configure basic parameters
-        MV_CC_SetEnumValue(hikHandle->deviceHandle, "TriggerMode", MV_TRIGGER_MODE_OFF);
-        MV_CC_SetEnumValue(hikHandle->deviceHandle, "AcquisitionMode", MV_ACQ_MODE_CONTINUOUS);
-        MV_CC_SetIntValue(hikHandle->deviceHandle, "GevSCPSPacketSize", 1500);
+        // 디바이스 설정
+        if (!ConfigureDevice()) {
+            MV_CC_CloseDevice(m_deviceHandle);
+            MV_CC_DestroyHandle(m_deviceHandle);
+            m_deviceHandle = nullptr;
+            return ReturnCode::DEVICE_NOT_READY;
+        }
 
-        *handle = hikHandle;
-        LOG_INFO("HikVision camera opened successfully");
+        m_connected = true;
+        *handle = m_deviceHandle;
+        LOG_INFO("HikVision device opened successfully");
+
         return ReturnCode::OK;
     }
 
     ReturnCode HikVisionCameraImpl::CloseDevice(void* handle) {
-        if (!handle) return ReturnCode::INVALID_ARG;
-
-        auto* hikHandle = static_cast<HikHandle*>(handle);
-
-        if (hikHandle->isAcquiring) {
-            StopAcquisition(handle);
+        if (!handle || handle != m_deviceHandle) {
+            return ReturnCode::INVALID_HANDLE;
         }
 
-        MV_CC_CloseDevice(hikHandle->deviceHandle);
-        MV_CC_DestroyHandle(hikHandle->deviceHandle);
+        // 이미 닫혀있는 경우
+        if (!m_connected.load()) {
+            LOG_WARNING("Device already closed");
+            return ReturnCode::OK;
+        }
 
-        delete hikHandle;
+        LOG_INFO("Closing HikVision device...");
+
+        // 1. 획득 중이면 먼저 중지
+        if (m_acquiring.load()) {
+            LOG_INFO("Stopping acquisition before closing device");
+            StopAcquisition(handle);
+
+            // 획득이 완전히 중지될 때까지 대기
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        // 2. 콜백 해제
+        if (m_callbackRegistered) {
+            MV_CC_RegisterImageCallBackEx(m_deviceHandle, nullptr, nullptr);
+            m_callbackRegistered = false;
+            LOG_INFO("Image callback unregistered");
+        }
+
+        // 3. 이미지 큐 정리
+        ClearImageQueue();
+
+        // 4. 디바이스 닫기
+        int nRet = MV_CC_CloseDevice(m_deviceHandle);
+        if (MV_OK != nRet) {
+            LOG_ERROR("Failed to close device: " + std::to_string(nRet));
+        }
+
+        // 5. 핸들 해제
+        nRet = MV_CC_DestroyHandle(m_deviceHandle);
+        if (MV_OK != nRet) {
+            LOG_ERROR("Failed to destroy handle: " + std::to_string(nRet));
+        }
+
+        // 6. 상태 초기화
+        m_deviceHandle = nullptr;
+        m_connected = false;
+        m_acquiring = false;
+        m_lastFrameNumber = 0;
+
+        LOG_INFO("HikVision device closed successfully");
         return ReturnCode::OK;
     }
 
@@ -156,76 +214,166 @@ namespace Camera {
     }
 
     ReturnCode HikVisionCameraImpl::StartAcquisition(void* handle) {
-        if (!handle) return ReturnCode::INVALID_ARG;
+        if (!handle || handle != m_deviceHandle || !m_connected.load()) {
+            return ReturnCode::INVALID_HANDLE;
+        }
 
-        auto* hikHandle = static_cast<HikHandle*>(handle);
-
-        if (hikHandle->isAcquiring) {
+        if (m_acquiring.load()) {
+            LOG_WARNING("Already acquiring");
             return ReturnCode::ACQUISITION_ALREADY_UP;
         }
 
-        // Register callback
-        int mvRet = MV_CC_RegisterImageCallBackEx(hikHandle->deviceHandle,
-            ImageCallbackEx, hikHandle);
-        if (mvRet != MV_OK) {
-            LOG_ERROR("Failed to register callback");
-            return ConvertMvError(mvRet);
+        // 콜백 등록
+        int nRet = MV_CC_RegisterImageCallBackEx(m_deviceHandle, ImageCallbackEx, this);
+        if (MV_OK != nRet) {
+            SetError("Failed to register callback");
+            return ConvertMvError(nRet);
+        }
+        m_callbackRegistered = true;
+
+        // 획득 시작
+        nRet = MV_CC_StartGrabbing(m_deviceHandle);
+        if (MV_OK != nRet) {
+            MV_CC_RegisterImageCallBackEx(m_deviceHandle, nullptr, nullptr);
+            m_callbackRegistered = false;
+            SetError("Failed to start grabbing");
+            return ConvertMvError(nRet);
         }
 
-        // Start grabbing
-        mvRet = MV_CC_StartGrabbing(hikHandle->deviceHandle);
-        if (mvRet != MV_OK) {
-            LOG_ERROR("Failed to start grabbing");
-            return ConvertMvError(mvRet);
-        }
+        m_acquiring = true;
+        m_lastFrameNumber = 0;
+        LOG_INFO("HikVision acquisition started");
 
-        hikHandle->isAcquiring = true;
-        hikHandle->lastFrameTime = std::chrono::steady_clock::now();
         return ReturnCode::OK;
     }
 
     ReturnCode HikVisionCameraImpl::StopAcquisition(void* handle) {
-        if (!handle) return ReturnCode::INVALID_ARG;
-
-        auto* hikHandle = static_cast<HikHandle*>(handle);
-
-        if (!hikHandle->isAcquiring) {
-            return ReturnCode::ACQUISITION_STOPED;
+        if (!handle || handle != m_deviceHandle) {
+            return ReturnCode::INVALID_HANDLE;
         }
 
-        MV_CC_StopGrabbing(hikHandle->deviceHandle);
-        hikHandle->isAcquiring = false;
+        if (!m_acquiring.load()) {
+            LOG_WARNING("Not acquiring");
+            return ReturnCode::OK;
+        }
 
-        // Clear queue
+        LOG_INFO("Stopping HikVision acquisition...");
+
+        // 1. 획득 중지 플래그 설정
+        m_acquiring = false;
+
+        // 2. 이미지 획득 중지
+        int nRet = MV_CC_StopGrabbing(m_deviceHandle);
+        if (MV_OK != nRet) {
+            LOG_ERROR("Failed to stop grabbing: " + std::to_string(nRet));
+        }
+
+        // 3. 잠시 대기하여 진행 중인 콜백이 완료되도록 함
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // 4. 콜백 해제
+        if (m_callbackRegistered) {
+            MV_CC_RegisterImageCallBackEx(m_deviceHandle, nullptr, nullptr);
+            m_callbackRegistered = false;
+        }
+
+        // 5. 버퍼 정리
+        nRet = MV_CC_ClearImageBuffer(m_deviceHandle);
+        if (MV_OK != nRet) {
+            LOG_WARNING("Failed to clear image buffer: " + std::to_string(nRet));
+        }
+
+        // 6. 큐가 비워질 때까지 대기
         {
-            std::lock_guard<std::mutex> lock(hikHandle->queueMutex);
-            while (!hikHandle->imageQueue.empty()) {
-                hikHandle->imageQueue.pop();
-            }
+            std::unique_lock<std::mutex> lock(m_queueMutex);
+            m_queueCV.wait_for(lock, std::chrono::milliseconds(200),
+                [this] { return m_imageQueue.empty(); });
         }
 
+        // 7. 남은 이미지 큐 강제 정리
+        ClearImageQueue();
+
+        // 8. 트리거 모드 해제 (연속 모드로 복원)
+        MV_CC_SetEnumValue(m_deviceHandle, "TriggerMode", MV_TRIGGER_MODE_OFF);
+
+        LOG_INFO("HikVision acquisition stopped successfully");
         return ReturnCode::OK;
     }
 
+    void HikVisionCameraImpl::ClearImageQueue() {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        while (!m_imageQueue.empty()) {
+            m_imageQueue.pop();
+        }
+        LOG_DEBUG("Image queue cleared");
+    }
+
+    bool HikVisionCameraImpl::ConfigureDevice() {
+        int nRet;
+
+        // 트리거 모드 끄기
+        nRet = MV_CC_SetEnumValue(m_deviceHandle, "TriggerMode", MV_TRIGGER_MODE_OFF);
+        if (MV_OK != nRet) {
+            LOG_WARNING("Failed to set trigger mode off: " + std::to_string(nRet));
+        }
+
+        // 연속 획득 모드 설정
+        nRet = MV_CC_SetEnumValue(m_deviceHandle, "AcquisitionMode", MV_ACQ_MODE_CONTINUOUS);
+        if (MV_OK != nRet) {
+            LOG_WARNING("Failed to set continuous acquisition mode: " + std::to_string(nRet));
+        }
+
+        // 픽셀 포맷 설정 (Mono8)
+        nRet = MV_CC_SetEnumValue(m_deviceHandle, "PixelFormat", PixelType_Gvsp_Mono8);
+        if (MV_OK != nRet) {
+            LOG_WARNING("Failed to set pixel format: " + std::to_string(nRet));
+        }
+
+        // GigE 카메라인 경우 패킷 크기 설정
+        if (m_deviceInfo.nTLayerType == MV_GIGE_DEVICE) {
+            // 패킷 크기 최적화
+            int nPacketSize = 0;
+            nRet = MV_CC_GetOptimalPacketSize(m_deviceHandle);
+            if (MV_OK == nRet) {
+                nRet = MV_CC_SetIntValue(m_deviceHandle, "GevSCPSPacketSize", nPacketSize);
+                if (MV_OK != nRet) {
+                    LOG_WARNING("Failed to set optimal packet size: " + std::to_string(nRet));
+                }
+            }
+
+            // 하트비트 타임아웃 설정
+            nRet = MV_CC_SetIntValue(m_deviceHandle, "GevHeartbeatTimeout", 3000);
+            if (MV_OK != nRet) {
+                LOG_WARNING("Failed to set heartbeat timeout: " + std::to_string(nRet));
+            }
+        }
+
+        return true;
+    }
+
+
     ReturnCode HikVisionCameraImpl::GetImage(void* handle, uint32_t timeout_ms, ImageData* image) {
-        if (!handle || !image) return ReturnCode::INVALID_ARG;
+        if (!handle || handle != m_deviceHandle || !image) {
+            return ReturnCode::INVALID_ARG;
+        }
 
-        auto* hikHandle = static_cast<HikHandle*>(handle);
-
-        if (!hikHandle->isAcquiring) {
+        if (!m_acquiring.load()) {
             return ReturnCode::ACQUISITION_STOPED;
         }
 
-        std::unique_lock<std::mutex> lock(hikHandle->queueMutex);
+        std::unique_lock<std::mutex> lock(m_queueMutex);
+        if (m_queueCV.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+            [this] { return !m_imageQueue.empty() || !m_acquiring.load(); })) {
 
-        if (hikHandle->queueCV.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-            [hikHandle] { return !hikHandle->imageQueue.empty(); })) {
+            if (!m_acquiring.load()) {
+                return ReturnCode::ACQUISITION_STOPED;
+            }
 
-            auto imageData = std::move(hikHandle->imageQueue.front());
-            hikHandle->imageQueue.pop();
-
-            *image = *imageData;
-            return ReturnCode::OK;
+            if (!m_imageQueue.empty()) {
+                *image = m_imageQueue.front();
+                m_imageQueue.pop();
+                return ReturnCode::OK;
+            }
         }
 
         return ReturnCode::TIMEOUT;
@@ -234,71 +382,51 @@ namespace Camera {
     void __stdcall HikVisionCameraImpl::ImageCallbackEx(unsigned char* pData,
         MV_FRAME_OUT_INFO_EX* pFrameInfo,
         void* pUser) {
-        // pUser contains the HikHandle pointer, not the impl pointer
-        auto* handle = static_cast<HikHandle*>(pUser);
-        if (!handle || !pData || !pFrameInfo) {
-            return;
+        auto* pThis = static_cast<HikVisionCameraImpl*>(pUser);
+        if (pThis && pThis->m_acquiring.load()) {
+            pThis->ProcessImage(pData, pFrameInfo);
         }
+    }
 
-        // Process directly without needing 'this'
-        auto imageData = std::make_unique<ImageData>();
+    void HikVisionCameraImpl::ProcessImage(unsigned char* pData, MV_FRAME_OUT_INFO_EX* pFrameInfo) {
+        if (!pData || !pFrameInfo) return;
 
-        // Fill ImageData structure
-        imageData->size = sizeof(ImageData);
-        imageData->bp_size = pFrameInfo->nFrameLen;
-        imageData->bp = new unsigned char[imageData->bp_size];
-        memcpy(imageData->bp, pData, imageData->bp_size);
-
-        imageData->width = pFrameInfo->nWidth;
-        imageData->height = pFrameInfo->nHeight;
-        imageData->nframe = static_cast<uint32_t>(pFrameInfo->nFrameNum);
-        imageData->exposure_time_us = static_cast<uint32_t>(pFrameInfo->fExposureTime);
-        imageData->gain_db = pFrameInfo->fGain;
-
-        // Convert pixel format
-        switch (pFrameInfo->enPixelType) {
-        case PixelType_Gvsp_Mono8:
-            imageData->frm = Camera::ImageFormat::MONO8;
-            break;
-        case PixelType_Gvsp_Mono16:
-            imageData->frm = Camera::ImageFormat::MONO16;
-            break;
-        default:
-            imageData->frm = Camera::ImageFormat::MONO8;
-            break;
-        }
-
-        // Calculate timestamp
-        auto now = std::chrono::steady_clock::now();
-        auto duration = now.time_since_epoch();
-        auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration);
-        auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(duration - seconds);
-        imageData->tsSec = static_cast<uint32_t>(seconds.count());
-        imageData->tsUSec = static_cast<uint32_t>(microseconds.count());
-
-        // Frame drop detection
+        // 프레임 드롭 감지
         uint64_t currentFrame = pFrameInfo->nFrameNum;
-        uint64_t lastFrame = handle->lastFrameNumber.exchange(currentFrame);
-        if (lastFrame != 0 && currentFrame > lastFrame + 1) {
-            LOG_WARNING("Frame drop detected: " + std::to_string(currentFrame - lastFrame - 1) + " frames");
+        uint64_t expectedFrame = m_lastFrameNumber.load() + 1;
+        if (m_lastFrameNumber != 0 && currentFrame > expectedFrame) {
+            LOG_WARNING("Frame drop detected: " +
+                std::to_string(currentFrame - expectedFrame) + " frames lost");
         }
+        m_lastFrameNumber = currentFrame;
 
-        // Add to queue
+        // ImageData 생성
+        ImageData image;
+        image.size = sizeof(ImageData);
+        image.bp = pData;
+        image.bp_size = pFrameInfo->nFrameLen;
+        image.width = pFrameInfo->nWidth;
+        image.height = pFrameInfo->nHeight;
+        image.nframe = pFrameInfo->nFrameNum;
+        image.tsSec = static_cast<uint32_t>(pFrameInfo->nDevTimeStampHigh);
+        image.tsUSec = pFrameInfo->nDevTimeStampLow / 1000;
+        image.exposure_time_us = static_cast<uint32_t>(pFrameInfo->fExposureTime);
+        image.gain_db = pFrameInfo->fGain;
+
+        // 픽셀 포맷 변환 추가
+        image.frm = ConvertFromMvPixelFormat(pFrameInfo->enPixelType);
+
+        // 큐에 추가
         {
-            std::lock_guard<std::mutex> lock(handle->queueMutex);
+            std::lock_guard<std::mutex> lock(m_queueMutex);
 
-            // Limit queue size
-            while (handle->imageQueue.size() >= 5) {
-                auto& front = handle->imageQueue.front();
-                if (front && front->bp) {
-                    delete[] static_cast<unsigned char*>(front->bp);
-                    front->bp = nullptr;
-                }
-                handle->imageQueue.pop();
+            // 큐 크기 제한
+            while (m_imageQueue.size() >= MAX_QUEUE_SIZE) {
+                m_imageQueue.pop();
             }
 
-            handle->imageQueue.push(std::move(imageData));
-            handle->queueCV.notify_one();
+            m_imageQueue.push(image);
+            m_queueCV.notify_one();
         }
     }
 
@@ -353,71 +481,93 @@ namespace Camera {
     }
 
     ReturnCode HikVisionCameraImpl::SetParamInt(void* handle, ParamType param, int value) {
-        if (!handle) return ReturnCode::INVALID_ARG;
+        // handle 검증 수정
+        if (!handle || handle != m_deviceHandle || !m_connected.load()) {
+            return ReturnCode::INVALID_HANDLE;
+        }
 
-        auto* hikHandle = static_cast<HikHandle*>(handle);
         int mvRet = MV_OK;
 
         switch (param) {
         case ParamType::WIDTH:
-            mvRet = MV_CC_SetIntValue(hikHandle->deviceHandle, "Width", value);
+            mvRet = MV_CC_SetIntValue(m_deviceHandle, "Width", value);
             break;
         case ParamType::HEIGHT:
-            mvRet = MV_CC_SetIntValue(hikHandle->deviceHandle, "Height", value);
+            mvRet = MV_CC_SetIntValue(m_deviceHandle, "Height", value);
             break;
         case ParamType::OFFSET_X:
-            mvRet = MV_CC_SetIntValue(hikHandle->deviceHandle, "OffsetX", value);
+            mvRet = MV_CC_SetIntValue(m_deviceHandle, "OffsetX", value);
             break;
         case ParamType::OFFSET_Y:
-            mvRet = MV_CC_SetIntValue(hikHandle->deviceHandle, "OffsetY", value);
+            mvRet = MV_CC_SetIntValue(m_deviceHandle, "OffsetY", value);
             break;
         case ParamType::EXPOSURE:
-            mvRet = MV_CC_SetFloatValue(hikHandle->deviceHandle, "ExposureTime",
+            mvRet = MV_CC_SetFloatValue(m_deviceHandle, "ExposureTime",
                 static_cast<float>(value));
             break;
         case ParamType::IMAGE_DATA_FORMAT:
-            mvRet = MV_CC_SetEnumValue(hikHandle->deviceHandle, "PixelFormat",
+            mvRet = MV_CC_SetEnumValue(m_deviceHandle, "PixelFormat",
                 ConvertToMvPixelFormat(static_cast<ImageFormat>(value)));
             break;
         case ParamType::TRG_SOURCE:
             if (value == static_cast<int>(TriggerSource::OFF)) {
-                mvRet = MV_CC_SetEnumValue(hikHandle->deviceHandle, "TriggerMode", MV_TRIGGER_MODE_OFF);
+                mvRet = MV_CC_SetEnumValue(m_deviceHandle, "TriggerMode", MV_TRIGGER_MODE_OFF);
             }
             else {
-                mvRet = MV_CC_SetEnumValue(hikHandle->deviceHandle, "TriggerMode", MV_TRIGGER_MODE_ON);
+                mvRet = MV_CC_SetEnumValue(m_deviceHandle, "TriggerMode", MV_TRIGGER_MODE_ON);
                 if (mvRet == MV_OK && value == static_cast<int>(TriggerSource::SOFTWARE)) {
-                    mvRet = MV_CC_SetEnumValue(hikHandle->deviceHandle, "TriggerSource",
+                    mvRet = MV_CC_SetEnumValue(m_deviceHandle, "TriggerSource",
                         MV_TRIGGER_SOURCE_SOFTWARE);
                 }
             }
             break;
+        case ParamType::OUTPUT_DATA_BIT_DEPTH:
+        case ParamType::SENSOR_DATA_BIT_DEPTH:
+        case ParamType::ACQ_TIMING_MODE:
+        case ParamType::BUFFER_POLICY:
+        case ParamType::AUTO_BANDWIDTH_CALCULATION:
+        case ParamType::DOWNSAMPLING:
+        case ParamType::DOWNSAMPLING_TYPE:
+        case ParamType::SENSOR_TAPS:
+        case ParamType::BUFFERS_QUEUE_SIZE:
+        case ParamType::RECENT_FRAME:
+        case ParamType::HDR:
+        case ParamType::AUTO_WB:
+        case ParamType::MANUAL_WB:
+        case ParamType::SENS_DEFECTS_CORR:
+        case ParamType::COLOR_FILTER_ARRAY:
+        case ParamType::TRANSPORT_PIXEL_FORMAT:
+            // HikVision에서 지원하지 않는 파라미터들
+            LOG_WARNING("Parameter not supported by HikVision: " + std::to_string(static_cast<int>(param)));
+            return ReturnCode::NOT_SUPPORTED_PARAM;
         default:
             return ReturnCode::NOT_SUPPORTED_PARAM;
         }
 
-        return ConvertMvError(mvRet);
+        return ConvertMvError(mvRet);  // 수정됨
     }
 
     ReturnCode HikVisionCameraImpl::GetParamInt(void* handle, ParamType param, int* value) {
-        if (!handle || !value) return ReturnCode::INVALID_ARG;
+        if (!handle || handle != m_deviceHandle || !value || !m_connected.load()) {
+            return ReturnCode::INVALID_HANDLE;
+        }
 
-        auto* hikHandle = static_cast<HikHandle*>(handle);
         MVCC_INTVALUE stIntValue = { 0 };
         int mvRet = MV_OK;
 
         switch (param) {
         case ParamType::WIDTH:
-            mvRet = MV_CC_GetIntValue(hikHandle->deviceHandle, "Width", &stIntValue);
+            mvRet = MV_CC_GetIntValue(m_deviceHandle, "Width", &stIntValue);
             *value = static_cast<int>(stIntValue.nCurValue);
             break;
         case ParamType::HEIGHT:
-            mvRet = MV_CC_GetIntValue(hikHandle->deviceHandle, "Height", &stIntValue);
+            mvRet = MV_CC_GetIntValue(m_deviceHandle, "Height", &stIntValue);
             *value = static_cast<int>(stIntValue.nCurValue);
             break;
         case ParamType::EXPOSURE:
         {
             MVCC_FLOATVALUE stFloatValue = { 0 };
-            mvRet = MV_CC_GetFloatValue(hikHandle->deviceHandle, "ExposureTime", &stFloatValue);
+            mvRet = MV_CC_GetFloatValue(m_deviceHandle, "ExposureTime", &stFloatValue);
             *value = static_cast<int>(stFloatValue.fCurValue);
         }
         break;
@@ -425,50 +575,57 @@ namespace Camera {
             return ReturnCode::NOT_SUPPORTED_PARAM;
         }
 
-        return ConvertMvError(mvRet);
+        return ConvertMvError(mvRet);  // 수정됨
     }
 
     ReturnCode HikVisionCameraImpl::SetParamFloat(void* handle, ParamType param, float value) {
-        if (!handle) return ReturnCode::INVALID_ARG;
+        if (!handle || handle != m_deviceHandle || !m_connected.load()) {
+            return ReturnCode::INVALID_HANDLE;
+        }
 
-        auto* hikHandle = static_cast<HikHandle*>(handle);
         int mvRet = MV_OK;
 
         switch (param) {
         case ParamType::GAIN:
-            mvRet = MV_CC_SetFloatValue(hikHandle->deviceHandle, "Gain", value);
+            mvRet = MV_CC_SetFloatValue(m_deviceHandle, "Gain", value);
             break;
         case ParamType::FRAMERATE:
-            mvRet = MV_CC_SetFloatValue(hikHandle->deviceHandle, "AcquisitionFrameRate", value);
+            mvRet = MV_CC_SetFloatValue(m_deviceHandle, "AcquisitionFrameRate", value);
             break;
+        case ParamType::GAMMAY:
+        case ParamType::SHARPNESS:
+            // HikVision에서 지원하지 않는 파라미터
+            LOG_WARNING("Parameter not supported by HikVision: " + std::to_string(static_cast<int>(param)));
+            return ReturnCode::NOT_SUPPORTED_PARAM;
         default:
             return ReturnCode::NOT_SUPPORTED_PARAM;
         }
 
-        return ConvertMvError(mvRet);
+        return ConvertMvError(mvRet);  // 수정됨
     }
 
     ReturnCode HikVisionCameraImpl::GetParamFloat(void* handle, ParamType param, float* value) {
-        if (!handle || !value) return ReturnCode::INVALID_ARG;
+        if (!handle || handle != m_deviceHandle || !value || !m_connected.load()) {
+            return ReturnCode::INVALID_HANDLE;
+        }
 
-        auto* hikHandle = static_cast<HikHandle*>(handle);
         MVCC_FLOATVALUE stFloatValue = { 0 };
         int mvRet = MV_OK;
 
         switch (param) {
         case ParamType::GAIN:
-            mvRet = MV_CC_GetFloatValue(hikHandle->deviceHandle, "Gain", &stFloatValue);
+            mvRet = MV_CC_GetFloatValue(m_deviceHandle, "Gain", &stFloatValue);
             *value = stFloatValue.fCurValue;
             break;
         case ParamType::FRAMERATE:
-            mvRet = MV_CC_GetFloatValue(hikHandle->deviceHandle, "AcquisitionFrameRate", &stFloatValue);
+            mvRet = MV_CC_GetFloatValue(m_deviceHandle, "AcquisitionFrameRate", &stFloatValue);
             *value = stFloatValue.fCurValue;
             break;
         default:
             return ReturnCode::NOT_SUPPORTED_PARAM;
         }
 
-        return ConvertMvError(mvRet);
+        return ConvertMvError(mvRet);  // 수정됨
     }
 
     ReturnCode HikVisionCameraImpl::ConvertMvError(int mvError) {
@@ -487,6 +644,8 @@ namespace Camera {
             return ReturnCode::FREE_RESOURCES;
         case MV_E_PARAMETER:
             return ReturnCode::INVALID_ARG;
+        default:
+            return ReturnCode::CANT_PROCESS;
         }
     }
 
@@ -551,5 +710,12 @@ namespace Camera {
         // Implement if needed
         return ReturnCode::NOT_SUPPORTED_PARAM;
     }
+
+    void HikVisionCameraImpl::SetError(const std::string& error) const {
+        std::lock_guard<std::mutex> lock(m_errorMutex);
+        m_lastError = error;
+        LOG_ERROR("HikVisionCamera: " + error);
+    }
+
 
 } // namespace Camera
