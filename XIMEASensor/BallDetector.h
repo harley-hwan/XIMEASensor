@@ -11,6 +11,8 @@
 #include <atomic>
 #include <unordered_map>
 #include <deque>
+#include <chrono>
+#include <algorithm>
 
 #define ENABLE_PERFORMANCE_PROFILING
 
@@ -18,25 +20,31 @@ namespace cv {
     class Mat;
 }
 
+// Forward declaration
+class CameraController;
+
 // Ball information structure
 struct BallInfo {
-    cv::Point2f center;       // Ball center in image coordinates
-    float radius;             // Ball radius in pixels
-    float confidence;         // Detection confidence score (0.0 ~ 1.0)
-    int frameIndex;          // Frame number where ball was detected
-    float circularity;       // Shape circularity measure (0.0 ~ 1.0)
-    float brightness;        // Average brightness inside ball region (0 ~ 255)
-    float edgeStrength;      // Edge response strength
-    float motionScore;       // Motion consistency score for tracking
+    cv::Point2f center;
+    float radius;
+    float confidence;
+    int frameIndex;
+    float circularity;
+    float brightness;
+    float edgeStrength;
+    float motionScore;
 
-    BallInfo() : radius(0.0f), confidence(0.0f), frameIndex(0), circularity(1.0f), brightness(0.0f), edgeStrength(0.0f), motionScore(0.0f) { }
+    BallInfo() : radius(0.0f), confidence(0.0f), frameIndex(0),
+        circularity(1.0f), brightness(0.0f),
+        edgeStrength(0.0f), motionScore(0.0f) {
+    }
 };
 
 // Detection result structure
 struct BallDetectionResult {
-    bool found;                      // Whether any ball was detected
-    std::vector<BallInfo> balls;     // List of detected balls
-    std::string errorMessage;        // Error description if detection failed
+    bool found;
+    std::vector<BallInfo> balls;
+    std::string errorMessage;
 
     BallDetectionResult() : found(false) {}
 };
@@ -108,58 +116,45 @@ public:
         DetectionParams();
     };
 
-    // Performance metrics - UPDATED with all preprocessing steps
+    // Performance metrics
     struct PerformanceMetrics {
-        // Overall timing
         double totalDetectionTime_ms;
-
-        // Initialization and setup
         double contextInitTime_ms;
         double parameterCopyTime_ms;
         double matCreationTime_ms;
-
-        // Image preparation
         double roiExtractionTime_ms;
         double downscaleTime_ms;
-
-        // Preprocessing - DETAILED
-        double preprocessingTime_ms;          // Total preprocessing time
-        double filterTime_ms;                 // Bilateral or Gaussian filter
-        double claheTime_ms;                  // CLAHE enhancement
-        double shadowEnhancementTime_ms;      // Shadow enhancement
-        double sharpenTime_ms;                // Sharpening
-        double normalizationTime_ms;          // Normalization
-
-        // Detection preparation
+        double preprocessingTime_ms;
+        double filterTime_ms;
+        double claheTime_ms;
+        double shadowEnhancementTime_ms;
+        double sharpenTime_ms;
+        double normalizationTime_ms;
         double edgeDetectionTime_ms;
         double thresholdingTime_ms;
         double morphologyTime_ms;
-
-        // Detection methods
         double contourDetectionTime_ms;
         double houghDetectionTime_ms;
         double templateMatchingTime_ms;
-
-        // Post-processing
         double candidateEvaluationTime_ms;
         double trackingTime_ms;
         double selectionTime_ms;
         double resultFilteringTime_ms;
         double confidenceCalculationTime_ms;
-
-        // I/O and debugging
         double imagesSavingTime_ms;
-
-        // Synchronization overhead
         double synchronizationTime_ms;
         double metricsUpdateTime_ms;
-
-        // Detection statistics
+        double memoryPoolTime_ms;
         int candidatesFound;
         int candidatesEvaluated;
         int candidatesRejected;
         bool ballDetected;
         float averageConfidence;
+
+        // 메모리 풀 통계
+        size_t poolSize;
+        size_t poolInUse;
+        float poolHitRate;
 
         void Reset();
     };
@@ -176,6 +171,17 @@ public:
     };
 
 private:
+    // Camera type for algorithm selection
+    enum class CameraType {
+        XIMEA = 0,
+        HIKVISION = 1,
+        UNKNOWN = -1
+    };
+
+    CameraType m_currentCameraType;
+    mutable std::mutex m_cameraTypeMutex;
+    CameraController* m_cameraController;  // 카메라 컨트롤러 참조
+
     // Thread safety
     mutable std::mutex m_paramsMutex;
     mutable std::mutex m_metricsMutex;
@@ -195,7 +201,7 @@ private:
 
     static thread_local std::unique_ptr<DetectionContext> t_context;
 
-    // Implementation
+    // Implementation with enhanced memory pool
     class Impl;
     std::unique_ptr<Impl> pImpl;
     bool m_performanceProfilingEnabled;
@@ -210,18 +216,31 @@ private:
 
     // Private methods
     void InitializeDefaultParams();
-    std::vector<cv::Vec3f> detectByContours(const cv::Mat& binary, const cv::Mat& grayImage, float downscaleFactor);
-    std::vector<cv::Vec3f> detectByContoursOptimized(const cv::Mat& binary, const cv::Mat& grayImage, float downscaleFactor);
+    void UpdateCameraType();  // 새로 추가
+    BallDetectionResult DetectBallStandard(const unsigned char* imageData, int width, int height, int frameIndex);
+    BallDetectionResult DetectBallIR_Internal(const unsigned char* imageData, int width, int height, int frameIndex);
+
+    std::vector<cv::Vec3f> detectByContours(const cv::Mat& binary,
+        const cv::Mat& grayImage,
+        float downscaleFactor);
+    std::vector<cv::Vec3f> detectByContoursOptimized(const cv::Mat& binary,
+        const cv::Mat& grayImage,
+        float downscaleFactor);
     std::vector<cv::Vec3f> detectByTemplate(const cv::Mat& image, float downscaleFactor);
-    std::vector<cv::Vec3f> detectByTemplateOptimized(const cv::Mat& image, float downscaleFactor);
-    void selectBestBalls(const std::vector<BallInfo>& validBalls, BallDetectionResult& result);
-    void selectBestBallsOptimized(const std::vector<BallInfo>& validBalls, BallDetectionResult& result);
+    std::vector<cv::Vec3f> detectByTemplateOptimized(const cv::Mat& image,
+        float downscaleFactor);
+    void selectBestBalls(const std::vector<BallInfo>& validBalls,
+        BallDetectionResult& result);
+    void selectBestBallsOptimized(const std::vector<BallInfo>& validBalls,
+        BallDetectionResult& result);
     void updateTracking(const BallDetectionResult& result);
     void updateTrackingOptimized(std::vector<BallInfo>& validBalls);
     void predictNextPosition(TrackingInfo& track);
     float calculateMotionConsistency(const BallInfo& ball, const TrackingInfo& track);
-    void saveDebugImages(const unsigned char* imageData, int width, int height, int frameIndex, const BallDetectionResult& result);
-    void saveDebugImagesAsync(const unsigned char* imageData, int width, int height, int frameIndex, const BallDetectionResult& result);
+    void saveDebugImages(const unsigned char* imageData, int width, int height,
+        int frameIndex, const BallDetectionResult& result);
+    void saveDebugImagesAsync(const unsigned char* imageData, int width, int height,
+        int frameIndex, const BallDetectionResult& result);
 
 public:
     BallDetector();
@@ -232,6 +251,12 @@ public:
     BallDetector& operator=(const BallDetector&) = delete;
     BallDetector(BallDetector&&) = delete;
     BallDetector& operator=(BallDetector&&) = delete;
+
+    // Camera controller 설정
+    void SetCameraController(CameraController* controller) {
+        m_cameraController = controller;
+        UpdateCameraType();
+    }
 
     // Thread-safe parameter access
     void SetParameters(const DetectionParams& params) {
@@ -250,9 +275,15 @@ public:
     void EnablePerformanceProfiling(bool enable);
     bool IsPerformanceProfilingEnabled() const { return m_performanceProfilingEnabled; }
 
-    // Thread-safe detection
+    // 메모리 풀 관리 인터페이스
+    void OptimizeMemoryPool();
+    void GetMemoryPoolStatistics(size_t& poolSize, size_t& inUse,
+        float& hitRate) const;
+
+    // Thread-safe detection - 카메라 타입에 따라 자동 선택
     void SetCurrentCaptureFolder(const std::string& folder);
-    BallDetectionResult DetectBall(const unsigned char* imageData, int width, int height, int frameIndex = 0);
+    BallDetectionResult DetectBall(const unsigned char* imageData,
+        int width, int height, int frameIndex = 0);
 
     // Template management
     bool InitializeTemplate(const cv::Mat& templateImage);
@@ -263,7 +294,16 @@ public:
     std::vector<TrackingInfo> GetActiveTracks() const;
 
     // Visualization
-    bool SaveDetectionImage(const unsigned char* originalImage, int width, int height, const BallDetectionResult& result, const std::string& outputPath, bool saveAsColor = false);
+    bool SaveDetectionImage(const unsigned char* originalImage,
+        int width, int height,
+        const BallDetectionResult& result,
+        const std::string& outputPath,
+        bool saveAsColor = false);
+
+    // IR camera specific
+    void SetIRCameraOptimizedParams();
+    std::vector<cv::Vec3f> detectByContoursForIR(const cv::Mat& binary, const cv::Mat& grayImage);
+    BallDetectionResult DetectBallIR(const unsigned char* imageData, int width, int height, int frameIndex);
 
     // Thread-safe performance metrics
     PerformanceMetrics GetLastPerformanceMetrics() const {

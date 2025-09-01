@@ -14,6 +14,7 @@
 #include "CameraInterface.h"
 #include "Logger.h"
 #include "BallDetector.h"
+#include <future>
 #ifdef ENABLE_CONTINUOUS_CAPTURE
 #include "ContinuousCaptureManager.h"
 #endif
@@ -110,8 +111,7 @@ typedef void(*InternalShotCompletedCallback)(const ShotTrajectoryData* trajector
 
 class CameraController {
 private:
-    Camera::CameraFactory::CameraType m_currentCameraType =
-        Camera::CameraFactory::CameraType::XIMEA;
+    Camera::CameraFactory::CameraType m_currentCameraType = Camera::CameraFactory::CameraType::XIMEA;
 
     // singleton
     static std::unique_ptr<CameraController> instance;
@@ -488,6 +488,70 @@ private:
     // Convert between Camera::ReturnCode and CameraError
     CameraError ConvertReturnCodeToError(Camera::ReturnCode code);
 
+    std::atomic<bool> m_shutdownRequested{ false };
+
+    // 타임아웃을 지원하는 thread join
+    template<typename Rep, typename Period>
+    bool tryJoinWithTimeout(std::thread& thread,
+        const std::chrono::duration<Rep, Period>& timeout) {
+        auto future = std::async(std::launch::async, [&thread]() {
+            thread.join();
+            });
+
+        return future.wait_for(timeout) == std::future_status::ready;
+    }
+
+    // 긴급 정리 함수
+    void emergencyCleanup() {
+        if (cameraHandle && cameraInterface) {
+            try {
+                // 강제로 acquisition 중지
+                cameraInterface->StopAcquisition(cameraHandle);
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            catch (...) {
+                // 무시하고 계속
+            }
+        }
+    }
+
+    void cleanupCamera() {
+        if (cameraHandle && cameraInterface) {
+            try {
+                Camera::ReturnCode stat = cameraInterface->StopAcquisition(cameraHandle);
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+                stat = cameraInterface->CloseDevice(cameraHandle);
+                if (stat != Camera::ReturnCode::OK) {
+                    LOG_ERROR("Error closing camera: " + cameraInterface->GetErrorString(stat));
+                }
+            }
+            catch (...) {
+                LOG_ERROR("Exception during camera cleanup");
+            }
+            cameraHandle = nullptr;
+        }
+    }
+
+    void cleanupMemory() {
+        std::lock_guard<std::mutex> lock(frameMutex);
+        if (frameBuffer) {
+            delete[] frameBuffer;
+            frameBuffer = nullptr;
+        }
+        if (workingBuffer) {
+            delete[] workingBuffer;
+            workingBuffer = nullptr;
+        }
+
+        // Detection queue 정리
+        {
+            std::lock_guard<std::mutex> queueLock(m_detectionQueueMutex);
+            std::queue<DetectionQueueItem> empty;
+            std::swap(m_detectionQueue, empty);
+        }
+    }
+
 public:
     ~CameraController();
 
@@ -503,6 +567,10 @@ public:
     // Get current camera type
     Camera::CameraFactory::CameraType GetCurrentCameraType() const {
         return m_currentCameraType;
+    }
+
+    int GetCurrentCameraTypeAsInt() const {
+        return static_cast<int>(m_currentCameraType);
     }
 
     // camera control

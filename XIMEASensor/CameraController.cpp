@@ -60,84 +60,49 @@ CameraController::~CameraController() {
     LOG_INFO("CameraController destructor called");
 
     try {
-        // 1. 모든 작업 중지 플래그 설정
+        // 1. 모든 작업 중지 신호를 먼저 설정
+        m_shutdownRequested = true;  // 새로운 atomic<bool> 멤버 추가 필요
+
+        // 2. Ball state tracking 중지
         if (m_ballStateTrackingEnabled.load()) {
             m_ballStateTrackingEnabled = false;
         }
 
+        // 3. Detection thread 종료 - 타임아웃 적용
         if (m_detectionThreadRunning.load()) {
             m_detectionThreadRunning = false;
             m_detectionCV.notify_all();
+
+            if (m_detectionThread.joinable()) {
+                // 타임아웃 방식으로 join 시도
+                if (!tryJoinWithTimeout(m_detectionThread, std::chrono::milliseconds(500))) {
+                    LOG_WARNING("Detection thread did not terminate gracefully, detaching");
+                    m_detectionThread.detach();
+                }
+            }
         }
 
+        // 4. Capture thread 종료 - 타임아웃 적용
         if (isRunning.load()) {
             isRunning = false;
-        }
-
-        // 2. Detection 스레드 종료 대기
-        if (m_detectionThread.joinable()) {
-            // condition_variable에 타임아웃 추가
-            {
-                std::unique_lock<std::mutex> lock(m_detectionQueueMutex);
-                // 큐를 비우고 종료 신호
-                std::queue<DetectionQueueItem> empty;
-                std::swap(m_detectionQueue, empty);
-            }
-            m_detectionCV.notify_all();
-
-            // 직접 join with 제한 시간
-            try {
-                m_detectionThread.join();
-            }
-            catch (const std::exception& e) {
-                LOG_ERROR("Failed to join detection thread: " + std::string(e.what()));
-                m_detectionThread.detach();
-            }
-        }
-
-        // 3. 콜백 정리
-        {
-            std::lock_guard<std::mutex> lock(callbackMutex);
-            callbacks.clear();
-        }
-
-        // 4. Capture 스레드 종료
-        if (captureThread.joinable()) {
             isPaused = false;
-            captureThread.join();
+
+            if (captureThread.joinable()) {
+                if (!tryJoinWithTimeout(captureThread, std::chrono::milliseconds(1000))) {
+                    LOG_WARNING("Capture thread did not terminate gracefully, forcing shutdown");
+
+                    // 강제 종료 전 카메라 정리 시도
+                    emergencyCleanup();
+                    captureThread.detach();
+                }
+            }
         }
 
         // 5. 카메라 하드웨어 정리
-        if (cameraHandle != nullptr && cameraInterface) {
-            Camera::ReturnCode stat = cameraInterface->StopAcquisition(cameraHandle);
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-            stat = cameraInterface->CloseDevice(cameraHandle);
-            if (stat != Camera::ReturnCode::OK) {
-                LOG_ERROR("Error closing camera in destructor: " + cameraInterface->GetErrorString(stat));
-            }
-            cameraHandle = nullptr;
-        }
+        cleanupCamera();
 
         // 6. 메모리 정리
-        {
-            std::lock_guard<std::mutex> lock(frameMutex);
-            if (frameBuffer) {
-                delete[] frameBuffer;
-                frameBuffer = nullptr;
-            }
-            if (workingBuffer) {
-                delete[] workingBuffer;
-                workingBuffer = nullptr;
-            }
-        }
-
-        // 7. Detection queue 정리
-        {
-            std::lock_guard<std::mutex> lock(m_detectionQueueMutex);
-            std::queue<DetectionQueueItem> empty;  // 타입 변경
-            std::swap(m_detectionQueue, empty);
-        }
+        cleanupMemory();
 
     }
     catch (const std::exception& e) {
@@ -149,6 +114,7 @@ CameraController::~CameraController() {
 
     LOG_INFO("CameraController destroyed safely");
 }
+
 
 CameraController& CameraController::GetInstance() {
     std::lock_guard<std::mutex> lock(instanceMutex);
@@ -425,9 +391,8 @@ void CameraController::CaptureLoop() {
 
     const int IMAGE_TIMEOUT_MS = 50;
     int consecutiveTimeouts = 0;
-    const int MAX_CONSECUTIVE_TIMEOUTS = 10;
 
-    while (isRunning.load()) {
+    while (isRunning.load() && !m_shutdownRequested.load()) {
         if (isPaused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             consecutiveTimeouts = 0;
@@ -639,11 +604,6 @@ void CameraController::CaptureLoop() {
         else if (stat == Camera::ReturnCode::TIMEOUT) {
             consecutiveTimeouts++;
 
-            if (consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
-                LOG_WARNING("Multiple consecutive timeouts detected");
-                consecutiveTimeouts = 0;
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
 
             deviceNotReadyCount = 0;
             UpdateStatistics(false);
@@ -1218,16 +1178,24 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
     }
 
     if (enable) {
-        // start detect
         if (currentState != CameraState::CAPTURING) {
             LOG_ERROR("Camera must be capturing to enable realtime detection");
             return false;
         }
 
+        // BallDetector에 CameraController 참조 전달
+        if (m_realtimeBallDetector) {
+            m_realtimeBallDetector->SetCameraController(this);
+
+            std::string algorithmType = (m_currentCameraType == Camera::CameraFactory::CameraType::HIKVISION) ?
+                "HikVision/IR" : "XIMEA/Standard";
+            LOG_INFO("BallDetector configured for camera type: " +
+                std::to_string(static_cast<int>(m_currentCameraType)) + " (" + algorithmType + ")");
+        }
+
         m_realtimeDetectionEnabled = true;
         m_detectionThreadRunning = true;
 
-        // init statistics
         m_realtimeProcessedFrames = 0;
         {
             std::lock_guard<std::mutex> lock(m_realtimeStatsMutex);
@@ -1235,10 +1203,11 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
         }
         m_realtimeStartTime = std::chrono::steady_clock::now();
 
-        // start detection thread
         m_detectionThread = std::thread(&CameraController::RealtimeDetectionWorker, this);
 
-        LOG_INFO("Realtime ball detection enabled");
+        std::string detectionAlgorithm = (m_currentCameraType == Camera::CameraFactory::CameraType::HIKVISION) ?
+            "IR detection algorithm" : "standard detection algorithm";
+        LOG_INFO("Realtime ball detection enabled with " + detectionAlgorithm);
     }
     else {
         m_realtimeDetectionEnabled = false;
@@ -1252,10 +1221,9 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
             }
         }
 
-        // clear queue - 타입 수정
         {
             std::lock_guard<std::mutex> lock(m_detectionQueueMutex);
-            std::queue<DetectionQueueItem> empty;  // 타입 변경
+            std::queue<DetectionQueueItem> empty;
             std::swap(m_detectionQueue, empty);
         }
 
@@ -1264,6 +1232,8 @@ bool CameraController::EnableRealtimeDetection(bool enable) {
 
     return true;
 }
+
+
 // worker thread
 void CameraController::RealtimeDetectionWorker() {
     LOG_INFO("Realtime detection thread started");
