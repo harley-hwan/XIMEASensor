@@ -149,6 +149,7 @@ private:
     int currentExposure;
     float currentGain;
     float currentFrameRate;
+    float currentGamma;
 
     // callbacks
     std::mutex callbackMutex;
@@ -515,17 +516,19 @@ public:
 
     // camera settings
     bool SetExposure(int microsec);
-    bool SetGain(float gain);
-    bool SetROI(int offsetX, int offsetY, int width, int height);
+    bool SetGain(float gain);                           // 2025-09-01
     bool SetFrameRate(float fps);
+    bool SetGamma(float gamma);
+    bool SetROI(int offsetX, int offsetY, int width, int height);
     bool SetTriggerMode(bool enabled);
 
     // getters
     int GetExposure() const { return currentExposure; }
     float GetGain() const { return currentGain; }
+    float GetGamma() const { return currentGamma; }     // 2025-09-01
+    float GetFrameRate();
     int GetWidth() const { return width; }
     int GetHeight() const { return height; }
-    float GetFrameRate();
     CameraState GetState() const { return currentState.load(); }
     CameraStatistics GetStatistics() const { return stats; }
     void ResetStatistics() { stats.Reset(); }

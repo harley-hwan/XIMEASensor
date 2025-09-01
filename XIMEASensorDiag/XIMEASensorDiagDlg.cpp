@@ -69,6 +69,7 @@ BEGIN_MESSAGE_MAP(CXIMEASensorDiagDlg, CDialogEx)
     // Edit changes
     ON_EN_CHANGE(IDC_EDIT_EXPOSURE, &CXIMEASensorDiagDlg::OnEnChangeEditExposure)
     ON_EN_CHANGE(IDC_EDIT_GAIN, &CXIMEASensorDiagDlg::OnEnChangeEditGain)
+    ON_EN_CHANGE(IDC_EDIT_GAMMA, &CXIMEASensorDiagDlg::OnEnChangeEditGamma)
     ON_EN_CHANGE(IDC_EDIT_FRAMERATE, &CXIMEASensorDiagDlg::OnEnChangeEditFramerate)
     ON_EN_CHANGE(IDC_EDIT_ROI_MULTIPLIER, &CXIMEASensorDiagDlg::OnEnChangeEditROIMultiplier)
 
@@ -164,9 +165,11 @@ bool CXIMEASensorDiagDlg::InitializeControls()
         m_ui.sliderExposure = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_EXPOSURE);
         m_ui.sliderGain = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_GAIN);
         m_ui.sliderFramerate = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_FRAMERATE);
+        m_ui.sliderGamma = (CSliderCtrl*)GetDlgItem(IDC_SLIDER_GAMMA);  // 2025-09-01: for gamma
         m_ui.editExposure = (CEdit*)GetDlgItem(IDC_EDIT_EXPOSURE);
         m_ui.editGain = (CEdit*)GetDlgItem(IDC_EDIT_GAIN);
         m_ui.editFramerate = (CEdit*)GetDlgItem(IDC_EDIT_FRAMERATE);
+        m_ui.editGamma = (CEdit*)GetDlgItem(IDC_EDIT_GAMMA);            // 2025-09-01: for gamma
 
         // Feature controls - Ball detection
         m_ui.checkRealtimeDetection = (CButton*)GetDlgItem(IDC_CHECK_REALTIME_DETECTION);
@@ -217,6 +220,13 @@ bool CXIMEASensorDiagDlg::InitializeControls()
             m_ui.sliderGain->SetRange(static_cast<int>(CameraDefaults::MIN_GAIN_DB * 10),
                 static_cast<int>(CameraDefaults::MAX_GAIN_DB * 10));
             m_ui.sliderGain->SetTicFreq(30);
+        }
+
+        if (m_ui.sliderGamma) {
+            m_ui.sliderGamma->SetRange(static_cast<int>(CameraDefaults::MIN_GAMMA * 100),
+                static_cast<int>(CameraDefaults::MAX_GAMMA * 100));
+            m_ui.sliderGamma->SetTicFreq(10);  // 0.1 intervals
+            m_ui.sliderGamma->SetPos(static_cast<int>(CameraDefaults::DEFAULT_GAMMA * 100));
         }
 
         if (m_ui.sliderFramerate) {
@@ -522,10 +532,6 @@ bool CXIMEASensorDiagDlg::StartCamera(int deviceIndex)
         return false;
     }
 
-    // Update camera type display
-    int cameraType = Camera_GetCurrentCameraType();
-    UpdateCameraTypeDisplay(cameraType);
-
     // Apply default settings
     if (!ApplyCameraSettings()) {
         Camera_Close();
@@ -545,6 +551,10 @@ bool CXIMEASensorDiagDlg::StartCamera(int deviceIndex)
     m_isStreaming = true;
     UpdateUI(true);
 
+    // Update camera type display AFTER camera is opened and streaming
+    int cameraType = Camera_GetCurrentCameraType();
+    UpdateCameraTypeDisplay(cameraType);
+
     // Reset counters
     m_frameCount = 0;
     m_lastFPSUpdate = std::chrono::steady_clock::now();
@@ -553,7 +563,6 @@ bool CXIMEASensorDiagDlg::StartCamera(int deviceIndex)
 
     return true;
 }
-
 
 bool CXIMEASensorDiagDlg::StartCameraAuto()
 {
@@ -569,10 +578,6 @@ bool CXIMEASensorDiagDlg::StartCameraAuto()
         }
         return false;
     }
-
-    // Get detected camera type
-    int cameraType = Camera_GetCurrentCameraType();
-    UpdateCameraTypeDisplay(cameraType);
 
     // Apply settings and start
     if (!ApplyCameraSettings()) {
@@ -591,18 +596,26 @@ bool CXIMEASensorDiagDlg::StartCameraAuto()
     m_isStreaming = true;
     UpdateUI(true);
 
+    // Get detected camera type and update display AFTER streaming starts
+    int cameraType = Camera_GetCurrentCameraType();
+    UpdateCameraTypeDisplay(cameraType);
+
     // Reset counters
     m_frameCount = 0;
     m_lastFPSUpdate = std::chrono::steady_clock::now();
     m_lastFrameDrawTime = std::chrono::steady_clock::now();
     ResetUSBErrorCount();
 
-    // Update status
-    CString status;
-    status.Format(_T("Capturing from %s camera..."),
-        cameraType == 0 ? _T("XIMEA") : _T("HikVision"));
-    if (m_ui.status) {
-        m_ui.status->SetWindowText(status);
+    // Update status with actual device name
+    char deviceName[256] = { 0 };
+    char deviceSerial[256] = { 0 };
+    if (Camera_GetDeviceInfo(0, deviceName, sizeof(deviceName),
+        deviceSerial, sizeof(deviceSerial))) {
+        CString status;
+        status.Format(_T("Capturing from %s..."), CString(deviceName).GetString());
+        if (m_ui.status) {
+            m_ui.status->SetWindowText(status);
+        }
     }
 
     return true;
@@ -663,6 +676,7 @@ bool CXIMEASensorDiagDlg::ApplyCameraSettings()
         success &= Camera_SetExposure(m_defaultSettings.exposureUs);
         success &= Camera_SetGain(m_defaultSettings.gainDb);
         success &= Camera_SetFrameRate(m_defaultSettings.fps);
+		success &= Camera_SetGamma(m_defaultSettings.gamma);
     }
     else if (cameraType == 1) {  // HikVision
         // HikVision might have different parameter ranges
@@ -672,6 +686,7 @@ bool CXIMEASensorDiagDlg::ApplyCameraSettings()
         // HikVision might have different FPS capabilities
         float maxFPS = (m_defaultSettings.fps > 120.0f) ? 120.0f : m_defaultSettings.fps;
         success &= Camera_SetFrameRate(maxFPS);
+		success &= Camera_SetGamma(m_defaultSettings.gamma);
     }
 
     return success;
@@ -692,14 +707,15 @@ void CXIMEASensorDiagDlg::LoadDefaultSettings()
 {
     Camera_GetDefaultSettings(&m_defaultSettings.exposureUs,
         &m_defaultSettings.gainDb,
-        &m_defaultSettings.fps);
+        &m_defaultSettings.fps,
+        &m_defaultSettings.gamma);
 }
-
 void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
 {
     int currentExposure = Camera_GetExposure();
     float currentGain = Camera_GetGain();
     float currentFramerate = Camera_GetFrameRate();
+    float currentGamma = Camera_GetGamma();
 
     // Update exposure
     if (m_ui.sliderExposure && currentExposure > 0) {
@@ -718,6 +734,16 @@ void CXIMEASensorDiagDlg::SyncSlidersWithCamera()
             CString strGain;
             strGain.Format(_T("%.1f"), currentGain);
             m_ui.editGain->SetWindowText(strGain);
+        }
+    }
+
+	// Update gamma - 2025-09-01
+    if (m_ui.sliderGamma && currentGamma > 0) {
+        m_ui.sliderGamma->SetPos(static_cast<int>(currentGamma * 100));
+        if (m_ui.editGamma) {
+            CString strGamma;
+            strGamma.Format(_T("%.2f"), currentGamma);
+            m_ui.editGamma->SetWindowText(strGamma);
         }
     }
 
@@ -2667,22 +2693,13 @@ void CXIMEASensorDiagDlg::OnBnClickedRadioAutoDetect()
 {
     if (m_isStreaming) {
         AfxMessageBox(_T("Please stop the camera before changing mode."));
-        if (m_currentCameraType == -1) {
-            m_ui.radioAutoDetect->SetCheck(BST_CHECKED);
-        }
-        else if (m_currentCameraType == 0) {
-            m_ui.radioXIMEA->SetCheck(BST_CHECKED);
-        }
-        else {
-            m_ui.radioHikVision->SetCheck(BST_CHECKED);
-        }
+        RestoreRadioSelection();  // 새로운 헬퍼 함수
         return;
     }
 
     m_autoDetectMode = true;
     m_currentCameraType = -1;
 
-    // Update device list
     UpdateDeviceList();
 }
 
@@ -2690,23 +2707,13 @@ void CXIMEASensorDiagDlg::OnBnClickedRadioXimea()
 {
     if (m_isStreaming) {
         AfxMessageBox(_T("Please stop the camera before changing type."));
-        if (m_currentCameraType == -1) {
-            m_ui.radioAutoDetect->SetCheck(BST_CHECKED);
-        }
-        else if (m_currentCameraType == 0) {
-            m_ui.radioXIMEA->SetCheck(BST_CHECKED);
-        }
-        else {
-            m_ui.radioHikVision->SetCheck(BST_CHECKED);
-        }
+        RestoreRadioSelection();
         return;
     }
 
     m_autoDetectMode = false;
     m_currentCameraType = 0;
-    Camera_SetCameraType(0);
 
-    // Update device list
     UpdateDeviceList();
 }
 
@@ -2714,26 +2721,35 @@ void CXIMEASensorDiagDlg::OnBnClickedRadioHikvision()
 {
     if (m_isStreaming) {
         AfxMessageBox(_T("Please stop the camera before changing type."));
-        if (m_currentCameraType == -1) {
-            m_ui.radioAutoDetect->SetCheck(BST_CHECKED);
-        }
-        else if (m_currentCameraType == 0) {
-            m_ui.radioXIMEA->SetCheck(BST_CHECKED);
-        }
-        else {
-            m_ui.radioHikVision->SetCheck(BST_CHECKED);
-        }
+        RestoreRadioSelection();
         return;
     }
 
     m_autoDetectMode = false;
     m_currentCameraType = 1;
-    Camera_SetCameraType(1);
 
-    // Update device list
     UpdateDeviceList();
 }
 
+void CXIMEASensorDiagDlg::RestoreRadioSelection()
+{
+    // 현재 선택된 카메라 타입에 따라 라디오 버튼 복원
+    if (m_autoDetectMode) {
+        m_ui.radioAutoDetect->SetCheck(BST_CHECKED);
+        m_ui.radioXIMEA->SetCheck(BST_UNCHECKED);
+        m_ui.radioHikVision->SetCheck(BST_UNCHECKED);
+    }
+    else if (m_currentCameraType == 0) {
+        m_ui.radioAutoDetect->SetCheck(BST_UNCHECKED);
+        m_ui.radioXIMEA->SetCheck(BST_CHECKED);
+        m_ui.radioHikVision->SetCheck(BST_UNCHECKED);
+    }
+    else if (m_currentCameraType == 1) {
+        m_ui.radioAutoDetect->SetCheck(BST_UNCHECKED);
+        m_ui.radioXIMEA->SetCheck(BST_UNCHECKED);
+        m_ui.radioHikVision->SetCheck(BST_CHECKED);
+    }
+}
 
 // ============================================================================
 // Parameter Edit Controls
@@ -2795,6 +2811,31 @@ void CXIMEASensorDiagDlg::OnEnChangeEditFramerate()
         if (m_isStreaming) {
             if (!Camera_SetFrameRate(fps)) {
                 HandleFrameRateError(fps);
+            }
+        }
+    }
+}
+
+void CXIMEASensorDiagDlg::OnEnChangeEditGamma()
+{
+    if (!m_ui.editGamma || !m_ui.sliderGamma) {
+        return;
+    }
+
+    CString str;
+    m_ui.editGamma->GetWindowText(str);
+    float gamma = static_cast<float>(_ttof(str));
+
+    if (gamma >= CameraDefaults::MIN_GAMMA &&
+        gamma <= CameraDefaults::MAX_GAMMA) {
+        m_ui.sliderGamma->SetPos(static_cast<int>(gamma * 100));
+
+        if (m_isStreaming) {
+            if (!Camera_SetGamma(gamma)) {
+                // Camera doesn't support gamma - notify user
+                if (m_ui.status) {
+                    m_ui.status->SetWindowText(_T("Gamma adjustment not supported"));
+                }
             }
         }
     }
@@ -2875,6 +2916,9 @@ void CXIMEASensorDiagDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
     else if (pSlider == m_ui.sliderFramerate) {
         HandleFramerateSlider();
     }
+    else if (pSlider == m_ui.sliderGamma) {
+        HandleGammaSlider();
+    }
 
     CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
 }
@@ -2923,6 +2967,12 @@ void CXIMEASensorDiagDlg::UpdateParameterEditsFromSliders(CSliderCtrl* pSlider)
         CString str;
         str.Format(_T("%.1f"), fps);
         m_ui.editFramerate->SetWindowText(str);
+    }
+    else if (pSlider == m_ui.sliderGamma && m_ui.editGamma) {
+        float gamma = m_ui.sliderGamma->GetPos() / 100.0f;
+        CString str;
+        str.Format(_T("%.2f"), gamma);
+        m_ui.editGamma->SetWindowText(str);
     }
 }
 
@@ -2985,5 +3035,33 @@ void CXIMEASensorDiagDlg::HandleFramerateSlider()
     }
     else {
         HandleFrameRateError(fps);
+    }
+}
+
+void CXIMEASensorDiagDlg::HandleGammaSlider()
+{
+    float gamma = m_ui.sliderGamma->GetPos() / 100.0f;
+
+    if (Camera_SetGamma(gamma)) {
+        if (m_ui.editGamma) {
+            CString str;
+            str.Format(_T("%.2f"), gamma);
+            m_ui.editGamma->SetWindowText(str);
+        }
+    }
+    else {
+        // Revert to current value if failed
+        float currentGamma = Camera_GetGamma();
+        m_ui.sliderGamma->SetPos(static_cast<int>(currentGamma * 100));
+        if (m_ui.editGamma) {
+            CString str;
+            str.Format(_T("%.2f"), currentGamma);
+            m_ui.editGamma->SetWindowText(str);
+        }
+
+        // Notify that gamma is not supported
+        if (m_ui.status) {
+            m_ui.status->SetWindowText(_T("Gamma adjustment not supported by this camera"));
+        }
     }
 }

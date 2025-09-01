@@ -41,7 +41,7 @@ namespace Camera {
             paramToXiString[ParamType::SENSOR_TAPS] = XI_PRM_SENSOR_TAPS;
             paramToXiString[ParamType::BUFFERS_QUEUE_SIZE] = XI_PRM_BUFFERS_QUEUE_SIZE;
             paramToXiString[ParamType::RECENT_FRAME] = XI_PRM_RECENT_FRAME;
-            paramToXiString[ParamType::GAMMAY] = XI_PRM_GAMMAY;
+            paramToXiString[ParamType::GAMMA] = XI_PRM_GAMMAY;
             paramToXiString[ParamType::SHARPNESS] = XI_PRM_SHARPNESS;
             paramToXiString[ParamType::HDR] = XI_PRM_HDR;
             paramToXiString[ParamType::AUTO_WB] = XI_PRM_AUTO_WB;

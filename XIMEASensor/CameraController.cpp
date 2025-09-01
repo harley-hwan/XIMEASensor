@@ -22,6 +22,7 @@ CameraController::CameraController()
     height(PYTHON1300_HEIGHT),
     currentExposure(CameraDefaults::EXPOSURE_US),
     currentGain(CameraDefaults::GAIN_DB),
+    currentGamma(CameraDefaults::DEFAULT_GAMMA),
     currentState(CameraState::DISCONNECTED),
     m_realtimeDetectionEnabled(false),
     m_realtimeCallback(nullptr),
@@ -171,6 +172,7 @@ void CameraController::SetCameraType(Camera::CameraFactory::CameraType type) {
     }
 
     cameraInterface = Camera::CameraFactory::CreateCamera(type);
+    m_currentCameraType = type;  // 이 줄 추가!
     LOG_INFO("Camera type set to: " + std::to_string(static_cast<int>(type)));
 }
 
@@ -238,6 +240,9 @@ bool CameraController::OpenCamera(int deviceIndex) {
     cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::FRAMERATE, CameraDefaults::FRAMERATE_FPS);
     currentFrameRate = CameraDefaults::FRAMERATE_FPS;
 
+    cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::GAMMA, CameraDefaults::DEFAULT_GAMMA);
+    currentGamma = CameraDefaults::DEFAULT_GAMMA;
+
     cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::ACQ_TIMING_MODE,              static_cast<int>(Camera::AcqTimingMode::FRAME_RATE));
     cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::BUFFER_POLICY,                static_cast<int>(Camera::BufferPolicy::SAFE));
     cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::AUTO_BANDWIDTH_CALCULATION,   static_cast<int>(Camera::OnOff::ON));
@@ -251,7 +256,6 @@ bool CameraController::OpenCamera(int deviceIndex) {
     cameraInterface->SetParamInt(cameraHandle, Camera::ParamType::RECENT_FRAME, static_cast<int>(Camera::OnOff::ON));
 
     // Disable image enhancements for raw data
-    cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::GAMMAY, 1.0f);
     cameraInterface->SetParamFloat(cameraHandle, Camera::ParamType::SHARPNESS, 0.0f);
     cameraInterface->SetParamInt  (cameraHandle, Camera::ParamType::HDR, static_cast<int>(Camera::OnOff::OFF));
     cameraInterface->SetParamInt  (cameraHandle, Camera::ParamType::AUTO_WB, static_cast<int>(Camera::OnOff::OFF));
@@ -800,6 +804,38 @@ bool CameraController::SetGain(float gain) {
     return true;
 }
 
+bool CameraController::SetGamma(float gamma) {
+    if (!cameraHandle || !cameraInterface) {
+        LOG_ERROR("Camera not opened");
+        return false;
+    }
+
+    const float minGamma = CameraDefaults::MIN_GAMMA;
+    const float maxGamma = CameraDefaults::MAX_GAMMA;
+
+    if (gamma < minGamma) {
+        gamma = minGamma;
+        LOG_WARNING("Gamma clamped to minimum: " + std::to_string(minGamma));
+    }
+    else if (gamma > maxGamma) {
+        gamma = maxGamma;
+        LOG_WARNING("Gamma clamped to maximum: " + std::to_string(maxGamma));
+    }
+
+    Camera::ReturnCode stat = cameraInterface->SetParamFloat(
+        cameraHandle, Camera::ParamType::GAMMA, gamma);
+    if (stat != Camera::ReturnCode::OK) {
+        LOG_WARNING("Failed to set gamma: " + cameraInterface->GetErrorString(stat));
+        // Some cameras may not support gamma adjustment
+        return false;
+    }
+
+    currentGamma = gamma;
+    NotifyPropertyChanged("Gamma", std::to_string(gamma));
+    LOG_INFO("Gamma set to: " + std::to_string(gamma));
+    return true;
+}
+
 bool CameraController::SetROI(int offsetX, int offsetY, int w, int h) {
     if (!cameraHandle || !cameraInterface) {
         LOG_ERROR("Camera not opened");
@@ -974,6 +1010,20 @@ float CameraController::GetFrameRate() {
     }
     return currentFrameRate;
 }
+
+//float CameraController::GetGamma() {
+//    if (!cameraHandle || !cameraInterface) return currentGamma;
+//
+//    float gamma = 0.0f;
+//    Camera::ReturnCode stat = cameraInterface->GetParamFloat(
+//        cameraHandle, Camera::ParamType::GAMMA, &gamma);
+//    if (stat == Camera::ReturnCode::OK) {
+//        currentGamma = gamma;
+//        return gamma;
+//    }
+//
+//    return currentGamma;
+//}
 
 void CameraController::UpdateStatistics(bool frameReceived) {
     if (frameReceived) {

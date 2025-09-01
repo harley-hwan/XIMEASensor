@@ -592,7 +592,9 @@ namespace Camera {
         case ParamType::FRAMERATE:
             mvRet = MV_CC_SetFloatValue(m_deviceHandle, "AcquisitionFrameRate", value);
             break;
-        case ParamType::GAMMAY:
+        case ParamType::GAMMA:
+            mvRet = MV_CC_SetFloatValue(m_deviceHandle, "Gamma", value);
+            break;
         case ParamType::SHARPNESS:
             // HikVision에서 지원하지 않는 파라미터
             LOG_WARNING("Parameter not supported by HikVision: " + std::to_string(static_cast<int>(param)));
@@ -619,6 +621,10 @@ namespace Camera {
             break;
         case ParamType::FRAMERATE:
             mvRet = MV_CC_GetFloatValue(m_deviceHandle, "AcquisitionFrameRate", &stFloatValue);
+            *value = stFloatValue.fCurValue;
+            break;
+        case ParamType::GAMMA:
+            mvRet = MV_CC_GetFloatValue(m_deviceHandle, "Gamma", &stFloatValue);
             *value = stFloatValue.fCurValue;
             break;
         default:

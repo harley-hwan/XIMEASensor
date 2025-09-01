@@ -32,17 +32,20 @@ static void* g_shotCompletedContext = nullptr;
 
 namespace CameraDefaults {
     // Default operational parameters
-    const int EXPOSURE_US = 200;        // 4ms default exposure time
-    const float GAIN_DB = 10.0f;          // 0dB default gain (no amplification)
-    const float FRAMERATE_FPS = 120.0f;   // 60 FPS default frame rate
+    const int EXPOSURE_US = 200;            // 4ms default exposure time
+    const float GAIN_DB = 10.0f;            // 0dB default gain (no amplification)
+    const float FRAMERATE_FPS = 120.0f;     // 60 FPS default frame rate
+    const float DEFAULT_GAMMA = 1.0f;       // 1.0 default (linear)
 
     // Hardware limits for PYTHON1300 sensor
-    const int MIN_EXPOSURE_US = 10;      // 10 microseconds minimum
-    const int MAX_EXPOSURE_US = 1000000; // 1 second maximum
-    const float MIN_GAIN_DB = 0.0f;      // No negative gain
-    const float MAX_GAIN_DB = 24.0f;     // Maximum 24dB gain
-    const float MIN_FPS = 1.0f;          // 1 FPS minimum
-    const float MAX_FPS = 210.0f;        // PYTHON1300 maximum frame rate
+    const int MIN_EXPOSURE_US = 10;         // 10 microseconds minimum
+    const int MAX_EXPOSURE_US = 1000000;    // 1 second maximum
+    const float MIN_GAIN_DB = 0.0f;         // No negative gain
+    const float MAX_GAIN_DB = 24.0f;        // Maximum 24dB gain
+    const float MIN_FPS = 1.0f;             // 1 FPS minimum
+    const float MAX_FPS = 210.0f;           // PYTHON1300 maximum frame rate
+    const float MIN_GAMMA = 0.1f;           // 0.1 minimum
+    const float MAX_GAMMA = 3.0f;           // 3.0 maximum  
 
 #ifdef ENABLE_CONTINUOUS_CAPTURE
     // Create default continuous capture configuration
@@ -341,6 +344,17 @@ bool Camera_SetGain(float gain) {
     }
 }
 
+// Set gamma value
+bool Camera_SetGamma(float gamma) {
+    try {
+        return CameraController::GetInstance().SetGamma(gamma);
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_SetGamma: " + std::string(e.what()));
+        return false;
+    }
+}
+
 // Set region of interest (ROI)
 bool Camera_SetROI(int offsetX, int offsetY, int width, int height) {
     try {
@@ -410,6 +424,17 @@ float Camera_GetGain() {
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_GetGain: " + std::string(e.what()));
         return 0.0f;
+    }
+}
+
+// Get gamma value
+float Camera_GetGamma() {
+    try {
+        return CameraController::GetInstance().GetGamma();
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_GetGamma: " + std::string(e.what()));
+        return 1.0f;  // Return default on error
     }
 }
 
@@ -619,16 +644,18 @@ bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize,
 // ============================================================================
 
 // Get default camera settings
-void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps) {
+void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps, float* gamma) {
     try {
         if (exposureUs) *exposureUs = CameraDefaults::EXPOSURE_US;
         if (gainDb) *gainDb = CameraDefaults::GAIN_DB;
         if (fps) *fps = CameraDefaults::FRAMERATE_FPS;
+		if (gamma) *gamma = CameraDefaults::DEFAULT_GAMMA;
 
         LOG_DEBUG("Default settings requested: Exposure=" +
             std::to_string(CameraDefaults::EXPOSURE_US) + "us, Gain=" +
             std::to_string(CameraDefaults::GAIN_DB) + "dB, FPS=" +
-            std::to_string(CameraDefaults::FRAMERATE_FPS));
+			std::to_string(CameraDefaults::FRAMERATE_FPS) + ", Gamma=" +
+			std::to_string(CameraDefaults::DEFAULT_GAMMA));
     }
     catch (const std::exception& e) {
         LOG_ERROR("Exception in Camera_GetDefaultSettings: " + std::string(e.what()));

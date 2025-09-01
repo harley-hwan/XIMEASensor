@@ -333,6 +333,11 @@ namespace CameraDefaults {
     // Snapshot defaults
     XIMEASENSOR_API extern const int SNAPSHOT_FORMAT;    // Default snapshot format (0=PNG)
     XIMEASENSOR_API extern const int SNAPSHOT_QUALITY;   // Default JPEG quality (90%)
+
+    // Gamma defaults
+    XIMEASENSOR_API extern const float MIN_GAMMA;      // Minimum gamma value
+    XIMEASENSOR_API extern const float MAX_GAMMA;      // Maximum gamma value
+    XIMEASENSOR_API extern const float DEFAULT_GAMMA;  // Default gamma value
 }
 
 
@@ -415,7 +420,7 @@ extern "C" {
     // ------------------------------------------------------------------------
     // Camera Control
     // ------------------------------------------------------------------------
-    
+
     // 2025-08-29
     XIMEASENSOR_API bool Camera_OpenAuto();
 
@@ -459,6 +464,9 @@ extern "C" {
     // Set camera gain
     XIMEASENSOR_API bool Camera_SetGain(float gain);
 
+    // Set camera gamma
+    XIMEASENSOR_API bool Camera_SetGamma(float gamma);
+
     // Set region of interest (ROI)
     XIMEASENSOR_API bool Camera_SetROI(int offsetX, int offsetY, int width, int height);
 
@@ -473,6 +481,9 @@ extern "C" {
 
     // Get current gain value
     XIMEASENSOR_API float Camera_GetGain();
+
+    // Get current gamma value
+    XIMEASENSOR_API float Camera_GetGamma();
 
     // Get current ROI settings
     XIMEASENSOR_API bool Camera_GetROI(int* offsetX, int* offsetY, int* width, int* height);
@@ -594,7 +605,7 @@ extern "C" {
     // ------------------------------------------------------------------------
 
     // Get default camera settings
-    XIMEASENSOR_API void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps);
+    XIMEASENSOR_API void Camera_GetDefaultSettings(int* exposureUs, float* gainDb, float* fps, float* gamma);
 
     // Get default snapshot settings
     XIMEASENSOR_API void Camera_GetSnapshotDefaults(SnapshotDefaults* defaults);

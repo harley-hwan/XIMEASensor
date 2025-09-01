@@ -136,9 +136,11 @@ private:
         CSliderCtrl* sliderExposure = nullptr;
         CSliderCtrl* sliderGain = nullptr;
         CSliderCtrl* sliderFramerate = nullptr;
+        CSliderCtrl* sliderGamma = nullptr;
         CEdit* editExposure = nullptr;
         CEdit* editGain = nullptr;
         CEdit* editFramerate = nullptr;
+        CEdit* editGamma = nullptr;
 
         // Ball detection features
         CButton* checkRealtimeDetection = nullptr;
@@ -179,6 +181,7 @@ private:
         int exposureUs = 4000;
         float gainDb = 0.0f;
         float fps = 60.0f;
+        float gamma = 1.0f;
     } m_defaultSettings;
 
     // ============================================================================
@@ -296,6 +299,7 @@ protected:
     afx_msg void OnBnClickedRadioXimea();
     afx_msg void OnBnClickedRadioHikvision();
 
+
     // Feature toggles
     afx_msg void OnBnClickedCheckRealtimeDetection();
     afx_msg void OnBnClickedButtonResetTracking();
@@ -308,6 +312,7 @@ protected:
     afx_msg void OnEnChangeEditExposure();
     afx_msg void OnEnChangeEditGain();
     afx_msg void OnEnChangeEditFramerate();
+    afx_msg void OnEnChangeEditGamma();     // 2025-09-01: for gamma
     afx_msg void OnEnChangeEditROIMultiplier();
 
     // Custom messages
@@ -452,6 +457,9 @@ private:
     // ============================================================================
     // Helper
     // ============================================================================
+
+    void RestoreRadioSelection();
+
 private:
     // Timer update handlers
     void UpdateStatistics();
@@ -462,6 +470,7 @@ private:
     void HandleExposureSlider();
     void HandleGainSlider();
     void HandleFramerateSlider();
+    void HandleGammaSlider();   // 2025-09-01: for gamma
     void HandleFrameRateError(float requestedFPS);
 
     // Detection feature handlers

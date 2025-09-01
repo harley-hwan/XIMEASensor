@@ -159,7 +159,7 @@ namespace Camera {
         SENSOR_TAPS,
         BUFFERS_QUEUE_SIZE,
         RECENT_FRAME,
-        GAMMAY,
+        GAMMA,
         SHARPNESS,
         HDR,
         AUTO_WB,
