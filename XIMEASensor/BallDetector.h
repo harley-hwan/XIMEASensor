@@ -1,8 +1,9 @@
 ﻿#pragma once
 #include <vector>
 #include <string>
+#include <opencv2/core/core.hpp>
 #include <opencv2/core/types.hpp>
-#include <opencv2/imgproc.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 #include <memory>
 #include <queue>
 #include <mutex>
@@ -13,6 +14,8 @@
 #include <deque>
 #include <chrono>
 #include <algorithm>
+
+#include "XIMEASensor.h"
 
 #define ENABLE_PERFORMANCE_PROFILING
 
@@ -242,6 +245,24 @@ private:
     void saveDebugImagesAsync(const unsigned char* imageData, int width, int height,
         int frameIndex, const BallDetectionResult& result);
 
+
+    // White ball detection mode
+    bool m_whiteBallMode;
+    WhiteBallDetectionConfig m_whiteBallConfig;
+    mutable std::mutex m_whiteBallConfigMutex;
+    
+    // White ball detection methods
+    BallDetectionResult DetectWhiteBallInternal(const unsigned char* imageData,
+                                                int width, int height,
+                                                const WhiteBallDetectionConfig& config);
+    cv::Mat applyWhiteBallThreshold(const cv::Mat& grayImage, 
+                                    const WhiteBallDetectionConfig& config);
+    std::vector<cv::Vec3f> detectWhiteBallContours(const cv::Mat& binary,
+                                                   const WhiteBallDetectionConfig& config);
+    float calculateWhiteBallConfidence(const cv::Mat& image, 
+                                      const cv::Vec3f& circle,
+                                      const WhiteBallDetectionConfig& config);
+
 public:
     BallDetector();
     ~BallDetector();
@@ -282,8 +303,7 @@ public:
 
     // Thread-safe detection - 카메라 타입에 따라 자동 선택
     void SetCurrentCaptureFolder(const std::string& folder);
-    BallDetectionResult DetectBall(const unsigned char* imageData,
-        int width, int height, int frameIndex = 0);
+    BallDetectionResult DetectBall(const unsigned char* imageData, int width, int height, int frameIndex = 0);
 
     // Template management
     bool InitializeTemplate(const cv::Mat& templateImage);
@@ -295,10 +315,10 @@ public:
 
     // Visualization
     bool SaveDetectionImage(const unsigned char* originalImage,
-        int width, int height,
-        const BallDetectionResult& result,
-        const std::string& outputPath,
-        bool saveAsColor = false);
+                            int width, int height,
+                            const BallDetectionResult& result,
+                            const std::string& outputPath,
+                            bool saveAsColor = false);
 
     // IR camera specific
     void SetIRCameraOptimizedParams();
@@ -314,4 +334,11 @@ public:
     // Calibration
     bool CalibrateForBallSize(const std::vector<cv::Mat>& sampleImages,
         float knownBallDiameter_mm);
-};
+
+    // White ball detection interface
+    void EnableWhiteBallMode(bool enable) { m_whiteBallMode = enable; }
+    bool IsWhiteBallMode() const { return m_whiteBallMode; }
+    void SetWhiteBallConfig(const WhiteBallDetectionConfig& config);
+    BallDetectionResult DetectWhiteBall(const unsigned char* imageData,
+                                       int width, int height,
+                                       const WhiteBallDetectionConfig& config);};

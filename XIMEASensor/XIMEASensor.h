@@ -8,6 +8,14 @@
 
 #include <string>
 #include <functional>
+#include <opencv2/core/core.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+
+// Forward declarations
+struct WhiteBallDetectionConfig;
+struct WhiteBallInfo;
+enum class ThresholdMode;
+enum class AdaptiveMethod;
 
 // ============================================================================
 // CAMERA::IMAGEFORMAT DEFINITION FOR FRAMEINFO
@@ -74,6 +82,55 @@ public:
 };
 
 // ============================================================================
+// WHITE BALL DETECTION CONFIGURATION
+// ============================================================================
+
+// Threshold mode enumeration
+enum class ThresholdMode {
+    Fixed = 0,      // Fixed threshold value
+    Adaptive = 1,   // Adaptive threshold
+    Otsu = 2        // Otsu's method
+};
+
+// Adaptive method enumeration
+enum class AdaptiveMethod {
+    Mean = 0,       // cv::ADAPTIVE_THRESH_MEAN_C
+    Gaussian = 1    // cv::ADAPTIVE_THRESH_GAUSSIAN_C
+};
+
+// White ball detection configuration structure
+struct XIMEASENSOR_API WhiteBallDetectionConfig {
+    cv::Rect roi;                   // Detection ROI (0,0,0,0 = full image)
+    ThresholdMode thresholdMode;    // Threshold mode
+    int thresholdValue;             // Fixed threshold value (0-255)
+    int thresholdType;              // cv::ThresholdTypes values
+    AdaptiveMethod adaptiveMethod;  // Method for adaptive threshold
+    int blockSize;                  // Block size for adaptive threshold (odd number >= 3)
+    double C;                       // Constant subtracted from mean/weighted mean
+    float minRadius;                // Minimum ball radius in pixels
+    float maxRadius;                // Maximum ball radius in pixels
+    float minCircularity;           // Minimum circularity (0.0 - 1.0)
+    float maxCircularity;           // Maximum circularity (typically > 1.0 for tolerance)
+    bool useTracking;               // Enable tracking across frames
+
+    // Default constructor
+    WhiteBallDetectionConfig();
+};
+
+// White ball information structure
+struct XIMEASENSOR_API WhiteBallInfo {
+    bool found;                 // Whether ball was found
+    int centerX;                // Ball center X coordinate
+    int centerY;                // Ball center Y coordinate
+    int radius;                 // Ball radius in pixels
+    float confidence;           // Detection confidence (0.0 - 1.0)
+    int contourPoints;          // Number of contour points
+    float circularity;          // Measured circularity
+
+    WhiteBallInfo();
+};
+
+// ============================================================================
 // CAMERA CALLBACK IMPLEMENTATION EXAMPLE (from CameraCallback.h)
 // ============================================================================
 
@@ -127,7 +184,7 @@ public:
 };
 
 // ============================================================================
-// BALL STATE TRACKING ENUMS AND STRUCTURES: 2025-07-30 Added
+// BALL STATE TRACKING ENUMS AND STRUCTURES
 // ============================================================================
 
 // Ball state enumeration
@@ -157,16 +214,16 @@ struct XIMEASENSOR_API BallStateConfig {
     float microMovementThreshold;    // 미세 움직임 임계값 (default: 2.0px)
 
     BallStateConfig()
-        : positionTolerance(1.5f)      // 더 엄격하게
-        , movementThreshold(3.0f)      // 더 민감하게
+        : positionTolerance(1.5f)
+        , movementThreshold(3.0f)
         , stableTimeMs(4000)
-        , stabilizingTimeMs(2000)      // 증가
+        , stabilizingTimeMs(2000)
         , minConsecutiveDetections(5)
         , enableStateCallback(true)
-        , maxMissedDetections(100000)  // HikVision 자꾸 끊겨서 임의 설정
+        , maxMissedDetections(5)
         , missedDetectionTimeoutMs(500)
-        , minMovingFrames(15)          // 0.25초 @ 60fps
-        , requiredStableFrames(15)     // 0.25초 @ 60fps
+        , minMovingFrames(15)
+        , requiredStableFrames(15)
         , noiseFloor(0.5f)
         , microMovementThreshold(2.0f) {
     }
@@ -194,7 +251,7 @@ struct XIMEASENSOR_API DynamicROIConfig {
 
     DynamicROIConfig()
         : enabled(false)
-        , roiSizeMultiplier(10.0f)    // 기본값 10.0
+        , roiSizeMultiplier(10.0f)
         , minROISize(100.0f)
         , maxROISize(600.0f)
         , showROIOverlay(true) {
@@ -223,7 +280,50 @@ struct XIMEASENSOR_API DynamicROIInfo {
 // Callback for ball state changes
 typedef void(*BallStateChangeCallback)(BallState newState, BallState oldState, const BallStateInfo* info, void* userContext);
 
-// --------------------------------------------------------
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+// Configuration for single snapshot operations
+struct SnapshotDefaults {
+    int format;     // Image format: 0=PNG, 1=JPG
+    int quality;    // JPEG quality: 1-100
+};
+
+// Information about a single detected ball
+struct XIMEASENSOR_API RealtimeBallInfo {
+    float centerX;      // Ball center X coordinate in pixels
+    float centerY;      // Ball center Y coordinate in pixels
+    float radius;       // Ball radius in pixels
+    float confidence;   // Detection confidence (0.0-1.0)
+    int frameIndex;     // Frame number where ball was detected
+};
+
+// Real-time ball detection result containing multiple detections
+struct XIMEASENSOR_API RealtimeDetectionResult {
+    bool ballFound;                 // True if at least one ball was found
+    int ballCount;                  // Number of balls detected (max 5)
+    RealtimeBallInfo balls[5];      // Array of detected balls
+    double detectionTimeMs;         // Processing time in milliseconds
+};
+
+// Callback function type for real-time detection notifications
+typedef void(*RealtimeDetectionCallback)(const RealtimeDetectionResult* result, void* userContext);
+
+// Shot completed notification structure
+struct XIMEASENSOR_API ShotCompletedInfo {
+    float startX, startY;           // Starting position
+    float endX, endY;               // Ending position
+    float totalDistance;            // Total distance traveled
+    float avgVelocity;              // Average velocity
+    float maxVelocity;              // Maximum velocity
+    double shotDuration;            // Duration in seconds
+    int trajectoryPointCount;       // Number of trajectory points
+    bool dataAvailable;             // Whether full trajectory data is available
+};
+
+// Shot completed callback
+typedef void(*ShotCompletedCallback)(const ShotCompletedInfo* info, void* userContext);
 
 // Enable/Disable continuous capture functionality
 #ifdef ENABLE_CONTINUOUS_CAPTURE
@@ -235,18 +335,16 @@ struct XIMEASENSOR_API ContinuousCaptureConfig {
     int jpgQuality;                   // JPEG compression quality (1-100)
     bool createMetadata;              // Create metadata file after capture
     bool useAsyncSave;                // Use asynchronous image saving
-    //std::string baseFolder;         // Base folder for captured images
 
     // Ball detection specific settings
     bool enableBallDetection;         // Enable ball detection during capture
     bool saveOriginalImages;          // Save original captured images
     bool saveDetectionImages;         // Save images with detection overlays
     bool saveBallDetectorDebugImages; // Save intermediate processing images
-    //std::string debugImagePath;     // Custom path for debug images
 
 private:
-    char m_baseFolder[260];           // for std::string baseFolder;
-    char m_debugImagePath[260];       // for std::string debugImagePath;
+    char m_baseFolder[260];
+    char m_debugImagePath[260];
 
 public:
     // Default constructor with standard values
@@ -310,14 +408,12 @@ public:
 };
 #endif // ENABLE_CONTINUOUS_CAPTURE
 
-
 // ============================================================================
 // CAMERA DEFAULT SETTINGS
 // ============================================================================
 
 // Namespace containing default camera parameters and limits
 namespace CameraDefaults {
-    // Default operational values
     XIMEASENSOR_API extern const int EXPOSURE_US;        // Default exposure time in microseconds
     XIMEASENSOR_API extern const float GAIN_DB;          // Default gain in decibels
     XIMEASENSOR_API extern const float FRAMERATE_FPS;    // Default frame rate in FPS
@@ -340,56 +436,6 @@ namespace CameraDefaults {
     XIMEASENSOR_API extern const float DEFAULT_GAMMA;  // Default gamma value
 }
 
-
-// ============================================================================
-// DATA STRUCTURES
-// ============================================================================
-
-// Configuration for single snapshot operations
-struct SnapshotDefaults {
-    int format;     // Image format: 0=PNG, 1=JPG
-    int quality;    // JPEG quality: 1-100
-};
-
-// Information about a single detected ball
-struct XIMEASENSOR_API RealtimeBallInfo {
-    float centerX;      // Ball center X coordinate in pixels
-    float centerY;      // Ball center Y coordinate in pixels
-    float radius;       // Ball radius in pixels
-    float confidence;   // Detection confidence (0.0-1.0)
-    int frameIndex;     // Frame number where ball was detected
-};
-
-
-// Real-time ball detection result containing multiple detections
-struct XIMEASENSOR_API RealtimeDetectionResult {
-    bool ballFound;                 // True if at least one ball was found
-    int ballCount;                  // Number of balls detected (max 5)
-    RealtimeBallInfo balls[5];      // Array of detected balls
-    double detectionTimeMs;         // Processing time in milliseconds
-};
-
-
-// Callback function type for real-time detection notifications
-typedef void(*RealtimeDetectionCallback)(const RealtimeDetectionResult* result, void* userContext);
-
-
-// Shot completed notification structure
-struct XIMEASENSOR_API ShotCompletedInfo {
-    float startX, startY;           // Starting position
-    float endX, endY;               // Ending position
-    float totalDistance;            // Total distance traveled
-    float avgVelocity;              // Average velocity
-    float maxVelocity;              // Maximum velocity
-    double shotDuration;            // Duration in seconds
-    int trajectoryPointCount;       // Number of trajectory points
-    bool dataAvailable;             // Whether full trajectory data is available
-};
-
-// Shot completed callback
-typedef void(*ShotCompletedCallback)(const ShotCompletedInfo* info, void* userContext);
-
-
 // ============================================================================
 // C API FUNCTIONS
 // ============================================================================
@@ -405,7 +451,6 @@ extern "C" {
     // Shutdown camera system and clean up resources
     XIMEASENSOR_API void Camera_Shutdown();
 
-
     // ------------------------------------------------------------------------
     // Device Management
     // ------------------------------------------------------------------------
@@ -416,12 +461,11 @@ extern "C" {
     // Get information about a specific camera device
     XIMEASENSOR_API bool Camera_GetDeviceInfo(int index, char* name, int nameSize, char* serial, int serialSize);
 
-
     // ------------------------------------------------------------------------
     // Camera Control
     // ------------------------------------------------------------------------
 
-    // 2025-08-29
+    // Auto-detect and open camera
     XIMEASENSOR_API bool Camera_OpenAuto();
 
     // Open camera device
@@ -439,14 +483,12 @@ extern "C" {
     // Pause/resume image acquisition
     XIMEASENSOR_API bool Camera_Pause(bool pause);
 
-
     // ------------------------------------------------------------------------
     // Image Acquisition
     // ------------------------------------------------------------------------
 
     // Get the latest captured frame
     XIMEASENSOR_API bool Camera_GetFrame(unsigned char* buffer, int bufferSize, int* width, int* height);
-
 
     // ------------------------------------------------------------------------
     // Camera Parameters
@@ -494,7 +536,6 @@ extern "C" {
     // Get current camera state
     XIMEASENSOR_API int Camera_GetState();
 
-
     // ------------------------------------------------------------------------
     // Statistics and Monitoring
     // ------------------------------------------------------------------------
@@ -505,7 +546,6 @@ extern "C" {
 
     // Reset capture statistics
     XIMEASENSOR_API void Camera_ResetStatistics();
-
 
     // ------------------------------------------------------------------------
     // Callback Management
@@ -520,7 +560,6 @@ extern "C" {
     // Clear all registered callbacks
     XIMEASENSOR_API void Camera_ClearCallbacks();
 
-
     // ------------------------------------------------------------------------
     // Logging Control
     // ------------------------------------------------------------------------
@@ -530,7 +569,6 @@ extern "C" {
 
     // Flush log buffer to file
     XIMEASENSOR_API void Camera_FlushLog();
-
 
     // ------------------------------------------------------------------------
     // Image Saving
@@ -542,6 +580,27 @@ extern "C" {
     // Save provided frame data to file
     XIMEASENSOR_API bool Camera_SaveCurrentFrame(unsigned char* buffer, int bufferSize, int* width, int* height, const char* filename, int format = 0, int quality = 90);
 
+    // ------------------------------------------------------------------------
+    // White Ball Detection (NEW)
+    // ------------------------------------------------------------------------
+
+    // Set white ball detection configuration
+    XIMEASENSOR_API void Camera_SetWhiteBallDetectionConfig(const WhiteBallDetectionConfig* config);
+
+    // Get current white ball detection configuration
+    XIMEASENSOR_API bool Camera_GetWhiteBallDetectionConfig(WhiteBallDetectionConfig* config);
+
+    // Enable/disable white ball detection
+    XIMEASENSOR_API bool Camera_EnableWhiteBallDetection(bool enable);
+
+    // Check if white ball detection is enabled
+    XIMEASENSOR_API bool Camera_IsWhiteBallDetectionEnabled();
+
+    // Get last white ball detection result
+    XIMEASENSOR_API bool Camera_GetWhiteBallInfo(WhiteBallInfo* info);
+
+    // Process single frame for white ball detection
+    XIMEASENSOR_API bool Camera_DetectWhiteBall(const unsigned char* imageData, int width, int height, WhiteBallInfo* info);
 
 #ifdef ENABLE_CONTINUOUS_CAPTURE
     // ------------------------------------------------------------------------
@@ -626,7 +685,6 @@ extern "C" {
     // Check if debug image saving is enabled
     XIMEASENSOR_API bool Camera_GetBallDetectorDebugImages();
 
-
     // ------------------------------------------------------------------------
     // Real-time Ball Detection
     // ------------------------------------------------------------------------
@@ -655,9 +713,8 @@ extern "C" {
     // Get real-time detection statistics
     XIMEASENSOR_API void Camera_GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS);
 
-
     // ------------------------------------------------------------------------
-    // Ball State Tracking Functions: 2025-07-30
+    // Ball State Tracking Functions
     // ------------------------------------------------------------------------
 
     // Enable/disable ball state tracking
@@ -729,5 +786,33 @@ extern "C" {
 
     // Show shot completed dialog (blocking)
     XIMEASENSOR_API void Camera_ShowShotCompletedDialog();
+}
 
+// ============================================================================
+// IMPLEMENTATION OF INLINE CONSTRUCTORS
+// ============================================================================
+
+inline WhiteBallDetectionConfig::WhiteBallDetectionConfig()
+    : roi(0, 0, 0, 0)
+    , thresholdMode(ThresholdMode::Fixed)
+    , thresholdValue(200)
+    , thresholdType(cv::THRESH_BINARY)
+    , adaptiveMethod(AdaptiveMethod::Gaussian)
+    , blockSize(7)
+    , C(2.0)
+    , minRadius(2.0f)
+    , maxRadius(10.0f)
+    , minCircularity(0.7f)
+    , maxCircularity(1.2f)
+    , useTracking(false) {
+}
+
+inline WhiteBallInfo::WhiteBallInfo()
+    : found(false)
+    , centerX(0)
+    , centerY(0)
+    , radius(0)
+    , confidence(0.0f)
+    , contourPoints(0)
+    , circularity(0.0f) {
 }

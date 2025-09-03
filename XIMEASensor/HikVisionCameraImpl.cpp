@@ -706,7 +706,6 @@ namespace Camera {
         }
     }
 
-    // SetParamString and GetParamString implementations...
     ReturnCode HikVisionCameraImpl::SetParamString(void* handle, ParamType param, const char* value) {
         // HikVision doesn't use string parameters in our implementation
         return ReturnCode::NOT_SUPPORTED_PARAM;

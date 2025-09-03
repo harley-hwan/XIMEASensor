@@ -662,7 +662,8 @@ BallDetector::BallDetector()
     m_nextTrackId(0),
     m_templateInitialized(false),
     m_currentCameraType(CameraType::UNKNOWN),
-    m_cameraController(nullptr) {
+    m_cameraController(nullptr),
+    m_whiteBallMode(false) {
 
     // IR 카메라용 최적화
     cv::setNumThreads(1);  // 단일 스레드 (오버헤드 감소)
@@ -2376,6 +2377,214 @@ bool BallDetector::CalibrateForBallSize(const std::vector<cv::Mat>& sampleImages
         std::to_string(knownBallDiameter_mm / (avgRadius * 2)) + " mm/pixel");
 
     return true;
+}
+
+// White ball detection configuration
+void BallDetector::SetWhiteBallConfig(const WhiteBallDetectionConfig& config) {
+    std::lock_guard<std::mutex> lock(m_whiteBallConfigMutex);
+    m_whiteBallConfig = config;
+}
+
+// Main white ball detection function
+BallDetectionResult BallDetector::DetectWhiteBall(const unsigned char* imageData,
+    int width, int height,
+    const WhiteBallDetectionConfig& config) {
+    // Use white ball specific algorithm
+    return DetectWhiteBallInternal(imageData, width, height, config);
+}
+
+// White ball detection implementation
+BallDetectionResult BallDetector::DetectWhiteBallInternal(const unsigned char* imageData,
+    int width, int height,
+    const WhiteBallDetectionConfig& config) {
+    BallDetectionResult result;
+    result.found = false;
+    result.balls.clear();
+
+    if (!imageData || width <= 0 || height <= 0) {
+        result.errorMessage = "Invalid input parameters";
+        return result;
+    }
+
+    try {
+        // Create Mat from input data
+        cv::Mat grayImage(height, width, CV_8UC1, const_cast<unsigned char*>(imageData));
+        cv::Mat workingImage = grayImage;
+
+        // Apply ROI if specified
+        if (config.roi.area() > 0 &&
+            config.roi.x >= 0 && config.roi.y >= 0 &&
+            config.roi.x + config.roi.width <= width &&
+            config.roi.y + config.roi.height <= height) {
+            workingImage = grayImage(config.roi);
+        }
+
+        // Apply threshold based on mode
+        cv::Mat binary = applyWhiteBallThreshold(workingImage, config);
+
+        // Detect circles using contours
+        std::vector<cv::Vec3f> candidates = detectWhiteBallContours(binary, config);
+
+        // Evaluate candidates
+        for (const auto& circle : candidates) {
+            BallInfo info;
+            info.center.x = circle[0];
+            info.center.y = circle[1];
+            info.radius = circle[2];
+
+            // Adjust coordinates if ROI was used
+            if (config.roi.area() > 0) {
+                info.center.x += config.roi.x;
+                info.center.y += config.roi.y;
+            }
+
+            // Calculate confidence
+            info.confidence = calculateWhiteBallConfidence(workingImage, circle, config);
+
+            if (info.confidence >= 0.7f) {
+                result.balls.push_back(info);
+            }
+        }
+
+        // Sort by confidence
+        if (!result.balls.empty()) {
+            std::sort(result.balls.begin(), result.balls.end(),
+                [](const BallInfo& a, const BallInfo& b) {
+                    return a.confidence > b.confidence;
+                });
+
+            // Keep only best ball
+            if (result.balls.size() > 1) {
+                result.balls.resize(1);
+            }
+
+            result.found = true;
+        }
+
+    }
+    catch (const cv::Exception& e) {
+        result.errorMessage = "OpenCV error: " + std::string(e.what());
+        LOG_ERROR(result.errorMessage);
+    }
+    catch (const std::exception& e) {
+        result.errorMessage = "Detection error: " + std::string(e.what());
+        LOG_ERROR(result.errorMessage);
+    }
+
+    return result;
+}
+
+// Apply threshold based on configuration
+cv::Mat BallDetector::applyWhiteBallThreshold(const cv::Mat& grayImage,
+    const WhiteBallDetectionConfig& config) {
+    cv::Mat binary;
+
+    switch (config.thresholdMode) {
+    case ThresholdMode::Fixed:
+        cv::threshold(grayImage, binary, config.thresholdValue, 255, config.thresholdType);
+        break;
+
+    case ThresholdMode::Adaptive:
+    {
+        int adaptiveMethod = (config.adaptiveMethod == AdaptiveMethod::Mean) ?
+            cv::ADAPTIVE_THRESH_MEAN_C : cv::ADAPTIVE_THRESH_GAUSSIAN_C;
+        cv::adaptiveThreshold(grayImage, binary, 255, adaptiveMethod,
+            config.thresholdType, config.blockSize, config.C);
+    }
+    break;
+
+    case ThresholdMode::Otsu:
+        cv::threshold(grayImage, binary, 0, 255, config.thresholdType | cv::THRESH_OTSU);
+        break;
+
+    default:
+        cv::threshold(grayImage, binary, config.thresholdValue, 255, config.thresholdType);
+        break;
+    }
+
+    // Apply morphology to clean up
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, kernel);
+
+    return binary;
+}
+
+// Detect white ball using contours
+std::vector<cv::Vec3f> BallDetector::detectWhiteBallContours(const cv::Mat& binary,
+    const WhiteBallDetectionConfig& config) {
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    std::vector<cv::Vec3f> circles;
+
+    const float minArea = static_cast<float>(CV_PI * config.minRadius * config.minRadius);
+    const float maxArea = static_cast<float>(CV_PI * config.maxRadius * config.maxRadius);
+
+    for (const auto& contour : contours) {
+        // Area check
+        double area = cv::contourArea(contour);
+        if (area < minArea || area > maxArea) {
+            continue;
+        }
+
+        // Minimum enclosing circle
+        cv::Point2f center;
+        float radius;
+        cv::minEnclosingCircle(contour, center, radius);
+
+        // Radius check
+        if (radius < config.minRadius || radius > config.maxRadius) {
+            continue;
+        }
+
+        // Circularity check
+        double perimeter = cv::arcLength(contour, true);
+        double circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
+
+        if (circularity >= config.minCircularity && circularity <= config.maxCircularity) {
+            circles.push_back(cv::Vec3f(center.x, center.y, radius));
+        }
+    }
+
+    return circles;
+}
+
+// Calculate confidence for white ball
+float BallDetector::calculateWhiteBallConfidence(const cv::Mat& image,
+    const cv::Vec3f& circle,
+    const WhiteBallDetectionConfig& config) {
+    int cx = cvRound(circle[0]);
+    int cy = cvRound(circle[1]);
+    int radius = cvRound(circle[2]);
+
+    // Boundary check
+    if (cx - radius < 0 || cy - radius < 0 ||
+        cx + radius >= image.cols || cy + radius >= image.rows) {
+        return 0.0f;
+    }
+
+    // Calculate mean brightness in circle
+    cv::Rect roi(cx - radius, cy - radius, 2 * radius, 2 * radius);
+    cv::Mat roiMat = image(roi);
+
+    cv::Mat mask = cv::Mat::zeros(roiMat.size(), CV_8UC1);
+    cv::circle(mask, cv::Point(radius, radius), radius, 255, -1);
+
+    cv::Scalar mean = cv::mean(roiMat, mask);
+    float brightness = static_cast<float>(mean[0]);
+
+    // White ball should be bright
+    float brightnessScore = std::min(1.0f, brightness / 200.0f);
+
+    // Size score
+    float idealRadius = (config.minRadius + config.maxRadius) / 2.0f;
+    float sizeScore = 1.0f - std::abs(radius - idealRadius) / idealRadius;
+
+    // Combined confidence
+    float confidence = brightnessScore * 0.7f + sizeScore * 0.3f;
+
+    return confidence;
 }
 
 

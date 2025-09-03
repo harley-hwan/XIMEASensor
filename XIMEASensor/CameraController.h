@@ -138,6 +138,12 @@ private:
     std::atomic<int> readIndex{ 1 };
     std::mutex bufferSwapMutex;
 
+    // White ball detection mode
+    std::atomic<bool> m_whiteBallDetectionMode{ false };
+
+    // White ball specific processing
+    void ProcessWhiteBallDetection(const RealtimeDetectionResult* result);
+
     // 기존 버퍼는 호환성을 위해 유지
     std::mutex frameMutex;
     unsigned char* frameBuffer;
@@ -625,6 +631,11 @@ public:
     bool SetRealtimeDetectionDownscale(int factor);
     bool SetRealtimeDetectionMaxCandidates(int maxCandidates);
     void GetRealtimeDetectionStats(int* processedFrames, double* avgProcessingTimeMs, double* detectionFPS);
+
+    // White ball detection support
+    void SetWhiteBallDetectionMode(bool enable);
+    bool IsWhiteBallDetectionMode() const { return m_whiteBallDetectionMode; }
+    BallDetector* GetBallDetector() { return m_realtimeBallDetector.get(); }
 
     // Ball state tracking
     bool EnableBallStateTracking(bool enable);

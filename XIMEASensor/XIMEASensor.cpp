@@ -12,6 +12,14 @@
 // GLOBAL VARIABLES
 // ============================================================================
 
+// Global white ball detection configuration
+WhiteBallDetectionConfig g_whiteBallDetectionConfig;
+std::mutex g_whiteBallConfigMutex;
+bool g_whiteBallDetectionEnabled = false;
+WhiteBallInfo g_lastWhiteBallInfo;
+std::mutex g_whiteBallInfoMutex;
+
+
 
 #ifdef ENABLE_CONTINUOUS_CAPTURE
 // Global callback for continuous capture progress updates
@@ -1165,6 +1173,144 @@ void Camera_ShowShotCompletedDialog() {
 #else
     LOG_INFO("Shot completed - Ready for next shot");
 #endif
+}
+
+
+// ============================================================================
+// WHITE BALL DETECTION FUNCTIONS (NEW)
+// ============================================================================
+
+void Camera_SetWhiteBallDetectionConfig(const WhiteBallDetectionConfig* config) {
+    if (!config) {
+        LOG_ERROR("Invalid parameter: config is nullptr");
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_whiteBallConfigMutex);
+    g_whiteBallDetectionConfig = *config;
+
+    // Apply to BallDetector if using HikVision camera
+    auto& controller = CameraController::GetInstance();
+    if (controller.GetCurrentCameraTypeAsInt() == 1) { // HikVision
+        if (controller.GetBallDetector()) {
+            controller.GetBallDetector()->SetWhiteBallConfig(g_whiteBallDetectionConfig);
+        }
+    }
+
+    LOG_INFO("White ball detection config updated");
+}
+
+bool Camera_GetWhiteBallDetectionConfig(WhiteBallDetectionConfig* config) {
+    if (!config) {
+        LOG_ERROR("Invalid parameter: config is nullptr");
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_whiteBallConfigMutex);
+    *config = g_whiteBallDetectionConfig;
+    return true;
+}
+
+bool Camera_EnableWhiteBallDetection(bool enable) {
+    try {
+        auto& controller = CameraController::GetInstance();
+
+        // HikVision 카메라인 경우에만 white ball detection 사용
+        if (controller.GetCurrentCameraTypeAsInt() == 1) {
+            g_whiteBallDetectionEnabled = enable;
+
+            // 실시간 검출 활성화
+            if (enable) {
+                controller.EnableRealtimeDetection(true);
+                controller.SetWhiteBallDetectionMode(true);
+            }
+            else {
+                controller.SetWhiteBallDetectionMode(false);
+            }
+
+            LOG_INFO("White ball detection " + std::string(enable ? "enabled" : "disabled"));
+            return true;
+        }
+        else {
+            LOG_WARNING("White ball detection is only supported for HikVision cameras");
+            return false;
+        }
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_EnableWhiteBallDetection: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool Camera_IsWhiteBallDetectionEnabled() {
+    return g_whiteBallDetectionEnabled;
+}
+
+bool Camera_GetWhiteBallInfo(WhiteBallInfo* info) {
+    if (!info) {
+        LOG_ERROR("Invalid parameter: info is nullptr");
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_whiteBallInfoMutex);
+    *info = g_lastWhiteBallInfo;
+    return info->found;
+}
+
+bool Camera_DetectWhiteBall(const unsigned char* imageData, int width, int height, WhiteBallInfo* info) {
+    if (!imageData || !info || width <= 0 || height <= 0) {
+        LOG_ERROR("Invalid parameters for white ball detection");
+        return false;
+    }
+
+    try {
+        auto& controller = CameraController::GetInstance();
+        if (controller.GetBallDetector()) {
+            WhiteBallDetectionConfig config;
+            {
+                std::lock_guard<std::mutex> lock(g_whiteBallConfigMutex);
+                config = g_whiteBallDetectionConfig;
+            }
+
+            // Use BallDetector's white ball detection method
+            auto result = controller.GetBallDetector()->DetectWhiteBall(imageData, width, height, config);
+
+            // Convert result to WhiteBallInfo
+            info->found = result.found;
+            if (result.found && !result.balls.empty()) {
+                const auto& ball = result.balls[0];
+                info->centerX = static_cast<int>(ball.center.x);
+                info->centerY = static_cast<int>(ball.center.y);
+                info->radius = static_cast<int>(ball.radius);
+                info->confidence = ball.confidence;
+                info->circularity = ball.circularity;
+                info->contourPoints = 0; // Will be set by detector if available
+            }
+            else {
+                info->centerX = 0;
+                info->centerY = 0;
+                info->radius = 0;
+                info->confidence = 0.0f;
+                info->circularity = 0.0f;
+                info->contourPoints = 0;
+            }
+
+            // Update last info
+            {
+                std::lock_guard<std::mutex> lock(g_whiteBallInfoMutex);
+                g_lastWhiteBallInfo = *info;
+            }
+
+            return info->found;
+        }
+
+        LOG_ERROR("BallDetector not available");
+        return false;
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("Exception in Camera_DetectWhiteBall: " + std::string(e.what()));
+        return false;
+    }
 }
 
 

@@ -1362,6 +1362,16 @@ void CameraController::ProcessRealtimeDetectionWithROI(
     if (m_realtimeCallback) {
         m_realtimeCallback(&detectionResult, m_realtimeCallbackContext);
     }
+
+    // White ball detection mode processing
+    if (m_whiteBallDetectionMode.load()) {
+        ProcessWhiteBallDetection(&detectionResult);
+    }
+
+    // Call real-time detection callback
+    if (m_realtimeCallback) {
+        m_realtimeCallback(&detectionResult, m_realtimeCallbackContext);
+    }
 }
 
 void CameraController::SetRealtimeDetectionCallback(RealtimeDetectionCallback callback, void* context) {
@@ -1433,6 +1443,19 @@ void CameraController::GetRealtimeDetectionStats(int* processedFrames, double* a
         if (avgProcessingTimeMs) *avgProcessingTimeMs = 0.0;
         if (detectionFPS) *detectionFPS = 0.0;
     }
+}
+
+void CameraController::SetWhiteBallDetectionMode(bool enable) {
+    m_whiteBallDetectionMode = enable;
+
+    if (enable && m_realtimeBallDetector) {
+        // Configure for white ball detection if HikVision
+        if (m_currentCameraType == Camera::CameraFactory::CameraType::HIKVISION) {
+            m_realtimeBallDetector->EnableWhiteBallMode(true);
+        }
+    }
+
+    LOG_INFO("White ball detection mode " + std::string(enable ? "enabled" : "disabled"));
 }
 
 //========================================================
@@ -1730,6 +1753,30 @@ bool CameraController::EnableBallStateTracking(bool enable) {
 }
 
 
+void CameraController::ProcessWhiteBallDetection(const RealtimeDetectionResult* result) {
+    // Convert to WhiteBallInfo and store globally
+    extern WhiteBallInfo g_lastWhiteBallInfo;
+    extern std::mutex g_whiteBallInfoMutex;
+
+    WhiteBallInfo info;
+    info.found = result->ballFound;
+
+    if (result->ballFound && result->ballCount > 0) {
+        const auto& ball = result->balls[0];
+        info.centerX = static_cast<int>(ball.centerX);
+        info.centerY = static_cast<int>(ball.centerY);
+        info.radius = static_cast<int>(ball.radius);
+        info.confidence = ball.confidence;
+        info.circularity = 1.0f; // Will be calculated by detector
+        info.contourPoints = 0;  // Will be set by detector
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_whiteBallInfoMutex);
+        g_lastWhiteBallInfo = info;
+    }
+}
+
 // 움직임 데이터 처리
 void CameraController::ProcessMovementData(BallTrackingData& tracking, 
                                           float currentX, float currentY, 
@@ -1767,17 +1814,17 @@ void CameraController::ProcessMovementData(BallTrackingData& tracking,
         tracking.microMovementCount++;
     }
     
-    // 디버그 로깅 (10프레임마다)
-    if (tracking.currentState == BallState::MOVING && 
-        tracking.movingStateFrameCount % 10 == 0) {
-        LOG_DEBUG("Movement Analysis - Delta: " + std::to_string(pixelDelta) +
-                 " px, Avg: " + std::to_string(tracking.averageFrameDelta) +
-                 " px, Recent Accumulated: " + std::to_string(tracking.recentAccumulatedMovement) +
-                 " px, Noise: " + std::to_string(tracking.movementNoiseLevel) +
-                 " px, Thresholds(Move/Stable): " + 
-                 std::to_string(tracking.currentMovementThreshold) + "/" +
-                 std::to_string(tracking.currentStabilityThreshold));
-    }
+    //// 디버그 로깅 (10프레임마다)
+    //if (tracking.currentState == BallState::MOVING && 
+    //    tracking.movingStateFrameCount % 10 == 0) {
+    //    LOG_DEBUG("Movement Analysis - Delta: " + std::to_string(pixelDelta) +
+    //             " px, Avg: " + std::to_string(tracking.averageFrameDelta) +
+    //             " px, Recent Accumulated: " + std::to_string(tracking.recentAccumulatedMovement) +
+    //             " px, Noise: " + std::to_string(tracking.movementNoiseLevel) +
+    //             " px, Thresholds(Move/Stable): " + 
+    //             std::to_string(tracking.currentMovementThreshold) + "/" +
+    //             std::to_string(tracking.currentStabilityThreshold));
+    //}
 }
 
 
